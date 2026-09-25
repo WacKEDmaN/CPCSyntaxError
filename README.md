@@ -28,6 +28,15 @@ around a cycle-level model of the machine's video chips.
 - Dockable, resizable windows (Dear ImGui docking branch); any window can be pulled
   out of the main window into its own.
 
+## Screenshots
+
+| | |
+|---|---|
+| ![Batman Forever on a CPC 6128](images/6128-BatmanForever.png) | ![Pinball Dreams on a CPC 6128](images/6128-PinballDreams.png) |
+| *Batman Forever -- CPC 6128* | *Pinball Dreams -- CPC 6128* |
+| ![Alcon 2020 on a GX4000](images/GX4000-ALCON.png) | ![Sonic the Hedgehog on a GX4000](images/GX4000-SONIC.png) |
+| *Alcon 2020 -- GX4000* | *Sonic the Hedgehog -- GX4000* |
+
 ## Getting started
 
 1. Download `CPCSyntaxError-win64.zip` from the
