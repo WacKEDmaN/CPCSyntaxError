@@ -1,0 +1,2 @@
+Dear ImGui v1.92.9b-docking (tag v1.92.9b-docking, commit b48d1afb) from ocornut/imgui.
+MIT licence, see LICENSE.txt. Docking branch: DockSpace + multi-viewport.

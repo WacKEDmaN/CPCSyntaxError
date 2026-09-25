@@ -1,0 +1,1713 @@
+﻿#define __FILENAME__ "minilib.h"
+
+#include<string.h>
+#include<stdlib.h>
+#include<stddef.h>
+#ifdef _MSC_VER
+#if _MSC_VER>1500
+#include<stdint.h>
+#endif
+#else
+#include<stdint.h>
+#endif
+
+#include<stdarg.h>
+#include<stdio.h>
+#include<errno.h>
+#include<ctype.h>
+#include<time.h>
+#include<math.h>
+#include<sys/types.h>
+#include<sys/stat.h>
+#include<fcntl.h>
+#include<errno.h> 
+#ifdef OS_WIN
+#include<io.h>
+#include<limits.h>
+#include<direct.h>
+#define snprintf _snprintf
+#endif
+#include<ctype.h>
+#include<stdio.h>
+#include<stdlib.h>
+#ifndef OS_WIN
+#include<unistd.h>
+#include<dirent.h>
+#endif
+#include<string.h>
+#include<setjmp.h>
+#include<errno.h>
+#include<sys/timeb.h>
+
+#ifndef ARG_MAX
+#define ARG_MAX 8191
+#endif
+
+
+
+#define MemFree free
+#define MemRealloc realloc
+#define MemMalloc malloc
+#define MemMove memmove
+#if defined(__BORLANDC__)
+#define TxtStrDup strdup
+#elif defined(OS_WIN)
+#define TxtStrDup _strdup
+#else
+#define TxtStrDup strdup
+#endif
+
+#ifdef __BORLANDC__
+#define _setmode setmode
+#endif /* __BORLANDC__ */
+
+#define loginfo(...); {printf(__VA_ARGS__);printf("\n");}
+#define logdebug(...); {printf(__VA_ARGS__);printf("\n");}
+#define logwarn(...); {printf(__VA_ARGS__);printf("\n");}
+#define logerr(...); {printf(__VA_ARGS__);printf("\n");}
+
+#define INTERNAL_ERROR 1
+#define ABORT_ERROR 7
+
+#define MAX_LINE_BUFFER 16384
+
+#ifndef PATH_MAX
+#define PATH_MAX 4096
+#endif
+
+static int _static_library_nbfile_opened=0;
+static int _static_library_nbfile_opened_max=0;
+
+void _internal_ObjectArrayAddDynamicValue(void **zearray, const void *zeobject, const int object_size);
+void _internal_ObjectArrayAddDynamicValueConcat(void **zearray, int *nbfields, int *maxfields, const void *zeobject, const int object_size);
+#define ObjectArrayAddDynamicValue(zearray,zeobject,objsize) _internal_ObjectArrayAddDynamicValue(zearray,zeobject,objsize)
+#define ObjectArrayAddDynamicValueConcat(zearray,nbv,maxv,zeobject,objsize) _internal_ObjectArrayAddDynamicValueConcat(zearray,nbv,maxv,zeobject,objsize)
+void _internal_IntArrayAddDynamicValueConcat(int **zearray, int *nbval, int *maxval, const int zevalue);
+#define IntArrayAddDynamicValueConcat(zearray,nbv,maxv,zevalue) _internal_IntArrayAddDynamicValueConcat(zearray,nbv,maxv,zevalue)
+void _internal_FieldArrayAddDynamicValue(char ***zearray, const char *zevalue);
+#define FieldArrayAddDynamicValue(zearray,zevalue) _internal_FieldArrayAddDynamicValue(zearray,zevalue)
+void _internal_FieldArrayAddDynamicValueConcat(char ***zearray, int *nbfields, int *maxfields, const char *zevalue);
+#define FieldArrayAddDynamicValueConcat(zearray,nb,maxf,zevalue) _internal_FieldArrayAddDynamicValueConcat(zearray,nb,maxf,zevalue)
+
+
+long long FileGetSize(const char *filename);
+
+int MinMaxInt(const int zeval, const int zemin, const int zemax)
+{
+        #undef FUNC
+        #define FUNC "MinMaxInt"
+
+        if (zeval<zemin) return zemin;
+        if (zeval>zemax) return zemax;
+        return zeval;
+}
+
+/* (c) FSF */
+#if defined(__WATCOMC__) || defined(__BORLANDC__)
+size_t strnlen (s, maxlen)
+     register const char *s;
+     const size_t maxlen;
+{
+  register const char *e;
+  size_t n;
+
+  for (e = s, n = 0; *e && n < maxlen; e++, n++)
+    ;
+  return n;
+}
+#define _strnlen strnlen
+#endif
+
+// Linus Torvalds (c) 1991
+int _internal_strnicmp(const char *s1, const char *s2, size_t len)
+{
+/* Yes, Virginia, it had better be unsigned */
+unsigned char c1, c2;
+if (!len)
+    return 0;
+do {
+    c1 = *s1++;
+    c2 = *s2++;
+    if (!c1 || !c2)
+	break;
+    if (c1 == c2)
+	continue;
+    c1 = tolower(c1);
+    c2 = tolower(c2);
+    if (c1 != c2)
+	break;
+} while (--len);
+return (int)c1 - (int)c2;
+}
+int _internal_stricmp(const char *s1, const char *s2) {
+/* Yes, Virginia, it had better be unsigned */
+unsigned char c1, c2;
+while (1) {
+    c1 = *s1++;
+    c2 = *s2++;
+    if (!c1 || !c2)
+        break;
+    if (c1 == c2)
+        continue;
+    c1 = tolower(c1);
+    c2 = tolower(c2);
+    if (c1 != c2)
+        break;
+}
+return (int)c1 - (int)c2;
+}
+
+/*
+** Call syntax:  char *stristr(char *String, char *Pattern)
+**
+** Description:  This function is an ANSI version of strstr() with
+**               case insensitivity.
+** Return item:  char *pointer if Pattern is found in String, else
+**               pointer to 0
+** Rev History:  07/04/95  Bob Stout  ANSI-fy
+**               02/03/94  Fred Cole  Original
+** Hereby donated to public domain.
+** Modified for use with libcyrus by Ken Murchison 06/01/00.
+**
+** from Debian package cyrus-imapd
+
+modified for Rasm as pattern is always upper case...
+
+*/
+
+char *_internal_stristr(const char *ZeString, const unsigned int ZeLen, const char *Pattern)
+{
+	char *pptr, *sptr, *start;
+	unsigned int slen,plen;
+
+	start = (char *)ZeString;
+	pptr  = (char *)Pattern;
+	plen  = strlen(Pattern);
+	slen  = ZeLen;
+	for ( /* while string length not shorter than pattern length */;
+		slen >= plen;
+		start++, slen--) {
+		/* find start of pattern in string */
+		while (toupper(*start) != *Pattern) {
+			start++;
+			slen--;
+			/* if pattern longer than string */
+			if (slen < plen)
+				return NULL;
+		}
+
+		// because pattern is always 2 or more...
+		sptr = start+1;
+		pptr = (char *)Pattern+1;
+
+		while (toupper(*sptr) == *pptr) {
+			sptr++;
+			pptr++;
+
+			if ('\0' == *pptr) {
+				return start;
+			}
+		}
+	}
+	return NULL;
+}
+
+char *TxtStrDupLen(const char *str, int *len)
+{
+	#undef FUNC
+	#define FUNC "TxtStrDupLen"
+	
+	char *newstr;
+	*len=strlen(str)+1;
+	newstr=MemMalloc(*len);
+	strcpy(newstr,str);
+	return newstr;
+}
+
+void _internal_ObjectArrayAddDynamicValueConcat(void **zearray, int *nbfields, int *maxfields, const void *zeobject, const int object_size)
+{
+	#undef FUNC
+	#define FUNC "ObjectArrayAddDynamicValueConcat"
+
+	char *dst;
+
+	if ((*zearray)==NULL) {
+		*nbfields=1;
+		*maxfields=3;
+		(*zearray)=malloc((*maxfields)*object_size);
+	} else {
+		*nbfields=(*nbfields)+1;
+		if (*nbfields>=*maxfields) {
+			*maxfields=(*maxfields)*2;
+			(*zearray)=realloc((*zearray),(*maxfields)*object_size);
+		}
+	}
+	/* using direct calls because it is more interresting to know which is the caller */
+	dst=((char *)(*zearray))+((*nbfields)-1)*object_size;
+	/* control of memory for overflow */
+	memcpy(dst,zeobject,object_size);
+}
+
+/***
+	Add a value to a list of integers
+	Reallocate memory on the fly
+
+	zearray: pointer to the array of integers
+	nbval:   pointer to the current index
+	maxval:  pointer to the current allocated memory
+	zevalue: integer value to concat to	
+	       
+	output: the pointer to the array is modified because the
+	function reallocate memory to store the new string at
+	the end of the array.
+*/
+void _internal_IntArrayAddDynamicValueConcat(int **zearray, int *nbval, int *maxval, const int zevalue) 
+{
+	#undef FUNC
+	#define FUNC "IntArrayAddDynamicValue"
+
+	if ((*zearray)==NULL) {
+		*nbval=1;
+		*maxval=4;
+		(*zearray)=MemMalloc(sizeof(int)*(*maxval));
+	} else {
+		*nbval=*nbval+1;
+		if (*nbval>*maxval) {
+			*maxval=(*maxval)*2;
+			(*zearray)=realloc((*zearray),sizeof(int)*(*maxval));
+		}
+	}
+	(*zearray)[(*nbval)-1]=zevalue;
+}
+
+/***
+	CSVGetFieldArrayNumber
+	
+	count array elements
+*/
+int CSVGetFieldArrayNumber(const char **myfield)
+{
+	#undef FUNC
+	#define FUNC "CSVGetFieldArrayNumber"
+	
+	int n=0;
+	
+	if (myfield==NULL)
+		return 0;
+	
+	while (myfield[n]!=NULL) n++;
+	
+	return n;
+
+}
+/***
+ *      TxtSplit
+ *
+ *      split the parameter string into an array of strings
+ */
+char **TxtSplitWithChar(char *in_str, const char split_char)
+{
+        #undef FUNC
+        #define FUNC "TxtSplitWithChar"
+
+        char **tab=NULL;
+        char *match_str;
+        int redo=1;
+        int idx,idmax;
+
+        match_str=in_str;
+
+        while (redo && *in_str) {
+                while (*match_str && *match_str!=split_char) match_str++;
+                redo=*match_str;
+                *match_str=0;
+                FieldArrayAddDynamicValueConcat(&tab,&idx,&idmax,in_str);
+                in_str=++match_str;
+        }
+
+        return tab;
+}
+
+/***
+	Add a value to a list of strings
+	Reallocate memory on the fly
+	
+	input: pointer to an array of string
+	       string value
+	       
+	output: the pointer to the array is modified because the
+	function reallocate memory to store the new string at
+	the end of the array.
+*/
+void _internal_FieldArrayAddDynamicValue(char ***zearray, const char *zevalue)
+{
+	#undef FUNC
+	#define FUNC "FieldArrayAddDynamicValue"
+	int nbfield;
+	if ((*zearray)==NULL) nbfield=2; else nbfield=CSVGetFieldArrayNumber((const char **)(*zearray))+2;
+	/* using direct calls because it is more interresting to know which is the caller */
+	(*zearray)=realloc((*zearray),nbfield*sizeof(char *));
+	(*zearray)[nbfield-2]=TxtStrDup(zevalue);
+	(*zearray)[nbfield-1]=NULL;
+}
+void _internal_FieldArrayAddDynamicValueConcat(char ***zearray, int *nbfields, int *maxfields, const char *zevalue)
+{
+	#undef FUNC
+	#define FUNC "FieldArrayAddDynamicValueConcat"
+
+	if ((*zearray)==NULL) {
+		*nbfields=1;
+		*maxfields=10;
+		(*zearray)=MemRealloc(NULL,(*maxfields)*sizeof(char *));
+	} else {
+		*nbfields=(*nbfields)+1;
+		if (*nbfields>=*maxfields) {
+			*maxfields=(*maxfields)*2;
+			(*zearray)=MemRealloc((*zearray),(*maxfields)*sizeof(char *));
+		}
+	}
+	/* using direct calls because it is more interresting to know which is the caller */
+	(*zearray)[(*nbfields)-1]=TxtStrDup(zevalue);
+	(*zearray)[(*nbfields)]=NULL;
+}
+
+
+
+/***
+	CSVFreeFields
+
+	free allocated memory for fields
+*/
+void CSVFreeFields(char **fields)
+{
+	#undef FUNC
+	#define FUNC "CSVFreeFields"
+	
+	int i=0;
+	if (fields!=NULL)
+	{
+		/*loginfo("%8X",fields);
+		if (fields[i]==NULL)
+			loginfo("NULL i=%d",i); */
+		
+		while (fields[i]!=NULL)
+		{
+			MemFree(fields[i]);
+			i++;
+		}
+		MemFree(fields);
+	}
+}
+void FreeArrayDynamicValue(char ***zearray)
+{
+	CSVFreeFields(*zearray);
+	*zearray=NULL;
+}
+
+
+void CSVFreeFields(char **fields);
+#define FreeFields(fields) CSVFreeFields(fields)
+
+
+
+
+static const char BASE64_ALPHABET[] =
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    "abcdefghijklmnopqrstuvwxyz"
+    "0123456789+/";
+static int base64_decode_table[256];
+static int base64_initialized = 0;
+static void base64_init(void)
+{
+	int i;
+    if (base64_initialized)
+        return;
+
+    for (i = 0; i < 256; i++)
+        base64_decode_table[i] = -1;
+
+    for (i = 0; i < 64; i++)
+        base64_decode_table[(unsigned char)BASE64_ALPHABET[i]] = i;
+
+    base64_initialized = 1;
+}   
+#ifndef uint32_t
+#define uint32_t unsigned int
+#endif
+
+char *base64_encode(const unsigned char *input, int input_len, int *out_len)
+{
+    size_t i = 0;
+    size_t j = 0;
+
+    size_t encoded_len=0;
+    char *output=NULL;
+
+    if (input_len < 0 ||
+        (input == NULL && input_len != 0))
+        return NULL;
+
+    /*
+     * Chaque groupe de 3 octets produit 4 caractères.
+     */
+    encoded_len = ((size_t)input_len + 2u) / 3u * 4u;
+
+    /*
+     * Protection contre un dépassement de int puisque l'API
+     * retourne la taille via int.
+     */
+    if (encoded_len > 0x7f000000)
+        return NULL;
+
+    output = MemMalloc(encoded_len + 1u);
+
+    if (!output)
+        return NULL;
+
+    while (i < (size_t)input_len)
+    {
+        size_t remaining = (size_t)input_len - i;
+
+        uint32_t a = input[i++];
+
+        uint32_t b = (remaining > 1u) ? input[i++] : 0u;
+
+        uint32_t c = (remaining > 2u) ? input[i++] : 0u;
+
+        uint32_t triple = (a << 16) | (b << 8) | c;
+        output[j++] = BASE64_ALPHABET[(triple >> 18) & 0x3F];
+
+        output[j++] = BASE64_ALPHABET[(triple >> 12) & 0x3F];
+
+        if (remaining > 1u)
+        {
+            output[j++] = BASE64_ALPHABET[(triple >> 6) & 0x3F];
+        }
+        else
+        {
+            output[j++] = '=';
+        }
+
+        if (remaining > 2u)
+        {
+            output[j++] = BASE64_ALPHABET[triple & 0x3F];
+        }
+        else
+        {
+            output[j++] = '=';
+        }
+    }
+
+    output[j] = '\0';
+
+    if (out_len)
+        *out_len = (int)j;
+
+    return output;
+}
+
+
+
+/************************** File operation ******************************/
+
+
+/***
+	s_fileid
+	structure used by FileReadLine and FileWriteLine to manage multiple files at a time
+*/
+struct s_fileid
+{
+	FILE *file_id;
+	char *filename;
+	char opening_type[4];
+	int cpt;
+	struct s_fileid *next;
+	/* v2 */
+	int closed;
+	unsigned long curpos;
+};
+
+static struct s_fileid *fileidROOT=NULL;
+
+/***
+	FileGetStructFromName
+	
+	input: filename
+	output: file structure
+		NULL if not found
+*/
+struct s_fileid *FileGetStructFromName(const char *filename)
+{
+	#undef FUNC
+	#define FUNC "FileGetStructFromName"
+	struct s_fileid *curfile;
+	struct s_fileid *prevfile;
+
+	if (!filename)
+	{
+		logerr("filename must not be NULL");
+		exit(ABORT_ERROR);
+	}
+
+	if (strnlen(filename,PATH_MAX)==PATH_MAX)
+	{
+		logerr("cannot open this file because the argument size is bigger than PATH_MAX (%d)",PATH_MAX);
+		exit(ABORT_ERROR);
+	}
+	
+	/* try to find the file in the list */
+	curfile=fileidROOT;
+	prevfile=NULL;
+	while (curfile!=NULL)
+	{
+		if (!strcmp(curfile->filename,filename)) {		
+			break;
+		} else {
+			prevfile=curfile;
+			curfile=curfile->next;
+		}
+	}
+	/* put the struct to the top of the list */
+	if (curfile && prevfile) {
+		prevfile->next=curfile->next;
+		curfile->next=fileidROOT;
+		fileidROOT=curfile;
+	}
+	
+	return curfile;
+}
+
+/***
+	FileOpen function
+	
+	open a file in any mode (r,w,a,r+,w+,a+)
+	check if the file is already open
+	check for conflicts	
+*/
+FILE *FileOpen(const char *filename, const char *opening_type)
+{
+	#undef FUNC
+	#define FUNC "FileOpen"
+	struct s_fileid *curfile;
+	struct s_fileid *oldfile;
+	
+	/* check parameters coherency */
+	if (strlen(opening_type)>3)
+	{
+		logerr("illegal opening type (too long)");
+#ifndef INTEGRATED_ASSEMBLY
+		exit(ABORT_ERROR);
+#else
+	return NULL;
+#endif
+	}	
+	if (strcmp(opening_type,"a") && strcmp(opening_type,"w") && strcmp(opening_type,"r")
+	 && strcmp(opening_type,"a+")  && strcmp(opening_type,"w+") && strcmp(opening_type,"r+") && strcmp(opening_type,"rb"))
+	{
+		logerr("illegal opening type [%s]\nallowed options are: r,w,a,r+,w+,a+",opening_type);
+#ifndef INTEGRATED_ASSEMBLY
+		exit(ABORT_ERROR);
+#else
+	return NULL;
+#endif
+	}		
+	
+	curfile=FileGetStructFromName(filename);
+	
+	/* if curfile is NULL then the file is not opened yet */
+	if (!curfile)
+	{
+		/* insert a new record */
+		_static_library_nbfile_opened++;
+		if (_static_library_nbfile_opened>_static_library_nbfile_opened_max)
+			_static_library_nbfile_opened_max=_static_library_nbfile_opened;
+		curfile=MemMalloc(sizeof(struct s_fileid));
+		memset(curfile,0,sizeof(struct s_fileid));
+		curfile->filename=MemMalloc(strlen(filename)+1);
+		strcpy(curfile->filename,filename);
+		strcpy(curfile->opening_type,opening_type);
+		curfile->next=fileidROOT;
+		curfile->cpt=0;
+		fileidROOT=curfile;
+	}
+	else
+	{
+		if (strcmp(curfile->opening_type,opening_type))
+		{
+			logerr("You can't open the file [%s] in [%s] mode cause it's already open in [%s] mode",filename,opening_type,curfile->opening_type);
+#ifndef INTEGRATED_ASSEMBLY
+			exit(ABORT_ERROR);
+#else
+	return NULL;
+#endif
+		}
+		if (!curfile->closed) {
+			/* already opened, just return the id */
+			return curfile->file_id;
+		}
+	}
+	
+	curfile->file_id=fopen(filename,opening_type);
+	if (!curfile->file_id)
+	{
+		if (errno==EMFILE) {
+			/* too many files opened, close the latest of the list */
+			oldfile=fileidROOT;
+			while (oldfile->next && !oldfile->next->closed) oldfile=oldfile->next;
+			if (oldfile==curfile) {
+				logerr("cannot open a single file!");
+				exit(INTERNAL_ERROR);
+			}
+			/* save position and close the file */
+			oldfile->curpos=ftell(oldfile->file_id);
+			fclose(oldfile->file_id);
+			oldfile->file_id=0;
+			oldfile->closed=1;
+			/* then try again */
+			curfile->file_id=fopen(filename,opening_type);
+			if (curfile->file_id) {
+				if (curfile->curpos) {
+					fseek(curfile->file_id,curfile->curpos,SEEK_SET);
+					curfile->curpos=0;
+				}
+
+				logdebug("opening file [%s] in %s mode (too many opened files limit reached)",filename,opening_type);
+				return curfile->file_id;
+			}
+		}
+		
+		logerr("failed to open file [%s] with mode [%s]",filename,opening_type);
+		logerr("check empty space and permissions");
+#ifndef INTEGRATED_ASSEMBLY
+		exit(ABORT_ERROR);
+#else
+	return NULL;
+#endif
+	}
+	
+	/* go on previous position */
+	if (curfile->curpos) {
+		fseek(curfile->file_id,curfile->curpos,SEEK_SET);
+		curfile->curpos=0;
+	}
+	
+	//logdebug("opening file [%s] in %s mode",filename,opening_type);
+	return curfile->file_id;
+}
+
+struct s_fileid *FileGetStructFromID(const FILE *file_id);
+
+void FileSeekBinary(const char *filename,const int pos, const int st)
+{
+	#undef FUNC
+	#define FUNC "FileSeekBinary"
+	FILE *last_id=NULL;
+	struct s_fileid *curfile=NULL;
+	int err;
+	
+	last_id=FileOpen(filename,"r");
+	if ((err=fseek(last_id,pos,st))!=0) {
+		logerr("error seeking %s (%d)",filename,ferror(last_id));
+		exit(ABORT_ERROR);
+	}
+	
+	curfile=FileGetStructFromID(last_id);
+	switch (st) {
+		case SEEK_SET: curfile->curpos=pos; break;
+		case SEEK_CUR: curfile->curpos+=pos; break;
+		case SEEK_END: logerr("TODO§§§"); break;
+		default:logerr("unknown SEEK mode!");exit(INTERNAL_ERROR);
+	}
+}
+
+/***
+	FileGetStructFromID
+	
+	retrieve the file structure from the tree, with his ID
+*/
+struct s_fileid *FileGetStructFromID(const FILE *file_id)
+{
+	#undef FUNC
+	#define FUNC "FileGetStructFromID"
+	struct s_fileid *curfile;
+	struct s_fileid *prevfile;
+	
+	curfile=fileidROOT;
+	prevfile=NULL;
+	while (curfile!=NULL)
+	{
+		if (curfile->file_id==file_id) {
+			break;
+		} else {
+			prevfile=curfile;
+			curfile=curfile->next;
+		}
+	}
+	if (!curfile)
+	{
+		logerr("ID requested for an unknown file! (was supposed to be opened)");
+		exit(INTERNAL_ERROR);
+	}
+	/* put the struct to the top of the list */
+	if (prevfile) {
+		prevfile->next=curfile->next;
+		curfile->next=fileidROOT;
+		fileidROOT=curfile;
+	}
+	
+	return curfile;
+}
+
+/***
+	FileClose function
+	
+	check for closing return code
+	free the memory file structure
+*/
+void FileClose(const FILE *file_id)
+{
+	#undef FUNC
+	#define FUNC "FileClose"
+	struct s_fileid *curfile;
+	struct s_fileid *unlinkcell;
+	
+	curfile=FileGetStructFromID(file_id);
+
+	if (!curfile->closed) {
+		if (fclose(curfile->file_id))
+		{
+			logerr("error while closing file [%s]",curfile->filename);
+		}
+	} else {
+		/* already closed */
+	}
+
+	/* unlink the cell from ROOT */
+	if (curfile==fileidROOT)
+	{
+		fileidROOT=curfile->next;
+	}
+	else
+	{
+		unlinkcell=fileidROOT;
+		while (unlinkcell->next!=curfile)
+			unlinkcell=unlinkcell->next;
+		unlinkcell->next=curfile->next;
+	}
+	MemFree(curfile->filename);
+	MemFree(curfile);
+	_static_library_nbfile_opened--;
+}
+
+/***
+	FileAddCPT
+	
+	add n to counter when reading or writing in a file
+*/
+void FileAddCPT(const FILE *file_id, const int n)
+{
+	#undef FUNC
+	#define FUNC "FileAddCPT"
+	struct s_fileid *curfile;
+	
+	curfile=FileGetStructFromID(file_id);
+	curfile->cpt+=n;
+}
+#define FileIncCPT(file_id) FileAddCPT(file_id,1)
+
+/***
+	FileGetCPT
+	
+	Get file counter information
+	input: file_id
+*/
+int FileGetCPT(const FILE *file_id)
+{
+	#undef FUNC
+	#define FUNC "FileGetCPT"
+	struct s_fileid *curfile;
+	
+	curfile=FileGetStructFromID(file_id);
+	return curfile->cpt;
+}
+/***
+	FileGetCPTFromName
+	
+	Get file counter information
+	input: filename
+*/
+int FileGetCPTFromName(const char *filename)
+{
+	#undef FUNC
+	#define FUNC "FileGetCPTFromName"
+	struct s_fileid *curfile;
+	
+	curfile=FileGetStructFromName(filename);
+	if (!curfile)
+	{
+		logerr("You requested a counter for a file that is not opened! [%s]",filename);
+		exit(INTERNAL_ERROR);
+	}
+	return curfile->cpt;
+}
+
+
+
+char *_internal_fgetsClose(char *buffer, int maxlen, FILE *f)
+{
+	#undef FUNC
+	#define FUNC "_internal_fgetsClose"
+	return NULL;
+}
+
+/***
+	FileReadLine/FileReadLineXML function
+	
+	input:
+	- filename
+
+	output:
+	- a static buffer with the line read
+	
+	this function can handle many file simultaneously
+	just use different filenames without regarding to opened/closed pointer
+	the opened handles are automatically closed when the end of the file is reached	
+	you are only limited by the system, not by the code
+	
+	the XML version ass carriage returns after closing tag
+	this can be usefull for parsing when reading XML file in a single line
+*/
+enum e_reading_mode {
+RAW_READING,
+CLOSE_READING
+};
+
+char *_internal_fgetsmulti(const char *filename, const int read_mode)
+{
+	#undef FUNC
+	#define FUNC "_internal_fgetsmulti"
+	static char buffer[MAX_LINE_BUFFER+1]={0};
+	FILE *last_id=NULL;
+	char * (*_file_get_string)(char *, int, FILE *)=fgets;
+	
+	last_id=FileOpen(filename,"r");
+	
+	switch (read_mode)
+	{
+		default:logerr("Unknown read mode! (%d)",read_mode);
+		case RAW_READING:_file_get_string=fgets;break;
+		case CLOSE_READING:_file_get_string=_internal_fgetsClose;break;
+	}	
+	
+	if (_file_get_string(buffer,MAX_LINE_BUFFER,last_id)!=NULL)
+	{
+		FileIncCPT(last_id);
+		if (strnlen(buffer,MAX_LINE_BUFFER)==MAX_LINE_BUFFER)
+		{
+			logerr("line %d is too long! More than %d characters\n",FileGetCPT(last_id),MAX_LINE_BUFFER);
+			exit(INTERNAL_ERROR);
+		}
+		return buffer;
+	}
+	else
+	{
+		/* End of file, we close the handle */
+		logdebug("%d line(s) read from %s",FileGetCPT(last_id),filename);
+		FileClose(last_id);
+		return NULL;
+	}
+}
+
+char **_internal_fgetsmultilines(const char *filename, const int read_mode)
+{
+	#undef FUNC
+	#define FUNC "_internal_fgetsmultilines"
+	static char buffer[MAX_LINE_BUFFER+1]={0};
+	FILE *last_id=NULL;
+	char * (*_file_get_string)(char *, int, FILE *);
+	char **lines_buffer=NULL;
+	int cur_line=0,max_line=0;
+	
+	last_id=FileOpen(filename,"r");
+	
+	switch (read_mode)
+	{
+		default:logerr("Unknown read mode! (%d)",read_mode);
+		case RAW_READING:_file_get_string=fgets;break;
+		case CLOSE_READING:_file_get_string=_internal_fgetsClose;break;
+	}	
+
+
+	while (_file_get_string(buffer,MAX_LINE_BUFFER,last_id)!=NULL)
+	{
+		FileIncCPT(last_id);
+		if (strnlen(buffer,MAX_LINE_BUFFER)==MAX_LINE_BUFFER)
+		{
+			logerr("line %d is too long! More than %d characters\n",FileGetCPT(last_id),MAX_LINE_BUFFER);
+			exit(INTERNAL_ERROR);
+		}
+		FieldArrayAddDynamicValueConcat(&lines_buffer,&cur_line,&max_line,buffer);
+	}
+	/* if file is empty, we allocate an empty struct */
+	if (!lines_buffer) {
+		/* create the end of the list */
+		lines_buffer=MemMalloc(sizeof(char*));
+		lines_buffer[0]=NULL;
+	}
+
+	/* End of file, we close the handle */
+	logdebug("%d line(s) read from %s",FileGetCPT(last_id),filename);
+	FileClose(last_id);
+
+	return lines_buffer;
+}
+
+#define FileReadClose(filename) _internal_fgetsmulti(filename,CLOSE_READING)
+#define FileReadLine(filename) _internal_fgetsmulti(filename,RAW_READING)
+
+long FileReadPos(const char *filename)
+{
+	#undef FUNC
+	#define FUNC "FileReadPos"
+
+	FILE *last_id;
+
+	last_id=FileOpen(filename,"r");
+	return ftell(last_id);
+}
+
+/***
+
+	FileWriteLine function
+	
+	input:
+	- filename
+	- a buffer with the line to write
+	
+	the function do not close the file until a NULL buffer is sent.
+	It prevents from too much write flushes
+	
+	you can use it with many files simultaneously but do not forget
+	to close your files if you use this function in a loop of filenames
+	or the system will warn you
+*/
+
+void FileWriteLine(const char *filename, const char *buffer)
+{
+	#undef FUNC
+	#define FUNC "FileWriteLine"
+	FILE *last_id=NULL;
+	
+	last_id=FileOpen(filename,"a+");
+
+	if (buffer!=NULL)
+	{	
+		fputs(buffer,last_id);
+		FileIncCPT(last_id);
+	}
+	else
+	{
+		/* NULL buffer sent, this means End of file, we close the handle */
+		//logdebug("%d line(s) written to %s",FileGetCPT(last_id),filename);
+		FileClose(last_id);
+	}
+}
+void FileWriteLines(const char *filename, const char **buffer)
+{
+	#undef FUNC
+	#define FUNC "FileWriteLines"
+	FILE *last_id=NULL;
+	int i;
+	
+	last_id=FileOpen(filename,"a+");
+	for (i=0;buffer[i];i++) {
+		fputs(buffer[i],last_id);
+		FileIncCPT(last_id);
+	}
+	//logdebug("%d line(s) written to %s",FileGetCPT(last_id),filename);
+	FileClose(last_id);
+}
+
+/***
+	FileReadBinary function
+	
+	read n bytes into buffer
+	return number of byte really read
+	
+	as other File functions, you can use it with many files simultaneously
+*/
+int FileReadBinary(const char *filename,char *data,const int n)
+{
+	#undef FUNC
+	#define FUNC "FileReadBinary"
+	FILE *last_id=NULL;
+	int nn;
+	
+	last_id=FileOpen(filename,"rb");
+
+	if (data==NULL)
+	{
+		FileClose(last_id);
+		return 0;
+	}
+#ifdef OS_WIN
+{int sr;
+sr=_setmode(_fileno(last_id), _O_BINARY );
+if (sr==-1) {
+logerr("FATAL: cannot set binary mode for reading");
+exit(ABORT_ERROR);
+}
+}
+#endif
+	
+	nn=fread(data,1,n,last_id);
+	//printf("%d bytes lus\n",nn);
+	FileAddCPT(last_id,nn);
+	if (nn!=n)
+	{
+		/* if eof is set, this is not an error */
+		if (feof(last_id))
+		{
+			//logdebug("%d byte(s) read from %s",FileGetCPT(last_id),filename);
+		}
+		else
+		if (ferror(last_id))
+		{
+			if (!nn) {
+				logerr("cannot read %s",filename);
+			}
+			else {
+				logerr("error %d bytes were read during reading of %d bytes of %s",nn,n,filename);
+			}
+			exit(ABORT_ERROR);
+		}
+		else
+		{
+			logerr("error during read of %s (but no error neither eof flag set)",filename);
+			exit(INTERNAL_ERROR);
+		}				
+		FileClose(last_id);
+	}
+	return nn;
+}
+
+/***
+	FileTruncate function
+	set file to zero size then leave	
+*/
+int FileTruncate(const char *filename)
+{
+#undef FUNC
+#define FUNC "FileTruncate"
+FILE *last_id=NULL;
+
+#ifdef OS_WIN
+int sr;
+last_id=FileOpen(filename,"w");
+sr=_setmode(_fileno(last_id), _O_BINARY );
+if (sr==-1) {
+logerr("FATAL: cannot set binary mode for writing");
+exit(ABORT_ERROR);
+}
+#else
+last_id=FileOpen(filename,"a+");
+#endif
+FileClose(last_id);
+return 0;
+}
+
+/***
+	FileWriteBinary function
+	
+	write n bytes from buffer to file
+	return number of byte really written
+	
+	as other File functions, you can use it with many files simultaneously
+*/
+int FileWriteBinary(const char *filename,const char *data, const int n)
+{
+	#undef FUNC
+	#define FUNC "FileWriteBinary"
+	FILE *last_id=NULL;
+	int nn;
+								
+	#ifdef OS_WIN
+	last_id=FileOpen(filename,"w");
+	#else
+	last_id=FileOpen(filename,"a+");
+	#endif
+	if (!last_id) return -1; // pb ecriture
+
+	if (data!=NULL)
+	{	 
+		#ifdef OS_WIN
+		int sr;
+		sr=_setmode(_fileno(last_id), _O_BINARY );
+		if (sr==-1) {
+			logerr("FATAL: cannot set binary mode for writing");
+			exit(ABORT_ERROR);
+		}				
+		#endif
+		nn=fwrite(data,1,n,last_id);
+		FileAddCPT(last_id,nn);
+		/* we must always write the same amount of data */
+		if (n!=nn)
+		{
+			if (ferror(last_id))
+			{
+				if (!nn) {
+					logerr("cannot write %s",filename);
+					logerr("%s",strerror(errno));
+				}
+				else{
+					logerr("error during write of %s (%d byte(s))",filename,FileGetCPT(last_id));
+				}
+#ifndef INTEGRATED_ASSEMBLY
+		exit(ABORT_ERROR);
+#else
+	return -1;
+#endif
+			}
+			else
+			{
+				logerr("error during write of %s (but no error neither eof flag set) %d byte(s) written",filename,FileGetCPT(last_id));
+#ifndef INTEGRATED_ASSEMBLY
+		exit(ABORT_ERROR);
+#else
+	return -1;
+#endif
+			}
+		}
+	}
+	else
+	{
+		/* NULL buffer sent, this means End of file, we close the handle */
+		//logdebug("%d byte(s) written to %s",FileGetCPT(last_id),filename);
+		FileClose(last_id);
+		nn=0;
+	}
+	return nn;
+}
+/*** macro to close binary files */
+#define FileWriteLineClose(filename) FileWriteLine(filename,NULL)
+#define FileReadBinaryClose(filename) FileReadBinary(filename,NULL,0)
+#define FileWriteBinaryClose(filename) FileWriteBinary(filename,NULL,0)
+
+/***
+	FileGetStat
+	
+	input: filename
+	return the stat structure of a given file
+*/
+struct stat *FileGetStat(const char *filename)
+{
+	#undef FUNC
+	#define FUNC "FileGetStat"
+	struct stat *filestat;
+#ifdef OS_WIN
+	struct _stat winstat;
+#endif
+
+	if (!filename)
+	{
+		logerr("filename must not be NULL");
+		exit(ABORT_ERROR);
+	}
+	/* check after by the system but... */
+	if (strnlen(filename,PATH_MAX)==PATH_MAX)
+	{
+		logerr("cannot open this file because the argument size is bigger than PATH_MAX (%d)",PATH_MAX);
+		logerr("[%s]",filename);
+		exit(ABORT_ERROR);
+	}
+	
+	filestat=MemMalloc(sizeof(struct stat));
+	memset(filestat,0,sizeof(struct stat));
+#ifdef OS_WIN
+	if (_stat(filename,&winstat)!=0)
+#else	
+	if (stat(filename,filestat) && errno!=ENOENT)
+#endif
+	{
+		logerr("stat %s failed",filename);
+		switch (errno)
+		{
+			case EACCES:logerr("Search permission is denied for one of the directories in the path prefix of path.");break;
+			case EBADF:logerr("filedes is bad.");break;
+			case EFAULT:logerr("Bad address.");break;
+			//case ELOOP:logerr("Too many symbolic links encountered while traversing the path.");break;
+			case ENAMETOOLONG:logerr("File name too long.");break;
+			case ENOMEM:logerr("Out of memory (i.e. kernel memory).");break;
+			case ENOTDIR:logerr("A component of the path is not a directory.");break;
+			default:logerr("Unknown error %d during stat: %s",errno,strerror(errno));
+		}
+		exit(ABORT_ERROR);
+	}
+#ifdef OS_WIN
+	filestat->st_size=winstat.st_size;
+	filestat->st_mode=winstat.st_mode;
+	filestat->st_atime=winstat.st_atime; /* last access       */
+	filestat->st_mtime=winstat.st_mtime; /* last modification */
+	filestat->st_ctime=winstat.st_ctime; /* time of creation  */
+#endif
+	return filestat;
+}
+
+/***
+	FileGetSize
+	
+	input: filename
+	output: the size in bytes of the file
+*/
+long long FileGetSize(const char *filename)
+{
+	#undef FUNC
+	#define FUNC "FileGetSize"
+	struct stat *filestat;
+	long long nn;
+	
+	filestat=FileGetStat(filename);
+	nn=filestat->st_size;
+	MemFree(filestat);
+	//logdebug("size of %s = %d (%dkb)",filename,nn,nn/1024);
+	return nn;
+}
+
+/***
+ *	append a string
+ *	return the number of char appened
+ */
+int strappend(char *Adst, const char *Asrc)
+{
+	int Lcpt=0;
+
+	/* must be at the end to concat */
+	while (*Adst) {
+		Adst++;
+	}
+
+	/* concat and count */
+	while (*Asrc) {
+		*Adst++=*Asrc++;
+		Lcpt++;
+	}
+	*Adst=0;
+
+	return Lcpt;
+}
+
+char * TxtTrimEnd(char *in_str)
+{
+	#undef FUNC
+	#define FUNC "TxtTrimEnd"
+
+	char *curs;
+	char *space=NULL;
+
+	curs=in_str;
+	/* read the string and save the first space position, unfollowed by another character */
+	while (*curs) {
+		//if (*curs==' ' || *curs==0x0D || *curs==0x0A || *curs=='\t') {
+		/* this include tab, space, line feed, carriage return, ...*/
+		if (*curs<=' ') {
+			if (!space) {
+				space=curs;
+			}
+		} else {
+			space=NULL;
+		}
+		curs++;
+	}
+	if (space) {
+		*space=0;
+	}
+
+	return in_str;
+}
+
+int LookForFile(const char *filename, const char *dirname)
+{
+	#undef FUNC
+	#define FUNC "LookForFile"
+
+	char fullpath[PATH_MAX+1];	
+	int pathlen;
+
+	/* checked by DirReadEntry but it is more convenient to have an error inside this function */
+	if (!filename)
+	{
+		logerr("You must specify at least a filename with the path, or a filename and a dirname. Filename cannot be NULL!");
+		exit(INTERNAL_ERROR);
+	}
+
+	pathlen=strnlen(filename,PATH_MAX);
+	if (pathlen==PATH_MAX)
+	{
+		logerr("cannot look for this file or directory because the argument size is bigger than PATH_MAX (%d)",PATH_MAX);
+		exit(ABORT_ERROR);
+	}
+
+	if (!dirname) {
+#ifdef OS_WIN
+		if (_access(filename,0)==0) return 1; else return 0;
+#else
+		if (access(filename,F_OK)!=-1) return 1; else return 0;
+#endif
+	} else {
+		pathlen+=strnlen(dirname,PATH_MAX-pathlen);
+		if (pathlen>=PATH_MAX-1)
+		{
+			logerr("cannot look for this file or directory because the full path size is bigger than PATH_MAX (%d)",PATH_MAX);
+			exit(ABORT_ERROR);
+		}
+		sprintf(fullpath,"%s/%s",dirname,filename);
+#ifdef OS_WIN
+		if (_access(fullpath,0)==0) return 1; else return 0;
+#else
+		if (access(fullpath,F_OK)!=-1) return 1; else return 0;
+#endif
+	}
+}
+
+#define FileExists(zefile) LookForFile(zefile,NULL)
+
+int _internal_do_remove(const char *zename, const char *zetype)
+{
+	#undef FUNC
+	#define FUNC "_do_remove"
+
+	if (zename==NULL)
+	{
+		logerr("the argument cannot be NULL");
+		exit(INTERNAL_ERROR);
+	}
+	if (strnlen(zename,PATH_MAX)==PATH_MAX)
+	{
+		logerr("cannot remove this file or directory because the argument size is bigger than PATH_MAX (%d)",PATH_MAX);
+		exit(ABORT_ERROR);
+	}
+	
+	if (remove(zename))
+	{
+		switch (errno)
+		{
+			case EACCES:logerr("Write permission is denied for the directory from which the %s [%s] is to be removed, or the directory has the sticky bit set and you do not own the file.",zetype,zename);break;
+			case EBUSY:logerr("This error indicates that the %s [%s] is being used by the system in such a way that it can't be unlinked. For example, you might see this error if the file name specifies the root directory or a mount point for a file system.",zetype,zename);break;
+			case ENOENT:logerr("The %s named [%s] to be deleted doesn't exist.",zetype,zename);break;
+			case EPERM:logerr("On some systems unlink cannot be used to delete the name of a directory [%s], or at least can only be used this way by a privileged user. To avoid such problems, use rmdir to delete directories.",zename);break;
+			case EROFS:logerr("The directory containing the %s named [%s] to be deleted is on a read-only file system and can't be modified.",zetype,zename);break;
+			case ENOTEMPTY:logerr("The directory [%s] to be deleted is not empty.",zename);break;
+			default:logerr("Unknown error %d during remove [%s]: %s",errno,zename,strerror(errno));
+		}
+		exit(ABORT_ERROR);
+	}
+	//logdebug("%s deleted",zename);
+	return 0;	
+}
+
+#define FileRemove(filename) _internal_do_remove(filename,"file")
+
+void FileRemoveIfExists(const char *filename)
+{
+	#undef FUNC
+	#define FUNC "FileRemoveIfExists"
+	if (FileExists(filename))
+		FileRemove(filename);
+}
+
+
+#ifndef NO_WEB_API
+
+// newtwork API support
+//
+#ifdef OS_WIN
+    #include <winsock2.h>
+    #include <ws2tcpip.h>
+    #pragma comment(lib, "ws2_32.lib")
+    typedef SOCKET socket_t;
+    #define CLOSESOCKET closesocket
+#else
+    #include <sys/types.h>
+    #include <sys/socket.h>
+    #include <netinet/in.h>
+    #include <arpa/inet.h>
+    #include <netdb.h>
+    #include <unistd.h>
+    #include <errno.h>
+    typedef int socket_t;
+    #define CLOSESOCKET close
+    #define INVALID_SOCKET (-1)
+    #define SOCKET_ERROR   (-1)
+#endif
+
+#define RECV_CHUNK_SIZE 4096
+
+static int platform_init(void)
+{
+#ifdef OS_WIN
+    WSADATA wsa;
+    return WSAStartup(MAKEWORD(2, 2), &wsa) == 0 ? 0 : -1;
+#else
+    return 0;
+#endif
+}
+
+static void platform_cleanup(void)
+{
+#ifdef OS_WIN
+    WSACleanup();
+#endif
+}
+
+static int last_error(void)
+{
+#ifdef OS_WIN
+    return WSAGetLastError();
+#else
+    return errno;
+#endif
+}
+
+/* Gestion portable de SIGPIPE lors d'un send() sur un socket dont
+ * le correspondant a ferme la connexion :
+ *  - Linux    : flag MSG_NOSIGNAL passe a send()
+ *  - macOS/BSD: MSG_NOSIGNAL n'existe pas, il faut l'option socket
+ *               SO_NOSIGPIPE posee une fois par socket
+ *  - Windows  : sans objet (pas de signal SIGPIPE) */
+#if defined(__linux__)
+    #define SEND_FLAGS MSG_NOSIGNAL
+#else
+    #define SEND_FLAGS 0
+#endif
+
+static void disable_sigpipe_on_socket(socket_t sock)
+{
+#if defined(__APPLE__)
+    int set = 1;
+    setsockopt(sock, SOL_SOCKET, SO_NOSIGPIPE, (const void *)&set, sizeof(set));
+#else
+    (void)sock;
+#endif
+}
+
+#define CONNECT_TIMEOUT_SECONDS 5
+
+static int set_socket_nonblocking(socket_t sock, int nonblocking)
+{
+#ifdef OS_WIN
+    u_long mode = nonblocking ? 1 : 0;
+    return ioctlsocket(sock, FIONBIO, &mode) == 0 ? 0 : -1;
+#else
+    int flags = fcntl(sock, F_GETFL, 0);
+    if (flags < 0)
+        return -1;
+    flags = nonblocking ? (flags | O_NONBLOCK) : (flags & ~O_NONBLOCK);
+    return fcntl(sock, F_SETFL, flags) == 0 ? 0 : -1;
+#endif
+}
+
+
+/* Tente une connexion avec un delai maximum (en secondes). Sans ca,
+ * un connect() peut rester bloque tres longtemps (timeout TCP systeme,
+ * potentiellement plus d'une minute) si le paquet SYN est filtre
+ * silencieusement par un pare-feu ou par une permission systeme
+ * (observe notamment avec la permission "Reseau local" sur macOS).
+ * Retourne 0 si connecte, -1 sinon (timeout, refus, ou autre erreur). */
+static int connect_with_timeout(socket_t sock, const struct sockaddr *addr,
+                                 int addr_len, int timeout_sec)
+{
+    int ret;
+
+    if (set_socket_nonblocking(sock, 1) != 0)
+        return connect(sock, addr, addr_len); /* repli : connexion bloquante classique */
+
+    ret = connect(sock, addr, addr_len);
+    if (ret == 0) {
+        set_socket_nonblocking(sock, 0);
+        return 0; /* connexion immediate (ex: localhost) */
+    }
+
+#ifdef OS_WIN
+    if (WSAGetLastError() != WSAEWOULDBLOCK) {
+        set_socket_nonblocking(sock, 0);
+        return -1;
+    }
+#else
+    if (errno != EINPROGRESS) {
+        set_socket_nonblocking(sock, 0);
+        return -1;
+    }
+#endif
+
+    {
+        fd_set write_fds;
+        struct timeval tv;
+        int sel;
+
+        FD_ZERO(&write_fds);
+        FD_SET(sock, &write_fds);
+        tv.tv_sec = timeout_sec;
+        tv.tv_usec = 0;
+
+        sel = select((int)sock + 1, NULL, &write_fds, NULL, &tv);
+        if (sel <= 0) {
+            /* timeout (sel == 0) ou erreur select() : on abandonne */
+            set_socket_nonblocking(sock, 0);
+            return -1;
+        }
+    }
+
+    /* Le socket est pret en ecriture : encore faut-il verifier que la
+       connexion a reellement reussi (et pas juste ete refusee) */
+    {
+        int so_error = 0;
+#ifdef OS_WIN
+        int len = sizeof(so_error);
+#else
+        socklen_t len = sizeof(so_error);
+#endif
+        if (getsockopt(sock, SOL_SOCKET, SO_ERROR, (char *)&so_error, &len) != 0
+            || so_error != 0) {
+            set_socket_nonblocking(sock, 0);
+            return -1;
+        }
+    }
+
+    set_socket_nonblocking(sock, 0);
+    return 0;
+}
+
+
+static int socket_send_all(socket_t sock, const unsigned char *data, unsigned int len)
+{
+    unsigned int sent_total = 0;
+    while (sent_total < len) {
+        int sent = send(sock, (const char *)data + sent_total, (int)(len - sent_total), SEND_FLAGS);
+        if (sent == SOCKET_ERROR || sent <= 0)
+            return -1;
+        sent_total += (unsigned int)sent;
+    }
+    return 0;
+}
+
+int tcp_send_receive(const char *host, unsigned short port,
+                      const unsigned char *send_data, unsigned int send_len,
+                      unsigned char **recv_data, unsigned int *recv_len)
+{
+    struct addrinfo hints, *result = NULL, *rp;
+    char port_str[16];
+    socket_t sock = INVALID_SOCKET;
+    unsigned char *buffer = NULL;
+    unsigned int capacity = 0;
+    unsigned int total_received = 0;
+    int ret; 
+    
+    if (!host || !recv_data || !recv_len)
+        return -1;
+        
+    *recv_data = NULL;
+    *recv_len = 0;
+
+    if (platform_init() != 0)
+        return -1;
+
+    snprintf(port_str, sizeof(port_str), "%u", (unsigned int)port);
+        
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family = AF_UNSPEC;      /* IPv4 ou IPv6, peu importe */
+    hints.ai_socktype = SOCK_STREAM;
+            
+    ret = getaddrinfo(host, port_str, &hints, &result);
+    if (ret != 0) {
+        printf(KERROR"Erreur getaddrinfo(%s:%u) : %d\n"KNORMAL, host, port, ret);
+        platform_cleanup();
+        return -1;
+    }       
+     
+    /* On essaie chaque adresse resolue jusqu'a ce qu'une connexion reussisse */
+    for (rp = result; rp != NULL; rp = rp->ai_next) {
+        sock = socket(rp->ai_family, rp->ai_socktype, rp->ai_protocol);
+        if (sock == INVALID_SOCKET)
+            continue;
+        
+        //if (connect(sock, rp->ai_addr, (int)rp->ai_addrlen) == 0)
+	if (connect_with_timeout(sock, rp->ai_addr, (int)rp->ai_addrlen, CONNECT_TIMEOUT_SECONDS) == 0) {
+            disable_sigpipe_on_socket(sock);
+            break; /* connexion reussie */
+        }
+            
+        CLOSESOCKET(sock);
+        sock = INVALID_SOCKET;
+    }       
+            
+    freeaddrinfo(result);
+            
+    if (sock == INVALID_SOCKET) {
+        printf(KERROR"Impossible de se connecter a %s:%u (%d)\n"KNORMAL,
+                host, port, last_error());
+        platform_cleanup();
+        return -1;
+    }
+
+    /* Envoi des donnees */
+    if (send_len > 0 && socket_send_all(sock, send_data, send_len) != 0) {
+        printf(KERROR"Erreur send() (%d)\n"KNORMAL, last_error());
+        CLOSESOCKET(sock);
+        platform_cleanup();
+        return -1;
+    }
+
+    /* Reception de la reponse : on lit jusqu'a fermeture par le serveur */
+    capacity = RECV_CHUNK_SIZE;
+    buffer = (unsigned char *)MemMalloc(capacity);
+    if (!buffer) {
+        printf(KERROR"Erreur allocation memoire\n"KNORMAL);
+        CLOSESOCKET(sock);
+        platform_cleanup();
+        return -1;
+    }
+
+    for (;;) {
+        int received;
+
+        if (total_received + RECV_CHUNK_SIZE > capacity) {
+            unsigned char *tmp;
+            capacity *= 2;
+            tmp = (unsigned char *)MemRealloc(buffer, capacity);
+            if (!tmp) {
+                fprintf(stderr, "Erreur reallocation memoire\n");
+                MemFree(buffer);
+                CLOSESOCKET(sock);
+                platform_cleanup();
+                return -1;
+            }
+            buffer = tmp;
+        }
+
+        received = recv(sock, (char *)buffer + total_received,
+                         (int)(capacity - total_received), 0);
+
+        if (received > 0) {
+            total_received += (unsigned int)received;
+        } else if (received == 0) {
+            break; /* le serveur a ferme la connexion : fin normale */
+        } else {
+            printf(KERROR"Erreur recv() (%d)\n"KNORMAL, last_error());
+            MemFree(buffer);
+            CLOSESOCKET(sock);
+            platform_cleanup();
+            return -1;
+        }
+    }
+
+    CLOSESOCKET(sock);
+    platform_cleanup();
+
+    *recv_data = buffer;
+    *recv_len = total_received;
+    return 0;
+}
+#endif  // NO_WEB_API
+
+
+#undef __FILENAME__

@@ -1,0 +1,7 @@
+* text=auto
+*.bin binary
+*.ROM binary
+*.rom binary
+*.cpr binary
+*.dll binary
+*.exe binary

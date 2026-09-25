@@ -1,0 +1,29 @@
+# Build output
+/build/
+/build-*/
+*.o
+*.obj
+*.a
+
+# SDL2 is fetched separately (see third_party/SDL2/README.md)
+/third_party/SDL2/*
+!/third_party/SDL2/README.md
+
+# Settings written next to the executable
+cpcse.ini
+cpcse_layout.ini
+imgui.ini
+
+# Ready-built binaries are published as a GitHub Release zip, not in the repository
+/bin/
+
+# Software you load is yours to keep out of the repository. (The Amstrad firmware
+# and the Plus system cartridge in /roms/ ARE tracked -- see roms/README.txt.)
+/media/
+
+# Editor / OS noise
+.vscode/
+.idea/
+*.swp
+Thumbs.db
+desktop.ini
