@@ -116,6 +116,26 @@ inline constexpr int MONITOR_HPULSE_MIN = 4;
 // The old model was the same shape read off the A, B and C groups only -- width x 7/20
 // and 4/20 -- which gave 22/17/11/6 and 12/10/6, i.e. a Pixel-M2 out on three of the
 // eight cells. These reproduce all eight exactly.
+// THE AFC'S INTEGRATOR, from the LA7800's sample application circuit (docs/LA7800.pdf p.2):
+// pin 1, the AFC output, carries 1 uF in series with 4.7 kohm (a lag-lead filter) with
+// 0.01 uF across it; the 56k from pin 1 goes to pin 2, the oscillator's control, and is
+// NOT the filter's resistor -- an earlier note read it as a 56 ms filter. 4.7k x 1 uF is
+// 4.7 ms, 73 lines of 64 usec. A sustained phase error is followed with that time
+// constant; one odd line is followed by 1/73 of itself, which rounds to nothing.
+//
+// That is what the hardware shows on both kinds of screen: a single transitional line
+// (SHAKER AR's first three-sync line) leaves the stripes straight, and a band of dozens of
+// lines carrying a second sync (D1, D3, DH) is dragged across progressively -- the LEAN
+// the photographs show and neither this model nor AmSpiriT used to draw.
+inline constexpr int MONITOR_AFC_LINES = 73;
+// How far the slow part goes, as a multiple of the discriminator's fast target. The
+// datasheet has no loop gain; this is read off SHAKER D3/A4 and D3/B8 on a real CTM (see
+// CtmMonitor::decide, branch 'd').
+inline constexpr int MONITOR_AFC_SLOW_GAIN = 2;
+// How far the line's own sync may sit from where the oscillator expects it for the slow part
+// to act (Pixel-M2). Bracketed by two photographs: D3/A11 (pendPhase -100) drifts, AR/A1
+// (-317) does not; 8 characters is between them, not derived.
+inline constexpr int MONITOR_AFC_LOCK16 = 8 * 16;
 inline constexpr int MONITOR_PHASE_DEAD16 = 9;      // no response below this pulse width
 inline int monitorPhasePullLate16(int pulseWidth16) {
     const int effective = pulseWidth16 - MONITOR_PHASE_DEAD16;
@@ -151,11 +171,23 @@ inline constexpr int MONITOR_PHASE_TIPS = 8;         // tips a window can hold
 inline constexpr int MONITOR_PHASE_WINDOW = 496;     // 31.0 characters: no response at all
 inline constexpr int MONITOR_PHASE_FLAT = 422;       // 26.4 characters: saturated to here
 // What the taper leaves of a saturated pull at this distance.
-inline int monitorPhaseTaper(int pull, int distance16) {
-    if (distance16 <= MONITOR_PHASE_FLAT) return pull;
-    if (distance16 >= MONITOR_PHASE_WINDOW) return 0;
-    const int span = MONITOR_PHASE_WINDOW - MONITOR_PHASE_FLAT;
-    return (pull * (MONITOR_PHASE_WINDOW - distance16) + span / 2) / span;
+// THE EARLY SIDE IS SHORTER. Everything above was measured on the LATE side: D3's A, B,
+// C and D groups put a later second sync at 7..19 characters (saturated) and 29..31
+// (tapering), but an EARLIER one only at 7..12, every one saturated. SHAKER AR on CRTC 3
+// and 4 puts one exactly 20 characters early (C-SYNC at C0=29 and 49 -- the ASIC takes
+// its R2=9 write on the 4th usec, ACCC 4.4.3, so the third sync CRTC 0-2 get is not there),
+// and its photographs and AmSpiriT both keep that band where it belongs. So early: full
+// to 12 characters, the last measured saturated point, and nothing by 20, the first
+// measured zero; the taper between is the straight line through those two measurements.
+inline constexpr int MONITOR_PHASE_FLAT_EARLY = 12 * 16;
+inline constexpr int MONITOR_PHASE_WINDOW_EARLY = 20 * 16;
+inline int monitorPhaseTaper(int pull, int distance16, bool early = false) {
+    const int flat = early ? MONITOR_PHASE_FLAT_EARLY : MONITOR_PHASE_FLAT;
+    const int window = early ? MONITOR_PHASE_WINDOW_EARLY : MONITOR_PHASE_WINDOW;
+    if (distance16 <= flat) return pull;
+    if (distance16 >= window) return 0;
+    const int span = window - flat;
+    return (pull * (window - distance16) + span / 2) / span;
 }
 inline constexpr int MONITOR_PHASE_NO_TIP = 1 << 24;
 
@@ -198,6 +230,9 @@ struct MonitorRendererState {
     long long pixelClock = 0, lastLineSyncAt = -1;
     long long fieldPeriodSum = 0;
     int fieldPeriodCount = 0;
+    std::array<int, MONITOR_PHASE_TIPS> curWid{}, pendWid{};
+    int widthSlot = -1;
+    bool widthSlotPend = false;
 };
 
 class CtmMonitor {
@@ -289,6 +324,11 @@ public:
     int pendSince = 0, pendN = 0;
     std::array<int, MONITOR_PHASE_TIPS> pendErr{};
     int pendStable = 0, pendPhase = 0;                                  // the one-sync decision, taken as it was
+    // Each tip's OWN width, filled in when it ends (the pull a pulse exerts depends on
+    // its width -- monitorPhasePullLate16 -- and an interloper is not the line sync).
+    std::array<int, MONITOR_PHASE_TIPS> curWid{}, pendWid{};
+    int widthSlot = -1;                                                 // tip awaiting its width
+    bool widthSlotPend = false;                                         // ...in pend*, else cur*
     bool tipInWindow = false;                                           // hsyncMatch set inside it
     int preCurN = 0, prePendN = 0;                                      // undo for a too-short tip
     // THE LINE PERIOD, MEASURED BETWEEN LINE SYNCS. It used to be counted by sinceLastSync,
@@ -334,12 +374,14 @@ public:
     // sync starts the line AT it, so this line moves by the snap too, not only the next.
     // The host adds it to the line in progress; cleared at every flyback.
     int lineSnap16 = 0;
+    int afcCharge = 0;              // the AFC capacitor's slow pull x MONITOR_AFC_LINES (decide(), 'd')
     // THE LAST DECISION, for diagnostics: which branch decide() took, the phase it acted on
     // and how far it moved the sweep, with a sequence number so the host can tell a new one.
     // The host files it on the line being swept, so a drawn row can be tied to the decision
     // that placed it (CPCSE_TRACE_ROW) -- traces keyed to "the field after the shot" were
     // the wrong field on screens that alternate by frame.
     int decisionPhase = 0, decisionMove = 0, decisionTips = 0;
+    int decisionPull = 0, decisionWidth = 0, decisionSlow = 0;   // 'd': farPull, pulse width, AFC slow part
     char decisionBranch = '-';
     long decisionSeq = 0;
     int measuredPeriod = MONITOR_HSYNC_MID;   // interval between accepted line syncs

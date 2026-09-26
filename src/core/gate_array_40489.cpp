@@ -18,6 +18,11 @@ struct GateArray40489 : GateArrayModel {
     // ACCC §9.3.4.3 (p.57) gives the shifted-in bit for the 40010 and the 40008 only;
     // nothing for this ASIC. It keeps the 40010's 0 rather than an invented value.
     int modeSwitchFillBit() const override { return 0; }
+
+    // ACCC §9 (p.46), §9.3.4.3 (p.59) and §14.5.4 (p.139) set the 40007/40008 apart from
+    // the 40010 alone; nothing puts this ASIC with them, so it keeps the 40010's timing.
+    int modeSwitchDecodeLead() const override { return 0; }
+    int hsyncBlackEndLag() const override { return 0; }
 };
 
 const GateArray40489 instance;

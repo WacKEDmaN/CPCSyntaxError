@@ -277,8 +277,8 @@ void GateArray::onCrtcVsyncPin(bool high) {
 // The C-HSYNC half of "HSYNC-CRTC Transition ON -> OFF" on its own: the pin falls this
 // chip's residue past the end of the character, exactly as onHsync would arm it, for a
 // CRTC whose HSYNC end the rest of this chip only hears about late.
-void GateArray::armCHsyncFall() {
-    hsyncPinFallIn = PIXELS_PER_CHARACTER + hsyncFallPhase16;
+void GateArray::armCHsyncFall(int delayCharacters) {
+    hsyncPinFallIn = PIXELS_PER_CHARACTER * (1 + delayCharacters) + hsyncFallPhase16;
     cHsyncFallArmed = true;
 }
 

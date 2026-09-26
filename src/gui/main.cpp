@@ -188,10 +188,10 @@ int main(int argc, char** argv) {
         }
     }
     // Headless screenshot: exercise the exact EmuHost boot/render path the GUI
-    // uses, with no window. --shot out.bmp [--model id] [--sna f] [--crtc N]
+    // uses, with no window. --shot out.bmp [--model id] [--sna f] [--crtc N] [--gate-array 40007|40008|40010]
     // [--frames N] [--beam].
     {
-        std::string shot, modelId, snaPath, saveSnaPath, dumpRamPath, diskPath, cartPath, tapePath, typeStr, keysStr; int wantCrtc = -1, frames = 200, f1at = -1, wantRam = -1, seq = 0; bool beam = false, diag = false;
+        std::string shot, modelId, snaPath, saveSnaPath, dumpRamPath, diskPath, cartPath, tapePath, typeStr, keysStr; int wantCrtc = -1, wantGa = 0, frames = 200, f1at = -1, wantRam = -1, seq = 0; bool beam = false, diag = false;
         for (int i = 1; i < argc; i++) { std::string a = argv[i];
             if (a == "--shot" && i + 1 < argc) shot = argv[++i];
             else if (a == "--ram" && i + 1 < argc) wantRam = std::atoi(argv[++i]);
@@ -206,6 +206,7 @@ int main(int argc, char** argv) {
             else if (a == "--keys" && i + 1 < argc) keysStr = argv[++i];   // tap after F1 loads: e.g. "Space" launches PD ball
             else if (a == "--f1at" && i + 1 < argc) f1at = std::atoi(argv[++i]);
             else if (a == "--crtc" && i + 1 < argc) wantCrtc = std::atoi(argv[++i]);
+            else if (a == "--gate-array" && i + 1 < argc) wantGa = std::atoi(argv[++i]);   // 40007/40008/40010
             else if (a == "--frames" && i + 1 < argc) frames = std::atoi(argv[++i]);
             else if (a == "--seq" && i + 1 < argc) seq = std::atoi(argv[++i]);   // save this many CONSECUTIVE frames (motion) from --frames
             else if (a == "--diag") diag = true;
@@ -213,6 +214,7 @@ int main(int argc, char** argv) {
         if (!shot.empty()) {
             attachParentConsole();
             EmuHost host; host.scanModels();
+            host.gateArrayPart = wantGa;
             int mi = 0; for (int i = 0; i < (int)host.models.size(); i++) if (host.models[i].id == modelId) mi = i;
             host.bootModel(mi, wantRam, wantCrtc);
             if (!snaPath.empty()) host.loadSnapshot(snaPath);
@@ -498,6 +500,7 @@ int main(int argc, char** argv) {
     host.symbifaceModule = gets("symbiface", "none");
     host.mouseSensitivity = (float)getf("mousesens", 1.0);
 
+    host.gateArrayPart  = geti("gatearray", 0);            // applied by bootModel
     // Boot the default machine.
     std::string savedModel = gets("model", "");
     int savedRam = geti("ram", -1), savedCrtc = geti("crtc", -1);
@@ -670,6 +673,7 @@ int main(int argc, char** argv) {
             f << "autoboot=1\n";
             f << "monitor=" << host.monitorMode << "\n";
             f << "monitorset=" << host.monitorSetId << "\n";
+            f << "gatearray=" << host.gateArrayPart << "\n";
             f << "audio=" << (host.audioEnabled ? 1 : 0) << "\n";
             f << "volume=" << host.masterVolume << "\n";
             f << "dac=" << host.dacType << "\n";

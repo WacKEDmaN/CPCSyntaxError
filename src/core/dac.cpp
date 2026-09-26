@@ -58,7 +58,7 @@ void CpcDac::writePort(int port, int value) {
     } else if ((mode == "printer" || mode == "matrix") && isPrinterPort(port)) {
         bool strobe = !!(value & 0x80);
         if (strobe && !printerStrobe) {
-            int ch = value & 0x7f;
+            int ch = (value & 0x7f) | (printerHighBit ? 0x80 : 0);
             if (onPrinterStrobe) onPrinterStrobe(ch);
             if (mode == "matrix") { if (onMatrixPrinterByte) onMatrixPrinterByte(ch); }
             else if (ch >= 32 || ch == 10 || ch == 13) { if (onPrinterChar) onPrinterChar(std::string(1, (char)ch)); }

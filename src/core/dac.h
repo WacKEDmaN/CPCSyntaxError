@@ -20,6 +20,7 @@ public:
     std::string printerBuffer;
     int printerInitSeen = 0;
     bool printerStrobe = false;
+    int printerHighBit = 0;    // D7 of the printer, driven by the host (CRTC 3: R12 bit 3)
     std::function<void(const std::string&)> onPrinterChar;
     std::function<void(int)> onMatrixPrinterByte;
     std::function<void(int)> onPrinterStrobe;

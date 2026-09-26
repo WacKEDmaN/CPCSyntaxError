@@ -41,6 +41,14 @@ public:
     bool legacyDmaPauseTiming = false;
     int irqStatus = 0, plus8kBug = 6;
     int lastReadValue = 0;
+    // Arnold V specification §2.9, "Analogue paddle ports": an octal 6-bit A/D, "a bank of
+    // eight, 6 bit, read-only registers from 6808h to 680Fh, known as ADC0-7... The A/D
+    // inputs have an input range of 0V (data = 00) to 2.5V (data = 3Fh), and an input
+    // impedance of 180k to Vcc" -- so a channel with nothing plugged in floats up to 3Fh.
+    // ADC5 and ADC7 read 0, as this core's register page always has; the specification
+    // gives no per-channel value ("eight analogue input channels... of which only four have
+    // connectors"). A host drives the channels from paddles or an analogue stick.
+    std::array<uint8_t, 8> analogueInput{ { 0x3f, 0x3f, 0x3f, 0x3f, 0x3f, 0x00, 0x3f, 0x00 } };
     std::array<DmaChannel, 3> dma{};
     int dmaCycle = 0, dmaCycleDelay = 0;
     AY38912* dmaAy = nullptr;

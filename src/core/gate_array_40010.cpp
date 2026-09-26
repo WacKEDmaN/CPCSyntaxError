@@ -18,6 +18,12 @@ struct GateArray40010 : GateArrayModel {
     // ACCC §9.3.4.3 (p.57): the bits already consumed by the starting mode "are
     // considered to be 0 (GA 40010) or 1 (GA 40008)". This is the 40010, so 0.
     int modeSwitchFillBit() const override { return 0; }
+
+    // ACCC §9 (p.46), §9.3.4.3 (p.59) and §14.5.4 (p.139) measure the 40007/40008
+    // AGAINST this chip: it is the reference, so neither the decoder lead nor the longer
+    // HSYNC black.
+    int modeSwitchDecodeLead() const override { return 0; }
+    int hsyncBlackEndLag() const override { return 0; }
 };
 
 const GateArray40010 instance;

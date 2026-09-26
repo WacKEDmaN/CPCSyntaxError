@@ -186,10 +186,18 @@ public:
     // stretched every C-HSYNC by a usec: 64 Pixel-M2 wide at R3l=5, where §14.4 has the
     // pulse shrink with R3l "whatever the type", and 48 at R3l=4.
     //
-    // So the host arms the pin's fall on time (armCHsyncFall), and the deferred onHsync
-    // that follows skips re-arming it. Set by the arm, consumed by that deferred call.
+    // So the host arms the pin's fall itself (armCHsyncFall), and the deferred onHsync that
+    // follows skips re-arming it. Set by the arm, consumed by that deferred call.
+    //
+    // UPDATE: the START is delayed now (onHsyncStart, with the monitor sets' calibration
+    // absorbing it -- §15.1), and the fall has to travel with it: the WHOLE HSYNC is late.
+    // Left "on time", the pulse came out a microsecond short at every R3l -- 64/0/16/32/48
+    // Pixel-M2 for R3l 2..6, the R3l=2 end arriving before the start and being lost, so
+    // SHAKER AR's R3l=2 sliver became a full 4 usec second sync and the monitor pulled the
+    // band 13 px (ga-check checkAsicCHsync). `delayCharacters` is the chip's
+    // hsyncDisplayDelayCharacters().
     bool cHsyncFallArmed = false;
-    void armCHsyncFall();
+    void armCHsyncFall(int delayCharacters);
     void endCHsync();                   // close the pulse and publish its width
     bool sigGaHsync = false;            // HIGH = active
     bool sigGaVsync = false;

@@ -20,6 +20,11 @@ struct GateArray40226 : GateArrayModel {
     // Nothing is stated for this ASIC, so it keeps the commonest value rather than an
     // invented one; revisit if the chapter ever measures it.
     int modeSwitchFillBit() const override { return 0; }
+
+    // ACCC §9 (p.46), §9.3.4.3 (p.59) and §14.5.4 (p.139) set the 40007/40008 apart from
+    // the 40010 alone; nothing puts this ASIC with them, so it keeps the 40010's timing.
+    int modeSwitchDecodeLead() const override { return 0; }
+    int hsyncBlackEndLag() const override { return 0; }
 };
 
 const GateArray40226 instance;

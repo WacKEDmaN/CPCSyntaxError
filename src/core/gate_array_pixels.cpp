@@ -72,9 +72,9 @@ void GateArray::bytePens(int byte, int modeBefore, int modeAfter, int switchPixe
     // Only from a MODE 2 source: 1/16 MHz is one whole bit of the decoder only when it
     // is consuming a bit per Pixel-M2. p.61's MODE 0 table is printed once "for the
     // GATE ARRAY 40007, 40008 and 40010" — from the wider modes the two parts agree.
-    int fill = model ? model->modeSwitchFillBit() : 0;
-    int newModeRotationBias = (fill && switchPixel < 8 && modeAfter != modeBefore
-        && modeBefore == 2) ? -1 : 0;
+    int lead = model ? model->modeSwitchDecodeLead() : 0;
+    int newModeRotationBias = (switchPixel < 8 && modeAfter != modeBefore
+        && modeBefore == 2) ? -lead : 0;
     int rotation = 0;
     int pixel = 0;
     while (pixel < 8) {

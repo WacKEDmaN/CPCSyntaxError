@@ -312,6 +312,22 @@ struct CrtcType2 : CrtcBehaviour {
         if (crtc.displayMode() == 3) return crtc.ivmRaster == ((crtc.registers[9] & 0x1f) >> 1);
         return crtc.rasterMatchesMaximum();
     }
+    // ACCC §11.3 (p.86): the end of the R5 count hands the frame back to the Last Line
+    // state -- "The 'latest line' state is then processed correctly and led to reset C4"
+    // -- and §12.4.1 (p.94) says the same of any adjustment: "it will return to 0 once
+    // the additional line handling is complete, as this process sets the 'Last Line'
+    // state". So the LAST adjustment line is a last line for §20.3.3's VMA'=R12/R13,
+    // which is how the frame after the R5 lines starts on R12/R13 at all: VMA' has been
+    // taking VMA at every C9=R9 in between (§11.2.3). SHAKER BRETURN (module B "R5
+    // STORIES") writes R12 after C0=R1 of the frame's last line; the photographed CRTC 2
+    // shows the next frame from that R12, 24 adjustment lines later.
+    // The line is the last one when C5+1 reaches R5 (§11.3.1) and §11.9's interlace line
+    // does not follow it -- or is the interlace line itself.
+    bool endsAdjustment(CRTC6845& crtc) const {
+        if (crtc.verticalAdjust != 1) return false;
+        if (crtc.adjustmentInterlaceExtra != 0) return true;
+        return !((crtc.displayMode() & 1) && addsInterlaceLine(crtc));
+    }
     void reloadNextRowAddress(CRTC6845& crtc) const override {
         // ACCC §20.3.3: "VMA' is a transient pointer updated with VMA when C0 reaches
         // R1 (and C9=R9). It allows to move forward in the video ram when all the
@@ -324,7 +340,7 @@ struct CrtcType2 : CrtcBehaviour {
         // positions this state). This implies that changing R9 before equality C0=R1
         // does not prevent this assignment." So the R12/R13 branch is NOT gated on the
         // raster match — only the ordinary VMA'=VMA step is.
-        if (crtc.lastFrameLine) {
+        if (crtc.lastFrameLine || endsAdjustment(crtc)) {
             // ACCC §17.4.3 (p.185): "There is indeed a bug when updating VMA' with
             // R12/R13 at position C0=0. To update VMA' with R12/R13, the CRTC in
             // principle carries out two logical operations: VMA'=VMA' AND (R12 x 256 +

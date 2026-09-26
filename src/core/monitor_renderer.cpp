@@ -28,12 +28,13 @@ void CtmMonitor::reset() {
     tipRetriggered = false;
     lastPulseWidth = 4;
     lineSyncAt = -1; tipStartAt = 0;
+    afcCharge = 0;
     lineSnap16 = 0;
     measuredPeriod = MONITOR_HSYNC_MID;
     sinceLastSync = 0;
     separator = 0;
     vsyncSeparated = false;
-    curN = 0; curErr.fill(0);
+    curN = 0; curErr.fill(0); curWid.fill(0); pendWid.fill(0); widthSlot = -1; widthSlotPend = false;
     pendActive = false;
     pendSince = 0; pendN = 0; pendErr.fill(0);
     pendStable = 0; pendPhase = 0;
@@ -66,6 +67,7 @@ void CtmMonitor::decide() {
         ~Record() { m.decisionMove = m.hsyncCount - before; m.decisionSeq += 1; }
     } record{*this, countBefore};
     decisionTips = pendN; decisionPhase = pendPhase; decisionBranch = '-';
+    decisionPull = 0; decisionWidth = lastPulseWidth; decisionSlow = 0;
     // A tip that arrived inside the window recorded its position BEFORE the pull below
     // moved the counter; where the flyback used to pull first, it recorded it after. Carry
     // it along with the pull so the next flyback sees the same distance either way.
@@ -78,7 +80,7 @@ void CtmMonitor::decide() {
     // The tip nearest the expected sync is the line sync. Every other one outside the
     // dead zone and inside the ramp adds the ramp's saturated end value, signed by its
     // side of the line sync and weighted by the side's own gain.
-    int nearest = MONITOR_PHASE_NO_TIP, farPull = 0;
+    int nearest = MONITOR_PHASE_NO_TIP, farPull = 0, flatPull = 0;
     int best = 0;
     for (int i = 1; i < pendN; i += 1)
         if (std::abs(pendErr[i]) < std::abs(pendErr[best])) best = i;
@@ -98,8 +100,8 @@ void CtmMonitor::decide() {
         lastLineSyncAt = at;
     }
     // The LA7800's AFC filter is 4.7k x 1uF -- 4.7 ms, about 73 line periods (see
-    // docs/LA7800.pdf p.2's application circuit; the 56k there goes to the oscillator's
-    // control pin, not the filter). A loop that slow barely responds to the four lines of a
+    // MONITOR_AFC_LINES; the 56k in docs/LA7800.pdf p.2 goes to the oscillator's control
+    // pin, not the filter). A loop that slow barely responds to the four lines of a
     // vertical pulse, and it must not respond at all: §16.2.2's C-SYNC is
     // an XNOR, so inside the vertical pulse the line information is INVERTED and the
     // edges the separator hands over are irregular. MEASURED off the recorded pin at
@@ -131,19 +133,54 @@ void CtmMonitor::decide() {
             if (std::abs(apart) >= MONITOR_PHASE_WINDOW) continue;      // the next line's
             // The saturated pull for this pulse, tapered by where in the half line the
             // tip fell -- both measured, see the header.
-            const int pull = monitorPhaseTaper(apart > 0 ? monitorPhasePullLate16(lastPulseWidth)
-                                                         : monitorPhasePullEarly16(lastPulseWidth),
-                                               std::abs(apart));
+            // ...and THIS pulse's width, not the line sync's. It used to take lastPulseWidth,
+            // the width of the sync the sweep locked to: harmless on D3, whose interloper is a
+            // full C-HSYNC too, but SHAKER AR on CRTC 3/4 puts a line sync of 64 Pixel-M2 next
+            // to an R3l=2 pulse a few Pixel-M2 wide, and pulled the band 13 px at the full
+            // pulse's strength -- where AmSpiriT and the photograph show it lined up.
+            const int width = pendWid[i] > 0 ? pendWid[i] : lastPulseWidth;
+            decisionWidth = pendWid[i];                                  // diagnostics: the interloper's
+            const int pull = monitorPhaseTaper(apart > 0 ? monitorPhasePullLate16(width)
+                                                         : monitorPhasePullEarly16(width),
+                                               std::abs(apart), apart < 0);
             farPull += apart > 0 ? pull : -pull;
+            if (std::abs(apart) <= (apart < 0 ? MONITOR_PHASE_FLAT_EARLY : MONITOR_PHASE_FLAT))
+                flatPull += apart > 0 ? pull : -pull;
         }
     }
     if (farPull != 0) {
         decisionBranch = 'd';                   // discriminator: a second sync on the line
-        const int phase = nearest + farPull;
+        // The discriminator's pull has TWO parts on the real set, and the photographs of
+        // SHAKER D3 show both (measured row by row, ruler = the panel's width): a fast one,
+        // 16 px within two lines on D3/A4 and 14 on D3/B8 -- the response this loop has
+        // always drawn -- and then a slow drift that is still going when the 64-line band
+        // ends, 45 px in all on A4 and 25 on B8. The slow part is the AFC filter's
+        // capacitor charging: the LA7800's 4.7k x 1uF (MONITOR_AFC_LINES) sets its time
+        // constant, and the datasheet gives no loop gain, so how far it goes is read off
+        // those two photographs (MONITOR_AFC_SLOW_GAIN: the fast target plus 2x it through
+        // the RC reaches 2.16x the fast target at 64 lines, which is 45 on A4 and 22 on B8;
+        // D3/A11 ends at 29 on the photo, 28 here).
+        //
+        // ONLY for a second sync on the flat of the ramp. SHAKER AT and AY put theirs 26-31
+        // characters away, on the taper, and their photographs show the fast part alone: the
+        // block jumps ~16 px in five lines and then holds (AY/H even eases back 4). D3's sit
+        // 7-19 characters away, on the flat, and all of them keep drifting.
+        //
+        // ...and ONLY while the line's own sync is in lock. The capacitor's drift is the loop
+        // following a bias on a sync it is tracking; SHAKER AR moves R2 itself, its line
+        // sync lands ~20 characters from where the oscillator expects it (pendPhase -317 on
+        // AR/A1), and its photographs have no fast jump and only a slow +10 px. D3/A11's
+        // reads -100 and its photograph drifts. MONITOR_AFC_LOCK16 sits between those two
+        // measured points; AR's own response (slow only) is not modelled yet.
+        const bool inLock = std::abs(pendPhase) <= MONITOR_AFC_LOCK16;
+        afcCharge += MONITOR_AFC_SLOW_GAIN * (inLock ? flatPull : 0) - afcCharge / MONITOR_AFC_LINES;
+        const int phase = nearest + farPull + afcCharge / MONITOR_AFC_LINES;
+        decisionPull = farPull; decisionSlow = afcCharge / MONITOR_AFC_LINES;
         if (phase < 0) hsyncCount += phase < -5 ? 3 : 1;
         else if (phase > 0) hsyncCount -= phase > 5 ? 3 : 1;
         return;
     }
+    afcCharge = 0;                              // the band is over; the lock takes it back
     if (pendStable > 0) {
         decisionBranch = 'l';                   // locked: gentle pull, or a re-lock snap
         const int phase = pendPhase;
@@ -323,6 +360,10 @@ bool CtmMonitor::clockPixel(bool csyncActive) {
             // ...and the discriminator never saw it either.
             curN = preCurN; pendN = prePendN;
         }
+        if (widthSlot >= 0 && pulseWidth > 0) {
+            (widthSlotPend ? pendWid : curWid)[widthSlot] = pulseWidth;
+            widthSlot = -1;
+        }
         tipRetriggered = false;
         pulseWidth = 0;
     }
@@ -336,8 +377,15 @@ bool CtmMonitor::clockPixel(bool csyncActive) {
         // A tip inside the last flyback's deferred window belongs to THAT decision, late
         // by pendSince; any other belongs to the next flyback, early by however far it
         // still has to run.
-        if (pendActive) { addTip(pendSince, pixelClock, pendErr, pendAt, pendN); tipInWindow = true; }
-        else addTip(hsyncCount + 1 - MONITOR_HSYNC_MAX, pixelClock, curErr, curAt, curN);
+        if (pendActive) {
+            addTip(pendSince, pixelClock, pendErr, pendAt, pendN); tipInWindow = true;
+            widthSlot = pendN - 1; widthSlotPend = true;
+            if (widthSlot >= 0) pendWid[widthSlot] = 0;
+        } else {
+            addTip(hsyncCount + 1 - MONITOR_HSYNC_MAX, pixelClock, curErr, curAt, curN);
+            widthSlot = curN - 1; widthSlotPend = false;
+            if (widthSlot >= 0) curWid[widthSlot] = 0;
+        }
         // The line period, measured on the pin where R0 used to be read. Only an
         // interval the flywheel would accept as a line counts: a second sync inside
         // one line (ACCC §15.3, SHAKER's D3) is not the period, and does not restart
@@ -433,7 +481,9 @@ bool CtmMonitor::clockPixel(bool csyncActive) {
     tipInWindow = false;
     pendActive = true;
     pendSince = 0;
-    pendN = curN; pendErr = curErr; pendAt = curAt;
+    pendN = curN; pendErr = curErr; pendAt = curAt; pendWid = curWid;
+    if (widthSlot >= 0 && !widthSlotPend) widthSlotPend = true;          // still open: now in pend*
+    else if (widthSlotPend) widthSlot = -1;                              // its window has closed
     pendStable = stable;
     pendPhase = hsyncMatch - MONITOR_HSYNC_MAX;
     curN = 0;
@@ -487,7 +537,8 @@ MonitorRendererState CtmMonitor::save() const {
         lastPulseWidth, lineSyncAt, tipStartAt, measuredPeriod, sinceLastSync,
         separator, vsyncSeparated,
         curN, curErr, pendActive, pendSince, pendN, pendErr, pendStable, pendPhase,
-        curAt, pendAt, pixelClock, lastLineSyncAt, fieldPeriodSum, fieldPeriodCount };
+        curAt, pendAt, pixelClock, lastLineSyncAt, fieldPeriodSum, fieldPeriodCount,
+        curWid, pendWid, widthSlot, widthSlotPend };
 }
 
 void CtmMonitor::restore(const MonitorRendererState& state) {
@@ -528,6 +579,8 @@ void CtmMonitor::restore(const MonitorRendererState& state) {
     pixelClock = state.pixelClock; lastLineSyncAt = state.lastLineSyncAt;
     fieldPeriodSum = state.fieldPeriodSum; fieldPeriodCount = state.fieldPeriodCount;
     pendStable = state.pendStable; pendPhase = state.pendPhase;
+    curWid = state.curWid; pendWid = state.pendWid;
+    widthSlot = state.widthSlot; widthSlotPend = state.widthSlotPend;
 }
 
 } // namespace cpcse

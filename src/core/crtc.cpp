@@ -884,14 +884,15 @@ void CRTC6845::traceLine() {
     if (wantR4 == -2) { const char* w = std::getenv("CPCSE_TRACE_LINE_R4"); wantR4 = w ? std::atoi(w) : -1; }
     if (wantR4 >= 0 && (registers[4] & 0x7f) != wantR4) return;
     if (traceLineBudget > 0 && frame >= traceLineFrom) {
-        std::fprintf(stderr, "  line f%-6d n=%3d C4=%3d C9=%2d R4=%3d R5=%2d R9=%2d R8=%d r9M=%d par=%d fld=%d%s%s  h%d C3=%d%s R2=%d R3=%d R0=%d us=%ld\n",
+        std::fprintf(stderr, "  line f%-6d n=%3d C4=%3d C9=%2d R4=%3d R5=%2d R9=%2d R8=%d r9M=%d par=%d fld=%d%s%s  h%d C3=%d%s R2=%d R3=%d R0=%d LL=%d LP=%d LM=%d us=%ld\n",
                      frame, traceFrameLines, vertical, raster,
                      registers[4] & 0x7f, registers[5] & 0x1f, registers[9] & 0x1f,
                      registers[8] & 3, r9Match ? 1 : 0, rasterParity & 1, interlaceField & 1,
                      verticalAdjustActive ? "  ADJUST" : "",
                      vsync ? (vsyncGhost ? "  VSYNC(ghost)" : "  VSYNC") : "", hsync ? 1 : 0, hsyncCounter,
                      hsyncOverflow ? "o" : "", registers[2] & 0xff, registers[3] & 0xff,
-                     registers[0] & 0xff, traceCharacters);
+                     registers[0] & 0xff, lastFrameLine ? 1 : 0, lastPreviousLine ? 1 : 0,
+                     lastLineManagement ? 1 : 0, traceCharacters);
         traceLineBudget -= 1;
     }
 }
@@ -1165,10 +1166,10 @@ bool CRTC6845::updateVerticalGeneral() {
                     additionalLinePending = true;
                     vertical = 1; raster = baseRaster();
                     addressFrozenForAdditionalLine = true;
-                    // The oracle scores this line as BORDER even though letting it
-                    // display reproduces the reference geometry exactly — see the
-                    // note in the commit; its content is not yet right.
-                    vDisplay = false;
+                    // Nothing in §13.2.7 blanks this line: it is "an additional 'line'"
+                    // with C4=1 and C9=0, and it displays like any other. (It used to be
+                    // painted BORDER because AmSpiriT's score preferred that; SHAKER
+                    // A3's photos show no border gaps where it falls.)
                     return false;
                 }
                 newFrame(); return true;
@@ -1241,13 +1242,14 @@ bool CrtcBehaviour::rasterMatchesMaximum(CRTC6845& crtc) const {
 // Default horizontal-total match on an R0 write: exact. ASIC catches up with >=.
 bool CrtcBehaviour::horizontalCounterAtTotal(CRTC6845& crtc) const { return crtc.horizontal == crtc.registers[0]; }
 void gaHsyncBlackWindow(const CrtcBehaviour* chip, bool now, bool before,
-                        bool r2Jit, bool endJit, int& from, int& to) {
+                        bool r2Jit, bool endJit, int endLag, int& from, int& to) {
     from = 16; to = 16;
     if (now && before) { from = 0; }                                  // wholly inside
     else if (now && !before) from = r2Jit ? chip->hsyncBlackStartPixelJit()
                                           : chip->hsyncBlackStartPixel();
     else if (!now && before) { from = 0;
-        to = endJit ? chip->hsyncBlackEndPixelJit() : chip->hsyncBlackEndPixel(); }
+        to = std::min(16, (endJit ? chip->hsyncBlackEndPixelJit() : chip->hsyncBlackEndPixel())
+                          + endLag); }
 }
 // Default classic interlace-video mode = R8&3==3. ASIC reports false (uses sync+video).
 bool CrtcBehaviour::interlaceVideo(const CRTC6845& crtc) const { return crtc.displayMode() == 3; }

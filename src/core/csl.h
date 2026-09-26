@@ -1,6 +1,6 @@
 // CPCSyntaxError — CSL script player with SSM screenshots.
 //
-// Plays a CPC Script Language file (Longshot's CSL standard, v1.4) against a GX4000 and
+// Plays a CPC Script Language file (Longshot's CSL standard, v1.5) against a GX4000 and
 // answers the SSM codes (ScreenShot Management, v1.1) the emulated program emits: the
 // Z80 bytes ED LL ED HH, which the CPU reports through Z80::onUnwiredEd. SHAKER uses
 // both, so its CSL scripts drive every test and each screen it wants kept names itself
@@ -10,7 +10,7 @@
 // on the CPU for its own lifetime, and builds the machine the script configures
 // (cpc_model, crtc_select, gate_array, memory_exp, rom_config) at each hard reset.
 //
-// Every CSL instruction of v1.4 is handled. What the machine cannot do is reported as an
+// Every CSL instruction of v1.5 is handled. What the machine cannot do is reported as an
 // error, as the standard asks: the script, the line, the instruction, the reason, the
 // script's CSL version and the supported one.
 #pragma once
@@ -52,7 +52,7 @@ struct CslSettings {
 
 class CslPlayer {
 public:
-    static constexpr const char* SUPPORTED_VERSION = "1.4";
+    static constexpr const char* SUPPORTED_VERSION = "1.5";
 
     CslPlayer(GX4000& emu, CpcVideo& video, CslSettings settings);
     ~CslPlayer();
@@ -121,6 +121,11 @@ private:
     std::vector<int> pendingShots;        // SSM codes waiting for the picture they end
     bool pendingSnapshot = false;         // SSM #FFFF, taken after its instruction
     bool ssm0000Seen = false;
+    // CSL 1.5's wait_ssm <code>: the code being waited for, and whether it has arrived.
+    // Every code received since the last wait_ssm returned: a code can arrive while the
+    // PREVIOUS instruction is still running (a key_output's own post-key delay), and it
+    // still ends the wait.
+    std::vector<int> ssmSinceWait;
     int shotCount = 0, snapCount = 0, unnamedShots = 0;
 
     std::vector<Script> stack;

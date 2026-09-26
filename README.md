@@ -12,8 +12,9 @@ around a cycle-level model of the machine's video chips.
   *Amstrad CPC CRTC Compendium* and checked against his SHAKER test suite and
   photographs of real machines.
 - **Gate Array** models 40007 / 40008 / 40010 and the ASICs 40226 / 40489,
-  with per-model pixel timing, and a **monitor** model (CTM 640/644, CM14, GT 64/65,
-  MM12) that locks to the composite sync the Gate Array really produces.
+  with per-model pixel timing (chosen in **Machine → Gate Array**), and a **monitor**
+  model (CTM 640/644, CM14, GT 64/65, MM12) that locks to the composite sync the Gate
+  Array really produces.
 - **CPC Plus ASIC**: sprites, DMA sound, 4096-colour palette, raster interrupts,
   split screen, soft scroll.
 - Disc (DSK/EDSK), tape (CDT/TZX/WAV), cartridge (CPR) and snapshot (SNA) loading,
@@ -22,7 +23,7 @@ around a cycle-level model of the machine's video chips.
   into / over / out, disassembly with labels, hex editor, and live views of the
   CRTC, Gate Array, monitor, Plus ASIC, PSG, PPI, keyboard matrix, disc
   controller and tape.
-- **CSL scripts and SSM screenshots** (Longshot's CPC Script Language 1.4 and ScreenShot
+- **CSL scripts and SSM screenshots** (Longshot's CPC Script Language 1.5 and ScreenShot
   Management 1.1): `cpcse.exe --csl <script>` plays a script with no window and saves the
   screenshots the running program asks for -- which is how SHAKER's own scripts drive
   every test. See [CSL scripts](#csl-scripts-and-ssm-screenshots).
@@ -86,7 +87,8 @@ mode is also available for scripting:
 
 ```
 cpcse.exe --shot out.bmp --model cpc6128 --frames 200 [--disk game.dsk] [--type "RUN\"GAME\n"]
-          [--cart file.cpr] [--tape file.cdt] [--sna file.sna] [--crtc 0-4] [--beam]
+          [--cart file.cpr] [--tape file.cdt] [--sna file.sna] [--crtc 0-4]
+          [--gate-array 40007|40008|40010] [--beam]
 ```
 
 Models: `cpc464`, `cpc6128`, `cpc464plus`, `cpc6128plus`, `gx4000`.
@@ -118,7 +120,9 @@ cpcse.exe --csl SHAKE27A-1.CSL --out shots --disk-dir <folder with shaker27.dsk>
 | `--no-chain` | do not follow `csl_load` |
 | `--no-errata` | play published scripts exactly as written (see below) |
 
-Every CSL 1.4 instruction is handled: machine configuration (`cpc_model`, `crtc_select`
+Every CSL 1.5 instruction is handled, including `wait_ssm 0xHHHH`, which holds the script
+until the program sends that SSM code (and its screenshot is written) instead of waiting a
+fixed time. Also machine configuration (`cpc_model`, `crtc_select`
 0/1/1A/1B/2/3/4, `gate_array`, `memory_exp`, `rom_dir`, `rom_config`), `reset soft|hard`,
 disc, tape and snapshot media and folders, keys (`\(...)` codes, `{groups}`, `\(KOF)`,
 `key_from_file`, `keyboard_write`), the four waits, screenshots and snapshots (versions
@@ -165,7 +169,7 @@ third_party/   Dear ImGui (docking branch) and RASM, vendored; SDL2 is fetched s
 | CRTC types 0-4, Gate Array, monitor | Mature: rule sets from the Compendium, cross-checked by independent reference models and SHAKER |
 | Z80, PSG, PPI, disc controller, tape | Working; not yet audited to the same depth as the video chips |
 | CPC Plus ASIC | Working; its picture goes through the same monitor model as a CPC's |
-| CSL / SSM | Complete (CSL 1.4, SSM 1.1) |
+| CSL / SSM | Complete (CSL 1.5, SSM 1.1) |
 | **User interface** | **Incomplete** -- new and still being refined; expect rough edges and changes |
 | **M4 board** | **Incomplete** |
 | **Symbiface II / III** | **Incomplete** -- mouse and RTC only; the IDE/CF interface is not emulated |
@@ -174,13 +178,6 @@ third_party/   Dear ImGui (docking branch) and RASM, vendored; SDL2 is fetched s
 
 ## Known issues
 
-- **CRTC 2: R9 rewritten during the vertical adjustment.** The Compendium's CRTC 2
-  chapter (§12.4.1, p.97) says that if R9 is changed during the R5 additional lines,
-  C9 "will not transition back to 0 after the additional lines and will continue its
-  evolution according to the new value of R9", while §11.3.1 has C4 and C9 return to 0
-  at the end of the additional lines. Nothing printed says how the chip reconciles the
-  two, so CPCSyntaxError follows §11.3.1 (C9 returns to 0) until hardware evidence
-  settles it.
 - **C-HSYNC width on CRTC 0 and 2.** The Gate Array's monitor sync on these chips is
   a fraction of a microsecond longer than the Compendium's table (§14.4, p.134). The
   documented width is not used yet because the monitor's recovery after a short sync

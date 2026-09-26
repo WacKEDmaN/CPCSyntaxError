@@ -8,7 +8,7 @@
 namespace cpcse {
 
 class GXMemory; class PlusAsic; class CRTC6845; class GateArray; class CtmMonitor;
-struct MonitorModel;
+struct MonitorModel; struct GateArrayModel;
 
 struct XY { int x = 0; int y = 0; };
 struct DisplayBounds { int left, right, top, bottom; };
@@ -115,7 +115,11 @@ public:
     int scrolledVideoByte(const RasterLine* state, int lineBase, int sourceColumn);
     int crtcAddress(int ma);
     GateArray& ga() const;        // the attached GATE ARRAY, or a default 40010
+    const GateArrayModel* gaModel() const;   // the fitted part, or the 40010
     int gaMode2Advance() const;   // ACCC §9.2.1, per GATE ARRAY model
+    // How far RIGHT of the calibrated mode-2 position a Pixel-M2 decoded in `mode` is
+    // drawn by the capture path: §9.2.1's advance, anchored on mode 2.
+    int gaModeOffset(int mode) const;
     void render();
 
     // --- Beam-driven renderer (faithful CRT model, classic monitor path) ---

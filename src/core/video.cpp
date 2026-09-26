@@ -181,9 +181,17 @@ int spriteClipLeft(int displayLeft, const RasterLine* state, int extendBorder, b
 // The two GATE ARRAY behaviours the compendium indexes by GATE ARRAY MODEL, asked of
 // the chip rather than re-derived here. They fall back to the commonest part (the
 // 40010) when no GATE ARRAY is attached, which is only the case in isolated tests.
-int CpcVideo::gaMode2Advance() const {
-    return gateArray && gateArray->model ? gateArray->model->mode2PixelAdvance()
-                                         : gateArrayModel40010()->mode2PixelAdvance();
+const GateArrayModel* CpcVideo::gaModel() const {
+    return gateArray && gateArray->model ? gateArray->model : gateArrayModel40010();
+}
+int CpcVideo::gaMode2Advance() const { return gaModel()->mode2PixelAdvance(); }
+// ACCC §9.2.1 is a RELATIVE statement -- mode 2 one Pixel-M2 ahead of the other modes
+// -- so it needs an anchor. The capture path's horizontal placement was measured against
+// SHAKER's references, whose screens are MODE 2 (classicPhysicalLineOrigin: "module C's
+// mode-2 patterns"), so mode 2 already sits where the monitor puts it and it is the other
+// modes that come one Pixel-M2 later.
+int CpcVideo::gaModeOffset(int mode) const {
+    return mode == 2 ? 0 : gaModel()->mode2PixelAdvance();
 }
 
 static PenState penFromLine(const RasterLine* s) {
@@ -353,7 +361,8 @@ void CpcVideo::plotBeamCharacter() {
     // renderers cannot disagree about where the black sits.
     int hsyncFrom = 16, hsyncTo = 16;      // Pixel-M2 half-open range to blacken
     gaHsyncBlackWindow(chip, hsyncNow, hsyncBefore,
-                       crtc->r2WrittenThisCharacter, crtc->hsyncEndedJit, hsyncFrom, hsyncTo);
+                       crtc->r2WrittenThisCharacter, crtc->hsyncEndedJit,
+                       gaModel()->hsyncBlackEndLag(), hsyncFrom, hsyncTo);
     int blankFrom = 16, blankTo = 16;      // ACCC §16.2.1's 26 black lines
     if (blankNow && beamBlankLast) { blankFrom = beamBlankCarry; beamBlankCarry = 0; }
     else if (blankNow && !beamBlankLast) {
@@ -450,7 +459,6 @@ void CpcVideo::plotBeamCharacter() {
     // MODE 2 line resume "from the 5th Pixel-M2 of the 5th VRAM byte" where a MODE 0
     // or MODE 1 line resumes from the 4th — the same wall-clock instant, one byte
     // index later, which is exactly this advance seen from the byte's side.
-    int shift = gaMode2Advance();
     // §9.2.2's charts (p.50/51) do not put an ink change on the character boundary: the
     // first pixel in the new colour is the SECOND BYTE of the character on the classic
     // GATE ARRAY and the 40226, and half a byte earlier on the 40489. Mode 2 is one
@@ -460,7 +468,7 @@ void CpcVideo::plotBeamCharacter() {
     int inkPixelMode2 = inkPixel + (chip->inkChangeFollowsMode2Advance() ? 0 : 1);
     for (int i = 0; i < 16; i += 1) {
         bool mode2 = pixelMode[i] == 2;
-        int back = mode2 ? shift : 0;
+        int back = pixelMode[i] == 2 ? gaMode2Advance() : 0;
         uint32_t colour = out[i];
         if (beamPensChanged && i < (mode2 ? inkPixelMode2 : inkPixel))
             colour = beamPensPrevious[outPen[i]];
@@ -788,6 +796,15 @@ void CpcVideo::render() {
                              firstEn, (lineOrigin ? lineOrigin->x : 0) + firstEn * 16,
                              state->monitorDecisionBranch, state->monitorDecisionPhase,
                              state->monitorDecisionMove, state->monitorDecisionTips);
+                // The mode each segment of the line decodes in (§9.2.1 moves mode 2 by a
+                // Pixel-M2, so which mode a line STARTS in is visible at its left edge).
+                std::fprintf(stderr, "ROWPULL %d: pull=%d width=%d slow=%d\n", monitorY,
+                             state->monitorDecisionPull, state->monitorDecisionWidth, state->monitorDecisionSlow);
+                std::fprintf(stderr, "ROWMODE %d: mode=%d segs=", monitorY, state->mode);
+                for (const auto& seg : state->segments)
+                    std::fprintf(stderr, "[c%d m%d<-%d@%d] ", seg.character, seg.mode,
+                                 seg.modeBefore, seg.modeSwitchPixel);
+                std::fprintf(stderr, "\n");
             }
         }
         // The two §9.2.2 hooks are the CRTC profile's, asked of the chip exactly as the
@@ -876,16 +893,28 @@ void CpcVideo::render() {
                         if (switchPixel > 0 && pixelState.modeBefore != 2) switchPixel -= 1;
                         bytePens(byte, pixelState.modeBefore, mode, switchPixel, pens);
                     } else bytePens(byte, mode, mode, -1, pens);
-                    for (int pixel = 0; pixel < 8; pixel += 1)
-                        drawScaledPixel(column * 8 + pixel, y, penColor(pens[pixel], inkAt(pixel)), 1, 0);
+                    // §9.2.1: each Pixel-M2 sits where its own mode puts it.
+                    const int switchAt = !modeSplitHere ? 0 : pixelState.modeSwitchPixel
+                        - (pixelState.modeSwitchPixel > 0 && pixelState.modeBefore != 2 ? 1 : 0);
+                    for (int pixel = 0; pixel < 8; pixel += 1) {
+                        const int shift = gaModeOffset(pixel < switchAt ? pixelState.modeBefore : mode);
+                        drawScaledPixel(column * 8 + pixel + shift, y, penColor(pens[pixel], inkAt(pixel)), 1, 0);
+                    }
                     continue;
                 }
                 // One ink across the whole byte: the old one while the character is still
                 // before §9.2.2's instant, otherwise the segment's own.
                 const PenState& ink = inkSplit >= 8 ? previousState : pixelState;
-                if (mode == 0 || mode == 3) { auto values = mode0(byte); int mask = mode == 3 ? 3 : 15; drawScaledPixel(column * 8, y, penColor(values[0] & mask, ink), 4, 0); drawScaledPixel(column * 8 + 4, y, penColor(values[1] & mask, ink), 4, 0); }
-                else if (mode == 1) { auto values = mode1(byte); for (int pixel = 0; pixel < 4; pixel += 1) drawScaledPixel(column * 8 + pixel * 2, y, penColor(values[pixel], ink), 2, 0); }
-                else for (int pixel = 0; pixel < 8; pixel += 1) drawScaledPixel(column * 8 + pixel, y, penColor((unsigned)byte >> (7 - pixel) & 1, ink), 1, 0);
+                // ACCC §9.2.1 (p.48): mode 2 is drawn one Pixel-M2 ahead of the other
+                // modes on every part but the 40489 -- "the BORDER 'stops' 1 pixel earlier
+                // on a line in mode 2 and starts 1 pixel earlier when C0=R1". Anchored on
+                // mode 2 (gaModeOffset), so a mode 0/1/3 byte lands one Pixel-M2 later: the
+                // border already painted under it shows through on the left, and its last
+                // pixel covers the first border pixel on the right.
+                const int shift = gaModeOffset(mode);
+                if (mode == 0 || mode == 3) { auto values = mode0(byte); int mask = mode == 3 ? 3 : 15; drawScaledPixel(column * 8 + shift, y, penColor(values[0] & mask, ink), 4, 0); drawScaledPixel(column * 8 + 4 + shift, y, penColor(values[1] & mask, ink), 4, 0); }
+                else if (mode == 1) { auto values = mode1(byte); for (int pixel = 0; pixel < 4; pixel += 1) drawScaledPixel(column * 8 + pixel * 2 + shift, y, penColor(values[pixel], ink), 2, 0); }
+                else for (int pixel = 0; pixel < 8; pixel += 1) drawScaledPixel(column * 8 + pixel + shift, y, penColor((unsigned)byte >> (7 - pixel) & 1, ink), 1, 0);
             }
         }
         paintHsyncBlack(rowY, state, monitorRegisters);

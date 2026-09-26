@@ -18,6 +18,14 @@ struct GateArray40008 : GateArrayModel {
     // considered to be 0 (GA 40010) or 1 (GA 40008)". This is the 40008, so 1 -- and
     // this is the one behaviour that separates it from the 40010 on screen.
     int modeSwitchFillBit() const override { return 1; }
+
+    // ACCC §9 (p.46) / §9.3.4.3 (p.59): "ahead of 0.0625 usec compared to the 40010
+    // when they recover the bits" -- one bit of the decoder at a switch out of MODE 2.
+    int modeSwitchDecodeLead() const override { return 1; }
+
+    // ACCC §14.5.4 (p.139/140): "The HSYNC is 1 pixel-M2 longer on the GA 40007 and
+    // 40008 compared to the GA 40010."
+    int hsyncBlackEndLag() const override { return 1; }
 };
 
 const GateArray40008 instance;

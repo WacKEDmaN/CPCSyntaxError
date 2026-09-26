@@ -133,6 +133,7 @@ private:
     // shared widgets
     void modelItems(bool asMenu);
     void crtcItems(bool asMenu);
+    void gateArrayItems(bool asMenu);
     void ramItems(bool asMenu);
     void monitorSetItems(bool asMenu);
 };

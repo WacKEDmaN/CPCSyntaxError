@@ -48,6 +48,11 @@ public:
     // WHICH MONITOR IS PLUGGED IN (src/core/monitor_model.h), by id -- "" means the set
     // the machine shipped with, which is the only pairing ACCC 15.1 calls centred.
     std::string monitorSetId;
+    // WHICH GATE ARRAY IS FITTED (src/core/gate_array_model.h): 40007, 40008 or 40010 on a
+    // classic machine -- ACCC 9 (p.46) names all three in 464s and 6128s. 0 is the 40010,
+    // the part most 6128s carry. On CRTC 3/4 there is no choice: the ASIC (40489/40226)
+    // IS the GATE ARRAY, so this is ignored there.
+    int gateArrayPart = 0;
     // ...and an explicit tube override for looking at a colour program in green or grey.
     // "" takes the tube from the set, which is the physical answer.
     std::string monitorMode;
@@ -144,6 +149,11 @@ public:
     // Plug a set in, by monitor_model.h id; "" restores the one the machine shipped with.
     void setMonitorSet(const std::string& id);
     void applyMonitorSet();
+    // Fit a GATE ARRAY part (40007/40008/40010, 0 = the 40010). Live: the chip reads its
+    // model on every pixel, so no reset is needed.
+    void setGateArrayPart(int part);
+    void applyGateArrayPart();
+    int fittedGateArrayPart() const;   // what is actually fitted, ASIC included
 
     void setJoystickEnabled(bool on);
     void setKeyboardRegion(const std::string& region);

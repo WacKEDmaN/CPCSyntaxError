@@ -85,7 +85,7 @@ GX4000::GX4000() {
         // ...but the C-HSYNC the monitor sees ends on the pin, now: the ASIC delays the
         // WHOLE HSYNC (§15.1 p.146, "over a length R3 usec"), and only the end was being
         // delayed here, which stretched every pulse by a usec (GateArray::cHsyncFallArmed).
-        if (hsyncDelay > 0) { gateArray->armCHsyncFall(); gateArrayHsyncPending = hsyncDelay + 1; }
+        if (hsyncDelay > 0) { gateArray->armCHsyncFall(hsyncDelay); gateArrayHsyncPending = hsyncDelay + 1; }
         else gateArray->onHsync();
         crtc->gateArrayBlanking = gateArray->blanking();   // ACCC §16.2.1
         // ACCC §16.1: C-SYNC reaches the monitor when V26 reaches 2, two HSYNCs
@@ -465,6 +465,9 @@ void GX4000::advanceClassicMonitorCharacter() {
             l.monitorDecisionPhase = monitorRenderer->decisionPhase;
             l.monitorDecisionMove = monitorRenderer->decisionMove;
             l.monitorDecisionTips = monitorRenderer->decisionTips;
+            l.monitorDecisionPull = monitorRenderer->decisionPull;
+            l.monitorDecisionWidth = monitorRenderer->decisionWidth;
+            l.monitorDecisionSlow = monitorRenderer->decisionSlow;
         }
     }
     if (lineComplete) { appliedLineSnap16 = 0; lineSlotShift = 0; }
@@ -721,7 +724,9 @@ void GX4000::captureRasterCharacter() {
         bool now = (classicHsyncPipe >> delay) & 1, before = (classicHsyncPipe >> (delay + 1)) & 1;
         int from = 16, to = 16;
         gaHsyncBlackWindow(crtc->behaviour, now, before,
-                           crtc->r2WrittenThisCharacter, crtc->hsyncEndedJit, from, to);
+                           crtc->r2WrittenThisCharacter, crtc->hsyncEndedJit,
+                           (gateArray->model ? gateArray->model : gateArrayModel40010())
+                               ->hsyncBlackEndLag(), from, to);
         // §15.1's lead: the black belongs on the character before the one the CRTC
         // raised HSYNC on. Stored where it is drawn, so the renderer stays a renderer.
         int at = (character - crtc->behaviour->hsyncBlackCharacterLead()) & 0xff;
@@ -760,6 +765,11 @@ void GX4000::loadCartridge(const Cartridge& cart, LoadCartridgeOptions options) 
     ramExpansion = selectedRam > 64;
     ramKiB = selectedRam;
     plusHardware = true; gateArray->setPlusHardware(true); crtc->setType(3); ppi->setPlusMode(true);
+    // ACCC §9 (p.44): "ASIC 40489 (CRTC 3) is used on CPC + and GX 4000" -- the GATE ARRAY
+    // is that ASIC. This boot path never said so and the chip stayed the 40010 it defaults
+    // to, which is invisible until a model difference is drawn: §9.2.1's mode-2 advance,
+    // which "ASIC 40489 of the CPC+ is not affected by", moved every Plus picture a pixel.
+    gateArray->model = gateArrayModel40489();
     crtc->hostOwnsScanlineIndex = true;    // the monitor owns the capture index, as on a CPC
     // ACCC §9.3.4: the Pixel-M2 at which the GA switches graphic mode is a property
     // of the CRTC it is paired with, so it travels with the chip profile.
@@ -843,6 +853,11 @@ void GX4000::writePort(int port, int value) {
     // the same value to different devices simultaneously").
     if (hasFdc != false && (port & 0x0580) == 0x0000) fdc->setMotor(value);
     if (hasFdc != false && (port & 0x0580) == 0x0100) fdc->write(port, value);
+    // ACCC §20.5 (p.245): "bit 3 of R12 on CRTC 3 also corresponds to the 8th bit of the
+    // data sent to the printer port" -- the Arnold V specification's "Eight-bit printer
+    // support" (§2.12), where the ASIC drives the printer's D7 from "bit 3 in register 12
+    // of the 6845". Everywhere else the port has seven data bits and a strobe.
+    dac->printerHighBit = crtc->type == 3 ? (crtc->registers[12] >> 3 & 1) : 0;
     dac->writePort(port, value);
 }
 int GX4000::readPort(int port) {

@@ -304,7 +304,7 @@ bool CslPlayer::runFile(const std::string& pathIn) {
             splitLine(l, ins, a, text);
             double v = 0;
             if (ins == "wait" && !a.empty() && parseNumber(a[0], v)) waits += v;
-            else if (ins == "wait_ssm0000" || ins == "wait_driveonoff" || ins == "wait_vsyncoffon") openEnded++;
+            else if (ins == "wait_ssm0000" || ins == "wait_ssm" || ins == "wait_driveonoff" || ins == "wait_vsyncoffon") openEnded++;
         }
         cap = waits / 1e6 * 2.0 + 60.0 + 60.0 * openEnded;
     }
@@ -575,6 +575,33 @@ bool CslPlayer::execute(const std::string& ins, const std::vector<std::string>& 
         say("  [%8.3fs] SSM #0000", seconds());
         return true;
     }
+    // CSL 1.5: "wait_ssm <ssm code> -- Wait for SSM Code <ssm code>, expressed in
+    // hexadecimal prefixed by '0x'" -- "a better method than waiting for a delay, as some
+    // emulators can respond more or less quickly". A code that asks for a screenshot has it
+    // taken on the picture the program was drawing (handlePicture); the wait ends once that
+    // is written, so the script's next key cannot land in the picture it is waiting for.
+    if (ins == "wait_ssm") {
+        std::string a = lower(arg(0));
+        if (a.rfind("0x", 0) == 0) a = a.substr(2);
+        else if (!a.empty() && (a[0] == '#' || a[0] == '&')) a = a.substr(1);
+        char* end = nullptr;
+        const long code = a.empty() ? -1 : std::strtol(a.c_str(), &end, 16);
+        if (a.empty() || !end || *end || code < 0 || code > 0xFFFF) {
+            why = "wait_ssm needs a 16-bit SSM code in hexadecimal, e.g. wait_ssm 0xABCD";
+            return false;
+        }
+        const bool ok = advanceUntil([&]() {
+            bool seen = false;
+            for (int c : ssmSinceWait) if (c == code) seen = true;
+            if (!seen) return false;
+            for (int pending : pendingShots) if (pending == code) return false;   // its picture first
+            return true;
+        }, why);
+        ssmSinceWait.clear();
+        if (!ok) return false;
+        say("  [%8.3fs] SSM #%04lX received", seconds(), code);
+        return true;
+    }
 
     // ---- exports
     if (ins == "screenshot" || ins == "snapshot") {
@@ -797,7 +824,7 @@ void CslPlayer::plusMenuToBasic() {
 
 void CslPlayer::machineStarted() {
     pendingLow = -1; pendingNextAddress = -1;
-    pendingShots.clear(); pendingSnapshot = false;
+    pendingShots.clear(); pendingSnapshot = false; ssmSinceWait.clear();
     if (plusMenu) plusMenuToBasic();
     origin = emu.machineCycles;       // the script's clock starts here
     scriptT = -1;
@@ -888,6 +915,7 @@ void CslPlayer::onSsm(int suffix, int pcAfter) {
     const int code = suffix << 8 | pendingLow;
     const int low = pendingLow;
     pendingLow = -1;
+    if (ssmSinceWait.size() < 256) ssmSinceWait.push_back(code);   // CSL 1.5 wait_ssm
     if (low >= 0xFE && suffix != 0xFF) return;                  // #FE/#FF are only for #FFxx
     if (code == 0x0000) { ssm0000Seen = true; return; }
     if (code == 0xFFFF) { pendingSnapshot = true; return; }

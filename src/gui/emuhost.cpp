@@ -2,6 +2,7 @@
 #include "emuhost.h"
 #include "../core/monitor_model.h"
 #include "../core/monitor_renderer.h"
+#include "../core/gate_array.h"
 #include "keymap.h"
 #include "core/emulator.h"
 #include "core/video.h"
@@ -309,6 +310,7 @@ bool EmuHost::bootModel(int index, int ram, int crtc) {
     o.crtcType = crtcType;
     o.model = m.label;
     emu->loadClassicFirmware(o);
+    applyGateArrayPart();                 // loadClassicFirmware fitted the 40010
     emu->hasFdc = m.amsdos;
     applyAudioRate();
     applySettings();
@@ -756,4 +758,22 @@ void EmuHost::applyMonitorSet() {
     if (video) { video->setMonitorModel(emu->monitorRenderer->model); video->setMonitorMode(monitorMode); }
 }
 
+} // namespace cpcse
+
+namespace cpcse {
+void EmuHost::setGateArrayPart(int part) {
+    gateArrayPart = (part == 40007 || part == 40008 || part == 40010) ? part : 0;
+    applyGateArrayPart();
+}
+void EmuHost::applyGateArrayPart() {
+    if (!emu || !emu->gateArray) return;
+    if (crtcType == 3 || crtcType == 4 || emu->plusHardware) return;   // the ASIC is the GATE ARRAY
+    emu->gateArray->model = gateArrayPart == 40007 ? gateArrayModel40007()
+                          : gateArrayPart == 40008 ? gateArrayModel40008()
+                          : gateArrayModel40010();
+}
+int EmuHost::fittedGateArrayPart() const {
+    if (!emu || !emu->gateArray || !emu->gateArray->model) return 40010;
+    return std::atoi(emu->gateArray->model->name());
+}
 } // namespace cpcse

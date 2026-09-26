@@ -172,7 +172,7 @@ int PlusAsic::readAsicRam(int address) {
         else if (reg == 1) {
             int high = memory->asicRam[canonical] & 3; value = high == 3 ? 0xff : high;
         } else value = memory->asicRam[canonical] & 1 ? 0xff : 0;
-    } else if (address >= 0x2808 && address < 0x2810) value = address == 0x280d || address == 0x280f ? 0 : 0x3f;
+    } else if (address >= 0x2808 && address < 0x2810) value = analogueInput[address - 0x2808] & 0x3f;
     else if (address >= 0x2c00 && address < 0x2c0f) value = dmaStatus;
     else value = lastReadValue;
     lastReadValue = value & 0xff;

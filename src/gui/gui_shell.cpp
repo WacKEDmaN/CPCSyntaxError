@@ -280,6 +280,33 @@ void GuiShell::crtcItems(bool asMenu) {
             if (cur >= 0) host.bootModel(cur, host.ramKiB, t);
     }
 }
+// ACCC 9 (p.44-46): five GATE ARRAY parts. On a classic machine it is a separate chip and
+// any of the three discrete ones may be fitted; on CRTC 3 and 4 the ASIC IS the GATE ARRAY.
+struct GateArrayPartInfo { int part; const char* label; const char* notes; };
+static const GateArrayPartInfo GA_PARTS[] = {
+    { 40010, "40010  (most 6128s, later 464/664)",
+      "The reference part: every ACCC timing is measured on it.\nBits already consumed at a mid-byte mode switch read 0 (9.3.4.3)." },
+    { 40007, "40007  (early 464s, rare 6128 MC0057A)",
+      "Decoder 1/16 usec ahead of the 40010 at a mode switch (9 p.46, 9.3.4.3 p.59).\n"
+      "Consumed bits read 1. HSYNC black 1 Pixel-M2 longer (14.5.4 p.139)." },
+    { 40008, "40008  (mostly 664s)",
+      "Pin-compatible with the 40007 and the same timing: decoder lead,\nconsumed bits read 1, HSYNC black 1 Pixel-M2 longer." },
+};
+void GuiShell::gateArrayItems(bool asMenu) {
+    const bool asic = host.crtcType == 3 || host.crtcType == 4 || (host.emu && host.emu->plusHardware);
+    if (asic) {
+        ImGui::TextDisabled(host.crtcType == 4 ? "40226 ASIC -- it IS the CRTC 4" : "40489 ASIC -- it IS the CRTC 3");
+        ImGui::TextDisabled("(no separate Gate Array to choose)");
+        return;
+    }
+    const int fitted = host.fittedGateArrayPart();
+    for (const auto& g : GA_PARTS) {
+        bool sel = fitted == g.part;
+        if (asMenu ? ImGui::MenuItem(g.label, nullptr, sel) : ImGui::Selectable(g.label, sel))
+            host.setGateArrayPart(g.part);
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", g.notes);
+    }
+}
 void GuiShell::monitorSetItems(bool asMenu) {
     const auto& sets = monitorModels();
     const MonitorModel* current = host.monitorSetId.empty() ? nullptr : monitorModelFor(host.monitorSetId);
@@ -457,6 +484,8 @@ void GuiShell::menuMachine() {
     if (ImGui::BeginMenu("Model")) { modelItems(true); ImGui::EndMenu(); }
     if (ImGui::BeginMenu("RAM", host.currentModel >= 0)) { ramItems(true); ImGui::EndMenu(); }
     if (ImGui::BeginMenu("CRTC", host.currentModel >= 0)) { crtcItems(true); ImGui::EndMenu(); }
+    if (ImGui::BeginMenu("Gate Array", host.currentModel >= 0)) { gateArrayItems(true); ImGui::EndMenu(); }
+    if (ImGui::BeginMenu("Monitor")) { monitorSetItems(true); ImGui::EndMenu(); }
     if (ImGui::BeginMenu("ROMs")) { sectionRoms(true); ImGui::EndMenu(); }
     ImGui::Separator();
     if (ImGui::MenuItem("Reset", "Ctrl+R", false, host.booted())) host.reset();
@@ -607,6 +636,20 @@ void GuiShell::windowMachine() {
             if (ImGui::BeginCombo("##ram", (std::to_string(host.ramKiB) + " KB").c_str())) { ramItems(false); ImGui::EndCombo(); }
             ImGui::TextUnformatted("CRTC"); ImGui::SameLine(60); ImGui::SetNextItemWidth(-1);
             if (ImGui::BeginCombo("##crtc", CRTC_NAMES[host.crtcType % 6])) { crtcItems(false); ImGui::EndCombo(); }
+            ImGui::TextUnformatted("GA"); ImGui::SameLine(60); ImGui::SetNextItemWidth(-1);
+            {
+                const bool asic = host.crtcType == 3 || host.crtcType == 4;
+                const char* gaLabel = host.crtcType == 4 ? "40226 ASIC (is the CRTC 4)"
+                                    : host.crtcType == 3 ? "40489 ASIC (is the CRTC 3)" : "40010";
+                const int fitted = host.fittedGateArrayPart();
+                for (const auto& g : GA_PARTS) if (!asic && g.part == fitted) gaLabel = g.label;
+                if (ImGui::BeginCombo("##gatearray", gaLabel)) { gateArrayItems(false); ImGui::EndCombo(); }
+            }
+            ImGui::TextUnformatted("Monitor"); ImGui::SameLine(60); ImGui::SetNextItemWidth(-1);
+            {
+                const MonitorModel* set = host.monitorSetId.empty() ? nullptr : monitorModelFor(host.monitorSetId);
+                if (ImGui::BeginCombo("##machinemonitor", set ? set->name : "As shipped with the machine")) { monitorSetItems(false); ImGui::EndCombo(); }
+            }
             ImGui::EndDisabled();
             bool beam = host.beamRenderer;
             if (ImGui::Checkbox("Beam renderer (pin-accurate CRT)", &beam)) host.setBeamRenderer(beam);

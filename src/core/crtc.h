@@ -27,9 +27,11 @@ struct CrtcSplit { int line; int address; };
 //   r2Jit      : R2 was written on this very character, which moves the start (§14.7.1).
 //   endJit     : the HSYNC ended through an R3.JIT, which holds the black 0.25 usec
 //                longer (§9.3.4.4/§14.5.4).
+//   endLag     : the GATE ARRAY model's own addition to the end, in Pixel-M2
+//                (GateArrayModel::hsyncBlackEndLag, §14.5.4 p.139/140).
 struct CrtcBehaviour;
 void gaHsyncBlackWindow(const CrtcBehaviour* chip, bool now, bool before,
-                        bool r2Jit, bool endJit, int& from, int& to);
+                        bool r2Jit, bool endJit, int endLag, int& from, int& to);
 
 // A CRTC silicon-type profile (crtc_type_*). Methods receive the
 // live CRTC so they can consult its registers and counters.

@@ -40,6 +40,23 @@ struct GateArrayModel {
     // the calculation of the new graphic mode colour numbers." The bit the GATE ARRAY
     // shifts into its decoder on a mid-byte mode change.
     virtual int modeSwitchFillBit() const = 0;
+
+    // ACCC §9 (p.46): "The 40007/40008 seems to be in advance of 1/16 MHz on the 40010
+    // when it processes the bits of the byte fetched from VRAM", which §9.3.4.3 (p.59)
+    // pins down: "The GATE ARRAY 40007 and 40008 are ahead of 0.0625 usec compared to the
+    // 40010 when they recover the bits allowing for the constitution of the colour
+    // number." Its tables show where: on a mid-byte switch out of MODE 2 the new mode's
+    // decode starts one bit earlier in the byte (p.60: 2->0 gives 1,b1,1,b3 where the
+    // 40010 gives 0,b0,0,b2), at the same screen position. In bits of the decoder,
+    // measured from the 40010.
+    virtual int modeSwitchDecodeLead() const = 0;
+
+    // ACCC §14.5.4 (p.139): "The HSYNC is 1 pixel-M2 longer on the GA 40007 and 40008
+    // compared to the GA 40010." p.140's chronograms draw both parts row above row, and
+    // on every row -- OUTI (R3.NJIT) and OUT(C),r8 (R3.JIT) alike, CRTC 0 and CRTC 2 --
+    // the black starts on the same Pixel-M2 and the 40007/8's ends one later. In
+    // Pixel-M2, added to where the picture comes back after the HSYNC.
+    virtual int hsyncBlackEndLag() const = 0;
 };
 
 const GateArrayModel* gateArrayModel40007();

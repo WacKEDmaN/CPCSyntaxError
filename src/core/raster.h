@@ -70,6 +70,7 @@ struct RasterLine {
     // Diagnostics: the monitor decision taken during this line (CtmMonitor::decision*).
     char monitorDecisionBranch = ' ';
     int monitorDecisionPhase = 0, monitorDecisionMove = 0, monitorDecisionTips = 0;
+    int monitorDecisionPull = 0, monitorDecisionWidth = 0, monitorDecisionSlow = 0;
     bool hsyncAtMonitorLine = false;
     bool vsync = false;
     // ACCC §16.2.1 (p.160): "When the GATE ARRAY receives the signal emitted by the CRTC
