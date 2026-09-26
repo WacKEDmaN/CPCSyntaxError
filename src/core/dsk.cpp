@@ -12,7 +12,8 @@ static std::string text(const Bytes& bytes, int offset, int length) {
 static int word(const Bytes& bytes, int offset) { return bytes[offset] | bytes[offset + 1] << 8; }
 static bool startsWith(const std::string& s, const std::string& prefix) { return s.rfind(prefix, 0) == 0; }
 static Bytes sliceBytes(const Bytes& bytes, int start, int end) {
-    if (start < 0) start = 0; if (end > (int)bytes.size()) end = (int)bytes.size();
+    if (start < 0) start = 0;
+    if (end > (int)bytes.size()) end = (int)bytes.size();
     if (end < start) end = start;
     return Bytes(bytes.begin() + start, bytes.begin() + end);
 }

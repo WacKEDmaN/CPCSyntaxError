@@ -14,6 +14,9 @@ namespace cpcse {
 
 static const std::vector<std::shared_ptr<RasterLine>> EMPTY_FRAME;
 
+// floor(a / b) for b > 0, in integers: std::floor on an int goes through a double.
+static inline int floorDiv(int a, int b) { return a >= 0 ? a / b : -((-a + b - 1) / b); }
+
 XY spriteCoordinates(const Bytes& asicRam, int base) {
     int x = asicRam[base] | (asicRam[base + 1] & 3) << 8;
     int y = asicRam[base + 2] | (asicRam[base + 3] & 1) << 8;
@@ -98,17 +101,10 @@ int rasterLineForMonitorY(int physicalY, int originY, int frameLength) {
     if (frameLength <= 0) return line;
     return ((line % frameLength) + frameLength) % frameLength;
 }
-int physicalFrameOriginFromVsync(const std::vector<std::shared_ptr<RasterLine>>& rasterFrame, int fallback, int lockedFieldLines, bool anchorOnLockedField) {
+int physicalFrameOriginFromVsync(const std::vector<std::shared_ptr<RasterLine>>& rasterFrame, int fallback, int lockedFieldLines) {
     int length = (int)rasterFrame.size();
     if (!length) return fallback;
-    // The Plus rupture picture (see CpcVideo::render) is closed at the CRTC wrap AFTER its
-    // VSYNC, so the sync sits near the END of the buffer and the buffer's length is
-    // whatever the program's sub-frames happened to add up to. Alcon 2020 scrolls by
-    // varying them: 306, 312, 314 lines, with the display always ending 25 lines before
-    // the sync. Reducing that late sync by the buffer length made the picture jump by the
-    // length's change every few frames. A tube anchors on the sync: reduce by the field
-    // the deflection runs at instead, which is the same thing on a 312-line picture.
-    const int wrapLength = anchorOnLockedField && lockedFieldLines > 0 ? lockedFieldLines : length;
+    const int wrapLength = length;
     // The capture buffer begins at the monitor's vertical frame edge, and that edge
     // is fired by the one VSYNC the flywheel locked onto (ACCC 16.1). A frame may
     // carry several VSYNCs -- a rupture's, or a second C4==R7 -- so the locked pulse
@@ -265,7 +261,8 @@ void CpcVideo::beamHsync() {                  // GATE ARRAY C-HSYNC: begin a mon
     // once": three changes to this loop were reverted for want of exactly these numbers.
     // col is the line length in characters (64 is nominal), shown is §15.7's gradual
     // shift as the renderer currently applies it.
-    if (std::getenv("CPCSE_TRACE_BEAMLINE")) {
+    static const bool traceBeamLine = std::getenv("CPCSE_TRACE_BEAMLINE") != nullptr;
+    if (traceBeamLine) {
         static long budget = -1, skip = 0;
         if (budget == -1) {
             const char* cap = std::getenv("CPCSE_TRACE_BEAMLINE_MAX");
@@ -481,6 +478,7 @@ void CpcVideo::setMonitorMode(const std::string& mode) {
     monitorMode = monitorTint.empty()
         ? normaliseMonitorMode(monitorSet ? monitorSet->phosphor : MONITOR_MODE_COLOUR)
         : monitorTint;
+    monitorColourTube = monitorMode == MONITOR_MODE_COLOUR;
 }
 void CpcVideo::setMonitorModel(const MonitorModel* model) {
     monitorSet = model;
@@ -508,7 +506,10 @@ bool CpcVideo::lightgunRgbBright(int rgb) {
     return r * 0.299 + g * 0.587 + b * 0.114 >= 140;
 }
 uint32_t CpcVideo::packedColor(int rgb) { return (uint32_t)(0xff000000u | (rgb & 0xff) << 16 | (rgb & 0xff00) | ((unsigned)rgb >> 16)); }
-int CpcVideo::applyMonitor(int rgb) { return monitorTransformRgb(rgb, monitorMode); }
+int CpcVideo::applyMonitor(int rgb) {
+    // monitorTransformRgb's own colour case, without normalising the mode name per pixel.
+    return monitorColourTube ? (rgb & 0xffffff) : monitorTransformRgb(rgb, monitorMode);
+}
 int CpcVideo::penColor(int pen) {
     // The GATE ARRAY says which RGB, the tube says what that looks like -- in that order,
     // once. This used to ask monitor_palette for an ink-indexed colour, which meant a
@@ -644,11 +645,11 @@ int CpcVideo::scrolledVideoByte(const RasterLine* state, int lineBase, int sourc
     if (sourceColumn >= 0) return state ? state->videoBytes[sourceColumn] : memory->readVideo(lineBase + sourceColumn);
     if (state && sourceColumn >= -2) return state->videoLookbehind[sourceColumn + 2];
     int page = lineBase & ~0x07ff;
-    return memory->readVideo(page | (lineBase + sourceColumn & 0x07ff));
+    return memory->readVideo(page | ((lineBase + sourceColumn) & 0x07ff));
 }
 // 0 or 1 framebuffer rows: the sub-scanline position of the field the monitor is
-// currently sweeping. Zero when there is no monitor (the Plus path renders from the
-// CRTC's own frame, and the oracle harnesses build a CpcVideo on its own).
+// currently sweeping. Zero when there is no monitor (the oracle harnesses build a
+// CpcVideo on its own).
 int CpcVideo::monitorHalfLine() const { return monitor ? monitor->verticalHalfLine : 0; }
 int CpcVideo::crtcAddress(int ma) {
     int doubled = (ma & 0x3fff) << 1;
@@ -656,7 +657,7 @@ int CpcVideo::crtcAddress(int ma) {
 }
 void CpcVideo::render() {
     if (beamMode) return;                        // beam renderer already filled `pixels`
-    uint32_t border = packedColor(penColor(ga().outputPen(false, 0))); std::fill(pixels.begin(), pixels.end(), border);
+    const uint32_t border = packedColor(penColor(ga().outputPen(false, 0)));
     std::array<uint8_t, 18> frameRegisters = crtc->getFrameRegisters ? crtc->getFrameRegisters() : crtc->registers;
     origin = displayOrigin(frameRegisters, crtc->type);
     const std::vector<std::shared_ptr<RasterLine>>& rasterFrame = crtc->getRasterFrame ? crtc->getRasterFrame() : EMPTY_FRAME;
@@ -664,21 +665,12 @@ void CpcVideo::render() {
     bool physicalRasterFrame = crtc->usesPhysicalRasterFrame ? crtc->usesPhysicalRasterFrame() : false;
     std::array<uint8_t, 18> monitorRegisters = frameRegisters;
     if (physicalRasterFrame) monitorRegisters[2] = (uint8_t)classicMonitorReferenceR2(rasterFrame, frameRegisters[2]);
-    // Plus rupture: the accumulated monitor frame is taller than R4 implies — the
-    // CRTC restarted mid-frame with VSYNC suppressed (Alcon 2020: R4=9 sub-frames).
-    // The register origin formula (R4-R7) can't place such a frame, so position it
-    // by the real VSYNC line like the physical monitor path, while keeping the Plus
-    // per-line renderer. Normal Plus frames (size == R4 geometry) are untouched.
-    // !physicalRasterFrame IS the Plus (usesPhysicalRasterFrame() is plusHardware ==
-    // false), so no CRTC type test is needed on top of it -- and none should be: a
-    // CRTC 4 machine is a classic CPC and takes the physical path like any other.
-    bool plusRupture = !physicalRasterFrame && !rasterFrame.empty()
-        && (int)rasterFrame.size() > (((frameRegisters[4] & 0x7f) + 1) * rasterHeightFromRegisters(frameRegisters)) + 16;
-    bool physicalPos = physicalRasterFrame || plusRupture;
+    // Every machine's frame is the monitor's (the Plus's too). Only a CpcVideo built with
+    // no machine behind it -- the oracle harnesses -- places lines from the registers.
+    bool physicalPos = physicalRasterFrame;
     int physicalOriginY = physicalPos
-        ? physicalFrameOriginFromVsync(rasterFrame, (physicalRasterFrame && crtc->getPhysicalFrameOriginY) ? crtc->getPhysicalFrameOriginY() : origin.y,
-                                       monitor ? monitor->lockedFieldLines() : 0,
-                                       plusRupture && !physicalRasterFrame)
+        ? physicalFrameOriginFromVsync(rasterFrame, crtc->getPhysicalFrameOriginY ? crtc->getPhysicalFrameOriginY() : origin.y,
+                                       monitor ? monitor->lockedFieldLines() : 0)
         : origin.y;
     int physicalSourceStart = physicalRasterFrame ? rasterLineForMonitorY(0, physicalOriginY, (int)rasterFrame.size()) : 0;
     bool frameScroll = frameHorizontalScrollActive(rasterFrame, rasterFrame.empty() ? asic->horizontalScroll : 0);
@@ -687,9 +679,14 @@ void CpcVideo::render() {
     // passes have to take it or the border and the characters come apart by a row.
     int halfLine = physicalPos ? monitorHalfLine() : 0;
     lineHalfLine = halfLine;
+    // The border pass below paints every row from `halfLine` down; only what it cannot
+    // reach -- the whole picture when there is no frame, row 0 of an odd field -- needs
+    // the plain border first.
+    if (rasterFrame.empty()) std::fill(pixels.begin(), pixels.end(), border);
+    else if (halfLine > 0) std::fill(pixels.begin(), pixels.begin() + (size_t)std::min(halfLine, height) * width, border);
     if (!rasterFrame.empty()) {
         for (int py = 0; py < height; py += 2) {
-            int physicalY = (int)std::floor(py / 2);
+            int physicalY = py / 2;
             int sourceLine = rasterLineForMonitorY(physicalY, physicalOriginY, (int)rasterFrame.size());
             RasterLine* state = physicalRasterFrame
                 ? physicalFrameState(rasterFrame, previousRasterFrame, sourceLine, physicalSourceStart)
@@ -705,6 +702,7 @@ void CpcVideo::render() {
     int displayedLines = physicalPos
         ? std::min((int)rasterFrame.size(), (int)std::ceil(height / 2.0))
         : std::min((int)(rasterFrame.empty() ? fallbackLines : rasterFrame.size()), (int)std::ceil(height / 2.0) + std::max(0, -origin.y));
+    drawnRows.clear();
     for (int monitorY = 0; monitorY < displayedLines; monitorY += 1) {
         int y = physicalPos ? rasterLineForMonitorY(monitorY, physicalOriginY, (int)rasterFrame.size()) : monitorY;
         RasterLine* state = physicalRasterFrame
@@ -733,15 +731,18 @@ void CpcVideo::render() {
         int verticalScroll = state ? state->verticalScroll : asic->verticalScroll;
         int extendBorder = state ? state->extendBorder : asic->softScrollControl;
         int rowY = (physicalPos ? monitorY * 2 : (origin.y + y) * 2) + halfLine;
-        paintBorderScanline(rowY, state, monitorRegisters);
+        // On the monitor's frame the border pass above already painted this row from this
+        // same record (its py is 2*monitorY); only the register-placed path lands elsewhere.
+        if (!physicalPos) paintBorderScanline(rowY, state, monitorRegisters);
         // ACCC §16.2.1: the GATE ARRAY "does not display a character" while V26 is
         // running, so the blank just painted must not be drawn over.
         if (state && state->gateArrayBlank) continue;
+        if (physicalRasterFrame && state) drawnRows.push_back({ state, lineOrigin->x, rowY });
         int sourceY = y + verticalScroll;
         int lineBase;
         if (state) lineBase = crtcAddress(state->lineAddress) + (state->videoRaster & 7) * 0x800;
         else {
-            int characterRow = (int)std::floor((double)sourceY / lineRasterHeight), raster = sourceY % lineRasterHeight;
+            int characterRow = floorDiv(sourceY, lineRasterHeight), raster = sourceY % lineRasterHeight;
             // ACCC §10.1 (p.74): "The internal 'row' counter C9 is connected directly to
             // the bits 11, 12 and 13 of the VRAM pointer... Bits 3 and 4 of the counter
             // are not considered in the calculation of the video pointer on C9 values
@@ -762,7 +763,7 @@ void CpcVideo::render() {
         // CPCSE_TRACE_ROW=<monitor row>: how that row was composed -- which record, where
         // its character zero landed, and the byte range drawn. For a line that shows the
         // wrong thing while its record looks right.
-        const char* traceRowEnv = std::getenv("CPCSE_TRACE_ROW");
+        static const char* const traceRowEnv = std::getenv("CPCSE_TRACE_ROW");
         if (traceRowEnv && (!traceRowsOnlyWhenArmed || traceRowsArmed)) {
             const char* row = traceRowEnv;
             const bool every = std::string(row) == "all";
@@ -806,7 +807,7 @@ void CpcVideo::render() {
                 int mode = pixelState.present ? pixelState.mode : ga().mode;
                 int pixelScroll = pixelState.present ? pixelState.horizontalScroll : horizontalScroll;
                 int sourcePixel = x - pixelScroll;
-                int sourceColumn = displayStartByte + (int)std::floor(sourcePixel / 8.0);
+                int sourceColumn = displayStartByte + floorDiv(sourcePixel, 8);
                 int sourceSubPixel = (sourcePixel % 8 + 8) & 7;
                 int byte = scrolledVideoByte(state, lineBase, sourceColumn);
                 int pen = pixelPen(mode, byte, sourceSubPixel);
@@ -908,7 +909,7 @@ void CpcVideo::drawSpriteChunk(const RasterLine* state, const SpriteState& sprit
         int spriteLine = state ? (state->verticalAdjust ? 0 : (((state->verticalCounter & 0x3f) << 3) | (state->rasterCounter & 7))) : displayY;
         int relativeY = (spriteLine - position.y) & 0x1ff;
         if (relativeY >= 16 * sy) continue;
-        int sourceRow = (int)std::floor((double)relativeY / sy);
+        int sourceRow = relativeY / sy;                  // both non-negative
         const Bytes* patterns = spriteState.spritePatterns;
         const uint8_t* data;
         Bytes liveData;
@@ -927,7 +928,56 @@ void CpcVideo::drawSpriteChunk(const RasterLine* state, const SpriteState& sprit
         }
     }
 }
+// One monitor row's sprites. Where a sprite goes is the ASIC's business and depends on
+// the CRTC only through the line it is on: its Y is the CRTC line (C4, C9 -- drawSpriteChunk
+// reads them from the record), its X counts from the character the CRTC numbered C0=0,
+// and it shows only where the line is displayed. All three come off the record, so the
+// sprite lands wherever the monitor put that line.
+void CpcVideo::renderSpritesOnRows(const RasterLine* state, int originX, int rowY) {
+    if (!state || state->locked || !state->vDisplay) return;
+    int firstEnabled = -1, lastEnabled = -1;
+    const int slots = std::min((int)state->displayEnabled.size(), std::max(0, state->capturedCharacters));
+    for (int slot = 0; slot < slots; slot += 1) {
+        if (!state->displayEnabled[slot]) continue;
+        if (firstEnabled < 0) firstEnabled = slot;
+        lastEnabled = slot;
+    }
+    if (firstEnabled < 0) return;
+    const std::array<uint8_t, 18>& lineRegisters = state->crtcRegisters;
+    const int skew = (unsigned)lineRegisters[8] >> 4 & 3;
+    // The slot C0=0 was filed in: the first displayed slot, less its own C0.
+    const int slotC0 = firstEnabled - state->horizontalCounters[firstEnabled];
+    const int spriteRasterLeft = originX + slotC0 * 16 - (skew < 3 ? skew * 16 : 0);
+    DisplayBounds lineBounds{ originX + firstEnabled * 16, originX + (lastEnabled + 1) * 16, 0, height };
+    const int lineClipLeft = spriteClipLeft(lineBounds.left, state, state->extendBorder, false);
+    SpriteState spriteState;
+    spriteState.spriteAttributes = &state->spriteAttributes;
+    spriteState.spriteMagnification = &state->spriteMagnification;
+    spriteState.spritePatterns = !state->spritePatterns.empty() ? &state->spritePatterns : nullptr;
+    spriteState.palette = &state->palette;
+    // A mid-line change of the sprite registers takes effect from the slot it was filed at.
+    int startSlot = 0;
+    auto drawUntil = [&](int endSlot) {
+        const int end = std::max(startSlot, std::min(slots, endSlot));
+        if (end > startSlot)
+            drawSpriteChunk(state, spriteState, 0, rowY, lineBounds, spriteRasterLeft, lineClipLeft,
+                            originX + startSlot * 16, originX + end * 16);
+        startSlot = end;
+    };
+    for (const auto& segment : state->segments) {
+        if (segment.character > startSlot) drawUntil(segment.character);
+        spriteState.spriteAttributes = &segment.spriteAttributes;
+        spriteState.spriteMagnification = &segment.spriteMagnification;
+        if (!segment.spritePatterns.empty()) spriteState.spritePatterns = &segment.spritePatterns;
+        spriteState.palette = &segment.palette;
+    }
+    drawUntil(slots);
+}
 void CpcVideo::renderSprites(bool frameScroll) {
+    if (crtc->usesPhysicalRasterFrame && crtc->usesPhysicalRasterFrame()) {
+        for (const auto& row : drawnRows) renderSpritesOnRows(row.state, row.originX, row.rowY);
+        return;
+    }
     std::array<uint8_t, 18> frameRegisters = crtc->getFrameRegisters ? crtc->getFrameRegisters() : crtc->registers;
     DisplayBounds clip = activeDisplayBounds(frameRegisters);
     const std::vector<std::shared_ptr<RasterLine>>& rasterFrame = crtc->getRasterFrame ? crtc->getRasterFrame() : EMPTY_FRAME;

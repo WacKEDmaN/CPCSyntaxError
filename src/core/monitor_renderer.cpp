@@ -209,7 +209,8 @@ void CtmMonitor::vSync() {
     // wide range -- MONITOR_VSYNC_MIN..MAX here) or whether it has stopped producing a
     // frame at all. Pinball Dreams turned out to be the second: gaps of 245 and 1600
     // lines in the same second, not a shifted rate.
-    if (std::getenv("CPCSE_VSYNC_TRACE")) {
+    static const bool traceVsync = std::getenv("CPCSE_VSYNC_TRACE") != nullptr;
+    if (traceVsync) {
         static int since = 0;
         if (vsyncCount < since) since = 0;           // the flywheel accepted one and reset
         std::fprintf(stderr, "CVSYNC gap=%d cum=%d\n", (vsyncCount - since) / 2, vsyncCount / 2);
@@ -221,7 +222,7 @@ void CtmMonitor::vSync() {
     // a pulse arriving before that -- a rupture's mid-screen VSYNC, or a second C4==R7
     // from an R7 switched during the sync -- is ignored by the flywheel.
     if (vsyncCount < MONITOR_VSYNC_MIN) {
-        if (std::getenv("CPCSE_VSYNC_TRACE"))
+        if (traceVsync)
             std::fprintf(stderr, "vSync REFUSED period=%d (min %d)\n",
                          vsyncCount, MONITOR_VSYNC_MIN);
         return;
@@ -241,7 +242,7 @@ void CtmMonitor::vSync() {
     if (measured == lastVsyncPeriod) lockedLines = (measured + 1) >> 1;
     vsyncLimit = lastVsyncPeriod > 0 ? (measured + lastVsyncPeriod + 1) >> 1 : measured;
     lastVsyncPeriod = measured;
-    if (std::getenv("CPCSE_VSYNC_TRACE"))
+    if (traceVsync)
         std::fprintf(stderr, "vSync hsyncCount=%d measured=%d limit=%d\n",
                      hsyncCount, measured, vsyncLimit);
     vsyncCount = 0;

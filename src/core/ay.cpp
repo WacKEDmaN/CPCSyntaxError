@@ -23,7 +23,7 @@ void AY38912::reset() {
     noiseCounter = 0; noiseState = 1;
     lfsr = 0x7fffff;
     envelopeCounter = 0; envelopeStep = 0; envelopeVolume = 0; envelopeHolding = false;
-    sampleClocks = 0; ayTStateRemainder = 0; outputSamplePhase = 0;
+    ayTStateRemainder = 0; outputSamplePhase = 0;
     // outputSampleRate persists across reset.
     sampleQueue.clear(); sampleReadIndex = 0; lastOutputSample = { 0, 0 };
     tapeNoise = 0;
@@ -132,13 +132,4 @@ std::array<double, 2> AY38912::level() {
     double right = 0.75 * chB + chC + mixNoise;
     return { left, right };
 }
-std::array<double, 2> AY38912::nextSample(double sampleRate) {
-    sampleClocks += 125000 / sampleRate;
-    int clocks = (int)std::floor(sampleClocks); sampleClocks -= clocks;
-    if (!clocks) return level();
-    int tickCount = clocks; double sumL = 0, sumR = 0;
-    while (clocks--) { tick(); auto levels = level(); sumL += levels[0]; sumR += levels[1]; }
-    return { sumL / tickCount, sumR / tickCount };
-}
-
 } // namespace cpcse

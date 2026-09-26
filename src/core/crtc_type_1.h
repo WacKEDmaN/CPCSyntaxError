@@ -221,7 +221,7 @@ struct CrtcType1 : CrtcBehaviour {
     // is the same line the chapter resets on because the test here runs one step ahead.
     bool rasterMatches(CRTC6845& crtc) const override {
         if (!crtc.oldInterlaceVideo()) return crtc.raster == crtc.maximumRaster();
-        int preIncrement = crtc.raster + ((crtc.registers[9] & 1) ^ 1) & 0x1f;
+        int preIncrement = (crtc.raster + ((crtc.registers[9] & 1) ^ 1)) & 0x1f;
         return (preIncrement & 0x1e) == (crtc.maximumRaster() & 0x1e);
     }
     bool advanceVertical(CRTC6845& crtc) const override { return crtc.updateVerticalType1(); }
@@ -489,7 +489,7 @@ struct CrtcType1 : CrtcBehaviour {
         // RFD used to carry.
         if ((crtc.interlaceField & 1) == 0 && !crtc.rfdIgnoresParity) return;   // case 1: faulty test, row repeats
         if (!crtc.rasterMatchesMaximum()) return;
-        crtc.nextRowAddress = crtc.rowAddress + crtc.horizontal & 0x3fff;
+        crtc.nextRowAddress = (crtc.rowAddress + crtc.horizontal) & 0x3fff;
         crtc.rfdActive = false;                          // case 2: VMA' taken, RFD retires
     }
     bool freezesStartAddressReload(CRTC6845& crtc) const override {

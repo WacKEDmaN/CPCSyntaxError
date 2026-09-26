@@ -207,7 +207,7 @@ struct CrtcType0 : CrtcBehaviour {
             // round ("C9 will increment to display lines 8 to 31, until it reaches R5").
             if (crtc.r0EnlargeStepsVertical) {
                 crtc.r0EnlargeStepsVertical = false;
-                crtc.vertical = crtc.vertical + 1 & 0x7f;
+                crtc.vertical = (crtc.vertical + 1) & 0x7f;
                 if (crtc.vertical == crtc.registers[6]) crtc.vDisplay = false;
                 // Which of §13.7.2's two cases this is was settled at C0<2. On the frame's
                 // last line (§13.7.2.2) the management stays active. Otherwise (§13.7.2.1)

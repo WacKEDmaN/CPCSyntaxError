@@ -134,10 +134,6 @@ static FatDT fatDateTimeNow() {
     int date = (((tmv.tm_year + 1900) - 1980) << 9) | ((tmv.tm_mon + 1) << 5) | tmv.tm_mday;
     return { time & 0xffff, date & 0xffff };
 }
-static bool isFatSanChar(char c) {
-    // regex [A-Z0-9$%'-_@~`!(){}^#&] (note '-_ is a range 0x27..0x5f)
-    return std::regex_search(std::string(1, c), std::regex("[A-Z0-9$%'-_@~`!(){}^#&]"));
-}
 static std::string fatShortSanitizePart(const std::string& value, const std::string& fallback) {
     std::string s = upper(value);
     s = replaceAll(s, std::regex("[^A-Z0-9$%'-_@~`!(){}^#&]"), "_");
@@ -274,7 +270,8 @@ M4Fat16View parseM4Fat16Image(const Bytes& image) {
     std::function<void(const std::string&, const std::vector<int>&, long long)> parseDirectory =
         [&](const std::string& path, const std::vector<int>& offsets, long long byteLimit) {
         std::string key = path + ":" + std::to_string(offsets.empty() ? -1 : offsets[0]);
-        if (visited.count(key)) return; visited.insert(key);
+        if (visited.count(key)) return;
+        visited.insert(key);
         Bytes data;
         for (int offset : offsets) {
             long long take = std::min((long long)clusterBytes, byteLimit - (long long)data.size());
@@ -306,7 +303,8 @@ M4Fat16View parseM4Fat16Image(const Bytes& image) {
                 std::vector<int> chunks = chain(firstCluster); Bytes payload(size, 0); int pos = 0;
                 for (int offset : chunks) {
                     int take = std::min(clusterBytes, size - pos); if (take <= 0) break;
-                    for (int i = 0; i < take; i++) payload[pos + i] = image[offset + i]; pos += take;
+                    for (int i = 0; i < take; i++) payload[pos + i] = image[offset + i];
+                    pos += take;
                 }
                 view.files[full] = { full, basePath(full), payload, size };
             }
@@ -621,7 +619,8 @@ bool M4Board::ack(Z80* cpu) {
                 else { size_t dot = n.rfind('.'); std::string base = dot != std::string::npos ? n.substr(0, dot) : n; std::string ext = dot != std::string::npos ? n.substr(dot + 1) : ""; for (int i = 0; i < std::min(8, (int)base.size()); i += 1) name8[i] = base[i]; for (int i = 0; i < std::min(3, (int)ext.size()); i += 1) ext3[i] = ext[i]; }
                 err = M4_OK; for (char ch : name8) resp8(ctx, (unsigned char)ch); resp8(ctx, '.'); for (char ch : ext3) resp8(ctx, (unsigned char)ch);
                 std::string sizeText = isDir ? "  DIR" : std::to_string(std::min(99999, row.size)); while (sizeText.size() < 5) sizeText = " " + sizeText;
-                for (char ch : sizeText) resp8(ctx, (unsigned char)ch); resp8(ctx, 0); resp16(ctx, row.size & 0xffff); break;
+                for (char ch : sizeText) resp8(ctx, (unsigned char)ch);
+                resp8(ctx, 0); resp16(ctx, row.size & 0xffff); break;
             }
             case C_OPEN: {
                 if (p.size() < 2) { err = M4_ERR_IO; break; }

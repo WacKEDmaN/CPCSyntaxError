@@ -105,14 +105,16 @@ void GateArray::bytePens(int byte, int modeBefore, int modeAfter, int switchPixe
 // the first pixel and b6 b2 b4 b0 for the second, mode 1 takes two bits per pixel,
 // mode 2 one, and mode 3 is mode 0 with the top two pen bits dropped.
 std::array<int, 2> GateArray::mode0Pens(int byte) const {
-    return { (((unsigned)byte >> 7) & 1) | (((unsigned)byte >> 2) & 2) | (((unsigned)byte >> 3) & 4) | ((byte << 2) & 8),
-             (((unsigned)byte >> 6) & 1) | (((unsigned)byte >> 1) & 2) | (((unsigned)byte >> 2) & 4) | ((byte << 3) & 8) };
+    const unsigned b = (unsigned)byte;
+    return { (int)(((b >> 7) & 1) | ((b >> 2) & 2) | ((b >> 3) & 4) | ((b << 2) & 8)),
+             (int)(((b >> 6) & 1) | ((b >> 1) & 2) | ((b >> 2) & 4) | ((b << 3) & 8)) };
 }
 std::array<int, 4> GateArray::mode1Pens(int byte) const {
-    return { (((unsigned)byte >> 7) & 1) | (((unsigned)byte >> 2) & 2),
-             (((unsigned)byte >> 6) & 1) | (((unsigned)byte >> 1) & 2),
-             (((unsigned)byte >> 5) & 1) | (byte & 2),
-             (((unsigned)byte >> 4) & 1) | ((byte & 1) << 1) };
+    const unsigned b = (unsigned)byte;
+    return { (int)(((b >> 7) & 1) | ((b >> 2) & 2)),
+             (int)(((b >> 6) & 1) | ((b >> 1) & 2)),
+             (int)(((b >> 5) & 1) | (b & 2)),
+             (int)(((b >> 4) & 1) | ((b & 1) << 1)) };
 }
 int GateArray::pixelPen(int mode, int byte, int pixel) const {
     pixel &= 7;

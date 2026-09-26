@@ -39,6 +39,7 @@
 #include "../core/monitor_model.h"
 #include "../core/monitor_renderer.h"
 #include "core/emulator.h"
+#include "core/csl.h"
 #include "core/gamepad.h"
 #include "core/crtc.h"
 #include "core/keyboard.h"
@@ -96,7 +97,7 @@ void enableDarkTitleBar(SDL_Window* window) {
             HMODULE hDwm = LoadLibraryA("dwmapi.dll");
             if (hDwm) {
                 typedef HRESULT (WINAPI *pfnDwmSetWindowAttribute)(HWND, DWORD, LPCVOID, DWORD);
-                auto setAttr = (pfnDwmSetWindowAttribute)GetProcAddress(hDwm, "DwmSetWindowAttribute");
+                auto setAttr = reinterpret_cast<pfnDwmSetWindowAttribute>(reinterpret_cast<void (*)()>(GetProcAddress(hDwm, "DwmSetWindowAttribute")));
                 if (setAttr) {
                     // DWMWA_USE_IMMERSIVE_DARK_MODE: 20 (Win11 / Win10 20H1+), fallback to 19 (older Win10)
                     if (FAILED(setAttr(hwnd, 20, &useDarkMode, sizeof(useDarkMode)))) {
@@ -113,8 +114,79 @@ void enableDarkTitleBar(SDL_Window* window) {
 }
 } // namespace
 
+// cpcse.exe is a GUI-subsystem program, so it has no console of its own: run from a
+// Command Prompt, the headless modes' output would go nowhere. They attach to the
+// console they were started from -- unless their output is already going somewhere
+// (a pipe, a file), which is left alone.
+static void attachParentConsole() {
+#ifdef _WIN32
+    const DWORD type = GetFileType(GetStdHandle(STD_OUTPUT_HANDLE));
+    if (type == FILE_TYPE_DISK || type == FILE_TYPE_PIPE) return;
+    if (AttachConsole(ATTACH_PARENT_PROCESS)) {
+        std::freopen("CONOUT$", "w", stdout);
+        std::freopen("CONOUT$", "w", stderr);
+        std::printf("\n");               // the prompt has already been printed
+    }
+#endif
+}
+
 // ------------------------------------------------------------------ entry point
 int main(int argc, char** argv) {
+    // CSL mode: play a CPC Script Language file with no window, writing the screenshots
+    // its SSM codes ask for. Nothing of it -- not even the CPU's SSM hook -- exists unless
+    // --csl is on the command line.
+    //   --csl <file> [--out <dir>] [--roms <dir>] [--model <id>] [--crtc <n>]
+    //   [--disk-dir <dir>] [--tape-dir <dir>] [--emu-name <name>] [--csl-log <file>] [--no-chain]
+    //   [--no-errata]   (play published scripts exactly as written; see cslErrata in csl.cpp)
+    {
+        std::string cslPath, outDir = "screenshots", romDir, modelId, emuName = "CPCSE", logPath, diskDir, tapeDir;
+        int forceCrtc = -1;
+        bool chain = true, errata = true;
+        for (int i = 1; i < argc; i++) { std::string a = argv[i];
+            if (a == "--csl" && i + 1 < argc) cslPath = argv[++i];
+            else if (a == "--out" && i + 1 < argc) outDir = argv[++i];
+            else if ((a == "--roms" || a == "-r") && i + 1 < argc) romDir = argv[++i];
+            else if (a == "--model" && i + 1 < argc) modelId = argv[++i];
+            else if (a == "--crtc" && i + 1 < argc) forceCrtc = std::atoi(argv[++i]);
+            else if (a == "--emu-name" && i + 1 < argc) emuName = argv[++i];
+            else if (a == "--csl-log" && i + 1 < argc) logPath = argv[++i];
+            else if (a == "--disk-dir" && i + 1 < argc) diskDir = argv[++i];
+            else if (a == "--tape-dir" && i + 1 < argc) tapeDir = argv[++i];
+            else if (a == "--no-chain") chain = false;
+            else if (a == "--no-errata") errata = false; }
+        if (!cslPath.empty()) {
+            attachParentConsole();
+            if (romDir.empty()) {
+                // The roms folder in the working directory, else the one beside the exe.
+                std::error_code ec;
+                romDir = "roms";
+                if (!std::filesystem::is_directory(romDir, ec)) {
+                    char* base = SDL_GetBasePath();
+                    if (base) { romDir = std::string(base) + "roms"; SDL_free(base); }
+                }
+            }
+            EmuHost host;          // the front end's own machine and renderer, windowless
+            CslSettings cs;
+            cs.romDir = romDir;
+            cs.screenshotDir = outDir;
+            cs.snapshotDir = outDir;
+            cs.diskDir = diskDir;
+            cs.tapeDir = tapeDir;
+            cs.emulatorName = emuName;
+            cs.followCslLoad = chain;
+            cs.errata = errata;
+            cs.forceCrtc = forceCrtc;
+            cs.logPath = logPath.empty() ? outDir + "/csl.log" : logPath;
+            // The machine a script gets when it names none (CSL cpc_model numbers).
+            if (modelId == "cpc464") cs.defaultModel = 0;
+            else if (modelId == "cpc664") cs.defaultModel = 1;
+            else if (modelId == "cpc6128plus") cs.defaultModel = 4;
+            else if (modelId == "cpc464plus") cs.defaultModel = 5;
+            else if (modelId == "gx4000") cs.defaultModel = 6;
+            CslPlayer player(*host.emu, *host.video, cs);
+            return player.run(cslPath) ? 0 : 1;      // an error is reported, and logged, by the player
+        }
+    }
     // Headless screenshot: exercise the exact EmuHost boot/render path the GUI
     // uses, with no window. --shot out.bmp [--model id] [--sna f] [--crtc N]
     // [--frames N] [--beam].
@@ -139,6 +211,7 @@ int main(int argc, char** argv) {
             else if (a == "--diag") diag = true;
             else if (a == "--beam") beam = true; }
         if (!shot.empty()) {
+            attachParentConsole();
             EmuHost host; host.scanModels();
             int mi = 0; for (int i = 0; i < (int)host.models.size(); i++) if (host.models[i].id == modelId) mi = i;
             host.bootModel(mi, wantRam, wantCrtc);
@@ -223,7 +296,8 @@ int main(int argc, char** argv) {
                         run(std::atoi(code.c_str() + 1));               // r<N>: run N frames (no key)
                     } else if (kb) { kb->setKey(code, true); run(6); kb->setKey(code, false); run(6); }
                 }
-                if (e == std::string::npos) break; k = e + 1;
+                if (e == std::string::npos) break;
+                k = e + 1;
             }
             // CPCSE_TRACE_TIP=<n>: run ONE more frame with the monitor's per-flyback PULL
             // trace armed for n lines, so a line the monitor misplaces in a demo can be

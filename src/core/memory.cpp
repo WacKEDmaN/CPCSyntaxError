@@ -25,6 +25,7 @@ void GXMemory::validateRamSize(int ramKiB) {
 
 void GXMemory::setRamSize(int ramKiB) {
     validateRamSize(ramKiB);
+    expansionPages = 0xff;
     if ((int)ram.size() == ramKiB * 1024) return;
     ram.assign((size_t)ramKiB * 1024, 0);
     reset(false);
@@ -81,6 +82,7 @@ int GXMemory::expansionPageOffset(int page, int segment) const {
         int offset = 0x10000 + (seg * 8 + (page & 7)) * 0x10000;
         return offset + 0x10000 <= (int)ram.size() ? offset : -1;
     }
+    if (((expansionPages >> (page & 7)) & 1) == 0) return -1;
     int offset = (page + 1) * 0x10000;
     return offset + 0x10000 <= (int)ram.size() ? offset : -1;
 }
@@ -220,9 +222,4 @@ int GXMemory::readBase(int address) const {
     size_t idx = address & 0xffff;
     return idx < ram.size() ? ram[idx] : 0;
 }
-int GXMemory::readRam(int address) const {
-    size_t idx = address & 0xffff;
-    return idx < ram.size() ? ram[idx] : 0;
-}
-
 } // namespace cpcse

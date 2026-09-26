@@ -841,9 +841,6 @@ public:
         if (behaviour->honoursDisplaySkewField() && (r8 >> 4 & 3) == 3) return 0;
         return r8 & 3;
     }
-    int horizontalDisplaySkew() { return behaviour->displaySkew(*this); }
-    int horizontalDisplayStart() { int skew = horizontalDisplaySkew(); return skew == 3 ? -1 : skew; }
-    int horizontalDisplayEnd() { int start = horizontalDisplayStart(); return start < 0 ? -1 : (start + registers[1] & 0xff); }
     bool displayOutputEnabled();
     int oldInterlaceVideo() const { return behaviour->interlaceVideo(*this) ? 1 : 0; }
     int rasterStep() const { return oldInterlaceVideo() ? 2 : 1; }
@@ -884,7 +881,6 @@ public:
     long fieldCounter = 0;
     int memoryAddress() const { return maRow & 0x3fff; }
     int memoryAddressBase() const { return rowAddress & 0x3fff; }
-    int requestedMemoryAddress() const { return requestedAddress & 0x3fff; }
 
     // CPCSE_TRACE_FRAME=1: one stderr line per CRTC frame (see crtc.cpp::traceFrame).
     void traceFrame();

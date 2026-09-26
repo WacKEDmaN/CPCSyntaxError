@@ -131,7 +131,8 @@ public:
 
     void applyMemoryWait(int address, bool write = false);
     void notifyAccess(const AccessEvent& event);
-    int busRead(int address, int cycles = 3, const std::string& accessType = "read");
+    // accessType is a literal ("read", "execute"); only an attached observer sees it.
+    int busRead(int address, int cycles = 3, const char* accessType = "read");
     void busWrite(int address, int value, int cycles = 3);
     // T-states the instruction spends on its own with the bus idle. They sit BETWEEN
     // M-cycles, so they push every later access along -- which on a CPC can push it
@@ -146,7 +147,7 @@ public:
     void write(int address, int value) { busWrite(address, value, 3); }
     int readWord(int address) { return read(address) | read(address + 1) << 8; }
     void writeWord(int address, int value) { write(address, value); write(address + 1, value >> 8); }
-    int fetch() { int value = busRead(pc, 3, "execute"); pc = pc + 1 & 0xffff; return value; }
+    int fetch() { int value = busRead(pc, 3, "execute"); pc = (pc + 1) & 0xffff; return value; }
     int fetchOpcode();
     int fetchWord() { int low = fetch(), high = fetch(); return low | high << 8; }
     int portRead(int address, const std::string& kind = "generic");
@@ -163,9 +164,6 @@ public:
     int run(int tStates);
 
 private:
-    // `index` selects IX/IY: nullptr = none, else &ix or &iy.
-    int* indexPtr(int* index) { return index; }
-
     int pair(int code, int* index = nullptr);
     void setPair(int code, int value, int* index = nullptr);
     // A DD/FD instruction spends 5 internal T-states computing IX+d after it has read

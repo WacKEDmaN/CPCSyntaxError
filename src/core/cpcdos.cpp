@@ -47,9 +47,6 @@ static std::string parentPath(const std::string& path) {
     std::string full = normalisePath(path); size_t idx = full.rfind('/');
     return (idx == std::string::npos || idx == 0) ? "/" : full.substr(0, idx);
 }
-static std::string baseName(const std::string& path) {
-    std::string full = normalisePath(path); return full == "/" ? "/" : full.substr(full.rfind('/') + 1);
-}
 static std::string toCpcChar(int byte) { return byte == 0xa3 ? std::string("~") : std::string(1, (char)(byte & 0xff)); }
 static std::string cpcTrimName(const std::string& nameIn) {
     std::string out;

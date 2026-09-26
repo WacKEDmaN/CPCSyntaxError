@@ -75,7 +75,8 @@ static Bytes unrle(const Bytes& data, int size) {
     for (int i = 0; i < (int)data.size() && p < size;) {
         if (data[i] == 0xe5 && (i + 1 < (int)data.size() ? data[i + 1] : 0) != 0) {
             int n = data[i + 1], v = data[i + 2];
-            for (int k = p; k < std::min(size, p + n); k++) out[k] = (uint8_t)v; p += n; i += 3;
+            for (int k = p; k < std::min(size, p + n); k++) out[k] = (uint8_t)v;
+            p += n; i += 3;
         } else {
             out[p++] = data[i++];
             if (out[p - 1] == 0xe5 && i < (int)data.size() && data[i] == 0) i++;

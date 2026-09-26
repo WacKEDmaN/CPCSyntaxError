@@ -36,6 +36,10 @@ public:
     int ramConfig = 0, ram4MbSegment = 0;
     int upperRom = 0; bool useCartridgeUpper = true; int upperCartridgePage = 1;
     int lowerPage = 0, lowerLocation = 0; bool asicRamEnabled = false; int asicRamLocation = 0;
+    // Which 64K expansion pages (&7Fxx bits 5..3) answer, one bit each. All of them in a
+    // contiguous expansion; a silicon disc answers only pages 4..7. Set to all by
+    // setRamSize, so only a caller that fits such a board changes it.
+    int expansionPages = 0xff;
 
     // Handlers (optional; empty == absent). Read handlers return -1 for null.
     std::function<void(int address, int value, int previous)> asicRamHandler;
@@ -92,7 +96,6 @@ public:
     bool watchArmed = false;
     int readVideo(int address) const;
     int readBase(int address) const;
-    int readRam(int address) const;
 };
 
 } // namespace cpcse

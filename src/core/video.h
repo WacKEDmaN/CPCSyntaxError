@@ -25,7 +25,7 @@ int rasterLineForMonitorY(int physicalY, int originY, int frameLength);
 // lockedFieldLines: the period the monitor's vertical flywheel is running at, in lines.
 // 0 leaves the origin wrapped by the frame's own length, which is what it did before the
 // flywheel could be asked -- see the body for why that is wrong.
-int physicalFrameOriginFromVsync(const std::vector<std::shared_ptr<RasterLine>>& rasterFrame, int fallback = 40, int lockedFieldLines = 0, bool anchorOnLockedField = false);
+int physicalFrameOriginFromVsync(const std::vector<std::shared_ptr<RasterLine>>& rasterFrame, int fallback = 40, int lockedFieldLines = 0);
 RasterLine* physicalFrameState(const std::vector<std::shared_ptr<RasterLine>>& currentFrame, const std::vector<std::shared_ptr<RasterLine>>& previousFrame, int sourceLine, int sourceStart);
 int firstVisibleByte(int extendBorder);
 bool frameHorizontalScrollActive(const std::vector<std::shared_ptr<RasterLine>>& rasterFrame, int fallback = 0);
@@ -79,6 +79,9 @@ public:
     bool traceRowsArmed = false;
     // The tube actually in use: the override if there is one, else the set's phosphor.
     std::string monitorMode;
+    // ...and whether it is the colour tube, asked for every pixel drawn: a colour tube
+    // passes the RGB through untouched. Kept by setMonitorMode, the one writer.
+    bool monitorColourTube = true;
 
     // transient render state
     XY origin;
@@ -188,6 +191,11 @@ public:
     void drawSpriteChunk(const RasterLine* state, const SpriteState& spriteState, int displayY, int pixelY,
         const DisplayBounds& lineBounds, int spriteRasterLeft, int lineClipLeft, int chunkLeft, int chunkRight);
     void renderSprites(bool frameScroll = false);
+    // The rows the monitor path drew this frame: the record, where its character slot 0
+    // landed, and its framebuffer row. The Plus's sprites are laid over those same rows.
+    struct DrawnRow { const RasterLine* state; int originX; int rowY; };
+    std::vector<DrawnRow> drawnRows;
+    void renderSpritesOnRows(const RasterLine* state, int originX, int rowY);
 };
 
 } // namespace cpcse

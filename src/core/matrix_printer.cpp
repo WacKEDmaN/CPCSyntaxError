@@ -42,7 +42,6 @@ Bytes matrixPrinterSelfTestBytes() {
     auto push = [&](std::initializer_list<int> values) { for (int v : values) out.push_back((uint8_t)(v & 0xff)); };
     auto text = [&](const std::string& value) { for (char ch : value) out.push_back((uint8_t)(ch & 0xff)); };
     auto line = [&](const std::string& value = "") { text(value); push({ 13, 10 }); };
-    auto esc = [&](std::initializer_list<int> values) { out.push_back(0x1b); for (int v : values) out.push_back((uint8_t)(v & 0xff)); };
     auto escc = [&](char c) { out.push_back(0x1b); out.push_back((uint8_t)c); };
     auto resetModes = [&]() {
         escc('F'); escc('H'); escc('5'); escc('-'); push({ 0 }); escc('W'); push({ 0 }); push({ 0x12 }); escc('P'); escc('x'); push({ 0 }); escc('T');

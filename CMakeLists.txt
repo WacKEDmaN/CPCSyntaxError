@@ -30,6 +30,20 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
   add_compile_options($<$<COMPILE_LANGUAGE:CXX>:-fwrapv>)
 endif()
 
+# Link-time optimisation in Release: the per-pixel monitor path crosses several source
+# files, and only the linker can inline across them (about 10% faster, same output).
+# -DCPCSE_LTO=OFF to build without.
+option(CPCSE_LTO "Link-time optimisation in Release builds" ON)
+if(CPCSE_LTO AND CMAKE_BUILD_TYPE STREQUAL "Release")
+  include(CheckIPOSupported)
+  check_ipo_supported(RESULT cpcseIpo OUTPUT cpcseIpoWhy LANGUAGES CXX)
+  if(cpcseIpo)
+    set(CMAKE_INTERPROCEDURAL_OPTIMIZATION ON)
+  else()
+    message(STATUS "LTO not available: ${cpcseIpoWhy}")
+  endif()
+endif()
+
 # --------------------------------------------------------------- the core
 file(GLOB CPCSE_CORE_SOURCES CONFIGURE_DEPENDS src/core/*.cpp)
 add_library(cpcse-core STATIC ${CPCSE_CORE_SOURCES})
@@ -90,8 +104,11 @@ add_library(rasm STATIC
 target_include_directories(rasm PUBLIC ${RASM_DIR})
 set_source_files_properties(${RASM_DIR}/rasm.c PROPERTIES
   COMPILE_DEFINITIONS "INTEGRATED_ASSEMBLY;RASM_PRODUCTION_WITHOUT_AUTOTEST;exit=rasm_bridge_exit")
+# ...and without link-time optimisation: rasm.c declares salvador_compress and
+# salvador_get_max_compressed_size with other types than salvador's sources define them.
 foreach(t rasm rasm-crunchers rasm-apultra rasm-lzsa rasm-salvador)
   target_compile_options(${t} PRIVATE -w -O2)
+  set_target_properties(${t} PROPERTIES INTERPROCEDURAL_OPTIMIZATION OFF)
 endforeach()
 if(WIN32)
   target_link_libraries(rasm PUBLIC ws2_32)   # rasm's web directives

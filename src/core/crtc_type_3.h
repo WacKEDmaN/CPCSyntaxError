@@ -245,7 +245,7 @@ struct CrtcType3 : CrtcBehaviour {
     bool clearsVDisplayOnRowMatch() const override { return false; }
     void advanceHsync(CRTC6845& crtc) const override {
         int width = crtc.registers[3] & 0x0f;
-        crtc.hsyncCounter = crtc.hsyncCounter + 1 & 0x0f;
+        crtc.hsyncCounter = (crtc.hsyncCounter + 1) & 0x0f;
         if (crtc.hsyncCounter == width) { crtc.hsync = false; crtc.onHsync(); }
     }
     void reloadNextRowAddress(CRTC6845& crtc) const override {

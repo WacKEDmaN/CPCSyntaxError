@@ -22,6 +22,10 @@ around a cycle-level model of the machine's video chips.
   into / over / out, disassembly with labels, hex editor, and live views of the
   CRTC, Gate Array, monitor, Plus ASIC, PSG, PPI, keyboard matrix, disc
   controller and tape.
+- **CSL scripts and SSM screenshots** (Longshot's CPC Script Language 1.4 and ScreenShot
+  Management 1.1): `cpcse.exe --csl <script>` plays a script with no window and saves the
+  screenshots the running program asks for -- which is how SHAKER's own scripts drive
+  every test. See [CSL scripts](#csl-scripts-and-ssm-screenshots).
 - A built-in **assembler**: [RASM](https://github.com/EdouardBERGE/rasm) itself,
   linked in. Assemble straight into the running machine's memory (F9) and run it
   (Ctrl+F9).
@@ -87,6 +91,48 @@ cpcse.exe --shot out.bmp --model cpc6128 --frames 200 [--disk game.dsk] [--type 
 
 Models: `cpc464`, `cpc6128`, `cpc464plus`, `cpc6128plus`, `gx4000`.
 
+The headless modes print to the Command Prompt they were started from. `cpcse.exe` is a
+windowed program, so the prompt does not wait for it: use `start /wait cpcse.exe ...` in
+a batch file that needs the result.
+
+## CSL scripts and SSM screenshots
+
+`cpcse.exe --csl <script>` plays a CPC Script Language file with no window, writing the
+screenshots the emulated program requests with SSM codes (the Z80 bytes `ED LL ED HH`) as
+`CPCSE_<crtc>_<HHLL>.bmp` -- the naming the SSM standard suggests for the SHAKER portal.
+Nothing of it runs unless `--csl` is given.
+
+```
+cpcse.exe --csl SHAKE27A-1.CSL --out shots --disk-dir <folder with shaker27.dsk>
+```
+
+| Option | |
+|---|---|
+| `--out <dir>` | screenshots, snapshots and `csl.log` (default `screenshots`) |
+| `--roms <dir>` | firmware and the Plus system cartridge (default `roms`) |
+| `--disk-dir`, `--tape-dir <dir>` | where to look for the media a script names |
+| `--model <id>` | the machine for a script with no `cpc_model` (default `cpc6128`) |
+| `--crtc <n>` | override every `crtc_select` (0-4) |
+| `--emu-name <name>` | the image name prefix (default `CPCSE`) |
+| `--csl-log <file>` | the log of the run (default `<out>/csl.log`) |
+| `--no-chain` | do not follow `csl_load` |
+| `--no-errata` | play published scripts exactly as written (see below) |
+
+Every CSL 1.4 instruction is handled: machine configuration (`cpc_model`, `crtc_select`
+0/1/1A/1B/2/3/4, `gate_array`, `memory_exp`, `rom_dir`, `rom_config`), `reset soft|hard`,
+disc, tape and snapshot media and folders, keys (`\(...)` codes, `{groups}`, `\(KOF)`,
+`key_from_file`, `keyboard_write`), the four waits, screenshots and snapshots (versions
+1-3) with their names and folders, and `csl_load`. `crtc_select 3` with no model builds a
+6128 Plus (the CRTC 3 is its ASIC) and takes it from its menu to BASIC before the script
+starts. SSM `#0000` ends a `wait_ssm0000`, `#FFFE` saves the named screenshot, `#FFFF` a
+snapshot. Anything the machine cannot do stops the script with the standard's report:
+script, line, instruction, reason, the script's CSL version and the supported one.
+
+**Erratum.** SHAKER 2.7 added a ninth sub-test to its test U ("R4 & R9 check") that the
+SHAKE27A-*.CSL scripts were not updated for: the test now ends 14.2-14.7 s after its key,
+the script moves on after 14 s, and the five AI screens that follow are never reached. The
+player lengthens that one wait to 16 s and says so in the log; `--no-errata` turns it off.
+
 ## Building from source
 
 Requirements: Windows, a MinGW-w64 GCC with C++17 (GCC 10 or later), CMake 3.16+,
@@ -118,7 +164,8 @@ third_party/   Dear ImGui (docking branch) and RASM, vendored; SDL2 is fetched s
 |---|---|
 | CRTC types 0-4, Gate Array, monitor | Mature: rule sets from the Compendium, cross-checked by independent reference models and SHAKER |
 | Z80, PSG, PPI, disc controller, tape | Working; not yet audited to the same depth as the video chips |
-| CPC Plus ASIC | Working |
+| CPC Plus ASIC | Working; its picture goes through the same monitor model as a CPC's |
+| CSL / SSM | Complete (CSL 1.4, SSM 1.1) |
 | **User interface** | **Incomplete** -- new and still being refined; expect rough edges and changes |
 | **M4 board** | **Incomplete** |
 | **Symbiface II / III** | **Incomplete** -- mouse and RTC only; the IDE/CF interface is not emulated |
@@ -149,7 +196,8 @@ permits **non-commercial use only**. The Amstrad firmware and system cartridge i
 `roms/` are not covered by the MIT licence (see `roms/README.txt`).
 
 CRTC behaviour is sourced from the **"Amstrad CPC CRTC Compendium" by Longshot**
-(CC BY-NC-ND 4.0) and checked against his SHAKER test suite. The built-in assembler
+(CC BY-NC-ND 4.0) and checked against his SHAKER test suite; the CSL and SSM formats
+are his standards too. The built-in assembler
 is **RASM by Edouard BERGE**. The user interface uses **Dear ImGui** by Omar Cornut
 and **SDL2**.
 

@@ -205,6 +205,7 @@ void GateArray::clockPixel() {
         hsyncPinFallIn -= 1;
         if (hsyncPinFallIn == 0) { hsyncPinFallIn = -1; endCHsync(); }
     }
+    if (pixelSink) pixelSink(pixelSinkContext);
     if (onPixel) onPixel();
 }
 

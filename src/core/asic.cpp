@@ -137,7 +137,8 @@ void PlusAsic::writeAsicRam(int address, int value, int previous) {
         if (rasterInterruptLine != value) {
             rasterInterruptLine = value;
             if (value && hasPendingInterrupt && hasPendingInterrupt()) {
-                if (clearPendingInterrupt) clearPendingInterrupt(); shadowInterrupt = true;
+                if (clearPendingInterrupt) clearPendingInterrupt();
+                shadowInterrupt = true;
             }
         }
     }
@@ -236,8 +237,8 @@ bool PlusAsic::fetchDma(int channelIndex) {
         if (channel.pause > 0 || legacyDmaPauseTiming) return false;
     }
     channel.currentAddress = channel.pointer;
-    channel.instruction = memory->readBase(channel.pointer) | memory->readBase(channel.pointer + 1 & 0xffff) << 8;
-    channel.pointer = channel.pointer + 2 & 0xffff;
+    channel.instruction = memory->readBase(channel.pointer) | memory->readBase((channel.pointer + 1) & 0xffff) << 8;
+    channel.pointer = (channel.pointer + 2) & 0xffff;
     channel.instructionFetched = true;
     return true;
 }

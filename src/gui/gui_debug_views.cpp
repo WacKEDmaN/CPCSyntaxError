@@ -144,7 +144,7 @@ void GuiShell::windowCpu() {
 
         sectionHeading("TIMING");
         ImGui::Text("machine T  %lld", (long long)e->machineCycles);
-        ImGui::Text("picture    %d   beam %d,%d", e->plusHardware ? (int)e->plusMonitorFrame : e->classicMonitorFrame,
+        ImGui::Text("picture    %d   beam %d,%d", e->classicMonitorFrame,
                     e->classicMonitorCharacter, e->classicMonitorLine);
     }
     ImGui::End();
@@ -610,8 +610,10 @@ void GuiShell::windowVideo() {
                         ImGui::ColorButton("##ink", rgbToVec(host.video->penColor(i)), ImGuiColorEditFlags_NoTooltip | ImGuiColorEditFlags_NoDragDrop, ImVec2(26, 20));
                         if (i < 16) ImGui::Text("%2d:%02d", i, ga->gaPalette[i] & 0x1f); else ImGui::Text("B :%02d", ga->gaPalette[16] & 0x1f);
                         ImGui::EndGroup();
-                        if (ImGui::IsItemHovered()) ImGui::SetTooltip(i < 16 ? "pen %d, hardware colour %d" : "border, hardware colour %d%s",
-                                                                       i < 16 ? i : ga->gaPalette[16] & 0x1f, i < 16 ? ga->gaPalette[i] & 0x1f : 0);
+                        if (ImGui::IsItemHovered()) {
+                            if (i < 16) ImGui::SetTooltip("pen %d, hardware colour %d", i, ga->gaPalette[i] & 0x1f);
+                            else ImGui::SetTooltip("border, hardware colour %d", ga->gaPalette[16] & 0x1f);
+                        }
                         ImGui::PopID();
                         if (i % 9 != 8 && i != 16) ImGui::SameLine();
                     }

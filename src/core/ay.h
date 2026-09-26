@@ -26,7 +26,6 @@ public:
     int envelopeCounter = 0, envelopeStep = 0, envelopeVolume = 0;
     bool envelopeHolding = false;
     bool envelopeAttack = false, envelopeAlternate = false, envelopeHold = false, envelopeContinue = false;
-    double sampleClocks = 0;
     int ayTStateRemainder = 0;
     double outputSamplePhase = 0;
     double outputSampleRate = 0;
@@ -50,7 +49,6 @@ public:
     void tickEnvelope();
     void tick();
     std::array<double, 2> level();
-    std::array<double, 2> nextSample(double sampleRate = 44100);
 };
 
 } // namespace cpcse

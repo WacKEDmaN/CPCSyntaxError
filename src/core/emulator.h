@@ -56,20 +56,11 @@ public:
 
     std::vector<std::shared_ptr<RasterLine>> rasterCapture, rasterFrame, previousRasterFrame;
     int classicMonitorCharacter = 0;
-    // Plus/ASIC monitor-frame delimiter. On Plus the raster frame is delimited by
-    // the real VSYNC pulse (with a flywheel), NOT the CRTC's C4-wrap onFrame — so
-    // rupture displays (Alcon 2020: R4=9 short frames + R7=127 suppressed vsync)
-    // that restart the CRTC many times per physical frame stack correctly into one
-    // tall monitor frame instead of collapsing to a sliver.
     // ACCC §27.6.5 (p.288): the ASIC's of CRTC 3 and 4 hand the GATE ARRAY their HSYNC
     // a microsecond late, so R52 increments -- and the interrupt lands -- one usec
     // later than on CRTC 0/1/2 ("code interrupted 16 usec after C0vs=R2" against 15).
     // Counts characters until the deferred GateArray::onHsync fires; 0 = idle.
     int gateArrayHsyncPending = 0;
-    int plusMonitorLine = 0;
-    bool plusVsyncPending = false;
-    long plusMonitorFrame = 0;     // Plus pictures completed (real VSYNC or flyback failsafe)
-    static constexpr int PLUS_FRAME_MAX_LINES = 340;  // flyback cap if vsync stays suppressed
     // Diagnostic counters (surfaced by the --shot --diag runner path). vsyncs/frame
     // should be 1.0; a shortfall means the CRTC is missing per-frame VSYNCs (rupture
     // timing). blankFrames = monitor frames with no display enabled.

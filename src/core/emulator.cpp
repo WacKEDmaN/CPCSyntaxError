@@ -47,8 +47,10 @@ GX4000::GX4000() {
     gateArrayHsyncPending = 0;
     monitorRenderer = new CtmMonitor();
     // ACCC §16.2.2: the GATE ARRAY divides CK16 down for the CRTC. The monitor is on
-    // the fast side of that divider, so it is clocked from here.
-    gateArray->onPixel = [this]() { if (plusHardware == false) advanceClassicMonitorCharacter(); };
+    // the fast side of that divider, so it is clocked from here -- on a Plus as on a
+    // CPC: the ASIC is that machine's GATE ARRAY, and its C-SYNC goes to a monitor too.
+    gateArray->pixelSink = [](void* machine) { static_cast<GX4000*>(machine)->advanceClassicMonitorCharacter(); };
+    gateArray->pixelSinkContext = this;
     gateArray->onTraceRaise = [this](const char* why, bool raised, int r52) {
         std::fprintf(stderr, "f%-6d %-8s %-8s C0=%2d C4=%3d C9=%d  R52=%2d\n",
                      crtc ? crtc->frame : -1, raised ? "RAISE" : "(no int)", why,
@@ -88,7 +90,7 @@ GX4000::GX4000() {
         crtc->gateArrayBlanking = gateArray->blanking();   // ACCC §16.2.1
         // ACCC §16.1: C-SYNC reaches the monitor when V26 reaches 2, two HSYNCs
         // after the CRTC raised VSYNC.
-        if (plusHardware == false && gateArray->consumeMonitorSyncStart()) {
+        if (gateArray->consumeMonitorSyncStart()) {
             dbgVsyncCount++;
             // The legacy monitor is NOT told about this: it separates the vertical
             // sync out of the C-SYNC stream itself, with an integrator, exactly as
@@ -135,6 +137,9 @@ GX4000::GX4000() {
         }
         gateArray->onCrtcVsyncPin(crtc->vsync);          // ACCC §16.2.3 / p.164 (CRTC 3/4)
         gateArray->onCharacter();
+        // The 16 Pixel-M2 just clocked the monitor; what the machine mirrors of it is read
+        // at character boundaries only, so it is copied once per character, not per pixel.
+        syncClassicMonitorTiming();
         // ACCC §16.2.3: SIG_GA_HSYNC rises H06 characters after the CRTC's HSYNC did.
         // The legacy monitor reads the C-SYNC pin itself in advanceClassicMonitorCharacter
         // below; the beam renderer still wants the edge as an event.
@@ -154,29 +159,14 @@ GX4000::GX4000() {
             crtc->behaviour->cVsyncNeedsCrtcVsync());       // ACCC §16.2.3: the pin gates it on CRTC 3/4
         // ACCC §16.1: the monitor is not driven from the CRTC's VSYNC directly — the
         // GATE ARRAY's V26 counter delays the composite C-SYNC by two HSYNCs. The
-        // classic monitor is therefore synced from onHsync below, not from here.
-        if (plusHardware != false) plusVsyncPending = true;   // a real VSYNC in this monitor frame
+        // monitor is therefore synced from onHsync above, not from here.
     };
-    // On Plus the CRTC's C4-wrap (onFrame) ends a *CRTC* frame, which is only the
-    // *monitor* frame end when a VSYNC actually fired in it. A rupture display
-    // (Alcon 2020: R4=9 short frames, R7=127 suppressed VSYNC) restarts the CRTC
-    // many times per physical frame with no VSYNC; those sub-frames must accumulate
-    // into one tall monitor frame instead of each completing (and collapsing) it.
-    // Normal games VSYNC once per CRTC frame, so they complete here exactly as
-    // before — byte-identical. A failsafe in onScanline caps a runaway frame.
-    o.onFrame = [this](int) {
-        if (plusHardware == false) return;
-        if (plusVsyncPending) { completeRasterFrame(); plusMonitorLine = 0; plusVsyncPending = false; plusMonitorFrame += 1; }
-    };
+    // Neither the CRTC's C4 wrap nor its C0 wrap is a picture or a line: the monitor
+    // decides both from the C-SYNC it is sent (advanceClassicMonitorCharacter), on the
+    // Plus as on the CPC. The Plus used to file one record per CRTC line and close its
+    // picture at the CRTC frame after a VSYNC, which an R0 rupture (sixteen CRTC lines
+    // in one monitor line, SHAKER A3) or a suppressed VSYNC (Alcon 2020) tore apart.
     o.onScanline = [this](int) {
-        if (plusHardware != false) {
-            if (plusMonitorLine >= PLUS_FRAME_MAX_LINES) {   // flyback failsafe: VSYNC stayed suppressed
-                completeRasterFrame(); plusMonitorLine = 0; plusVsyncPending = false; plusMonitorFrame += 1;
-            }
-            crtc->scanlineInFrame = plusMonitorLine;   // monitor line owns the capture index
-            captureRasterState();
-            plusMonitorLine++;
-        }
         if (plusHardware) {
             int scanline = ((crtc->vertical & 0x3f) << 3) | (crtc->raster & 7);
             if (asic->rasterInterruptEnabled() && scanline == asic->rasterInterruptLine) {
@@ -305,7 +295,7 @@ GX4000::GX4000() {
     crtc->getRasterFrame = [this]() -> const std::vector<std::shared_ptr<RasterLine>>& { return rasterFrame; };
     crtc->getPreviousRasterFrame = [this]() -> const std::vector<std::shared_ptr<RasterLine>>& { return previousRasterFrame; };
     crtc->getFrameRegisters = [this]() { return videoFrameRegisters; };
-    crtc->usesPhysicalRasterFrame = [this]() { return plusHardware == false; };
+    crtc->usesPhysicalRasterFrame = []() { return true; };   // the monitor's frame, on every machine
     crtc->getPhysicalFrameOriginY = [this]() { return classicDisplayOriginY; };
     videoFrameRegisters = crtc->registers; videoCaptureRegisters = crtc->registers;
     classicFrameOvershoot = 0;
@@ -498,7 +488,6 @@ void GX4000::advanceClassicMonitorCharacter() {
                          rasterCapture.size(), crtc->horizontal);
         appliedLineSnap16 = monitorRenderer->lineSnap16;
     }
-    syncClassicMonitorTiming();
     if (!lineComplete) return;
     classicMonitorLine += 1;
     bool monitorEdge = monitorRenderer->consumeVerticalFrameEdge();
@@ -540,7 +529,7 @@ void GX4000::advanceClassicMonitorCharacter() {
         }
         if (rollBudget > 0 && lastStarts == crtc->dbgCrtcVsyncStarts
             && classicMonitorFrame >= rollFrom) {
-            std::fprintf(stderr, "displayed frame %ld ROLLED (no CRTC VSYNC)  crtcFrame=%d "
+            std::fprintf(stderr, "displayed frame %d ROLLED (no CRTC VSYNC)  crtcFrame=%d "
                                  "lines=%d C0=%2d C4=%3d C9=%d R4=%3d R7=%3d R9=%2d R5=%2d\n",
                          classicMonitorFrame, crtc->frame, classicMonitorLine,
                          crtc->horizontal, crtc->vertical, crtc->raster,
@@ -552,7 +541,7 @@ void GX4000::advanceClassicMonitorCharacter() {
         // Where the capture's line 0 is set, against the CRTC -- for a picture that sits
         // at the wrong height although the C-SYNC it was built from is ordinary.
         if (traceMonitorEdgeBudget > 0) {
-            std::fprintf(stderr, "MONITOR EDGE frame %ld after %d lines  crtc f%d C0=%2d C4=%3d C9=%2d "
+            std::fprintf(stderr, "MONITOR EDGE frame %d after %d lines  crtc f%d C0=%2d C4=%3d C9=%2d "
                                  "vsync=%d edge=%d  sinceVsync=%d limit=%d\n",
                          classicMonitorFrame, classicMonitorLine, crtc->frame, crtc->horizontal,
                          crtc->vertical, crtc->raster, crtc->vsync ? 1 : 0, monitorEdge ? 1 : 0,
@@ -621,20 +610,16 @@ int GX4000::monitorCalibration16() const {
 // Plug a set in. Nothing else in the machine may hold this: the monitor is a chip and the
 // set is what that chip IS, so it goes there and everybody reads it from there.
 void GX4000::setMonitorModel(const MonitorModel* model) {
-    monitorSet = model;
-    if (monitorRenderer) monitorRenderer->model = model;
+    monitorSet = model;              // nullptr: none chosen, the machine's own at every reset
+    if (monitorRenderer) monitorRenderer->model = model ? model : shippedMonitorModel();
 }
 // ...and the one that came in the box, which is the only pairing 15.1 says is centred.
 const MonitorModel* GX4000::shippedMonitorModel() const {
     return monitorModelShippedWith(plusHardware != false, crtc ? crtc->type : 0);
 }
 GX4000::Beam GX4000::lightgunBeamCanvasPosition() {
-    if (plusHardware == false) {
-        return { (double)(classicMonitorCharacter * 16 + classicMonitorLineOffset - MONITOR_CROP_LEFT),
-                 (double)(classicMonitorLine * 2) };
-    }
-    Beam origin = lightgunDisplayOrigin();
-    return { origin.x + crtc->horizontal * 16, (origin.y + crtc->scanlineInFrame) * 2 };
+    return { (double)(classicMonitorCharacter * 16 + classicMonitorLineOffset - MONITOR_CROP_LEFT),
+             (double)(classicMonitorLine * 2) };
 }
 bool GX4000::isLightgunPixelBright(double x, double y, bool liveBeam) {
     if (!liveBeam && lightgunPixelSampler) {
@@ -658,25 +643,8 @@ bool GX4000::isLightgunPixelBright(double x, double y, bool liveBeam) {
     int ma = crtc->screenAddress() + characterRow * crtc->registers[1] + character;
     int address = rasterByteAddress(ma, raster);
     int left = memory->readVideo(address), right = memory->readVideo(address + 1);
-    int mode = gateArray->mode;
-    int pen;
-    if (mode == 0 || mode == 3) {
-        int byte = pixel < 8 ? left : right;
-        int p0 = (((unsigned)byte >> 7) & 1) | (((unsigned)byte >> 2) & 2) | (((unsigned)byte >> 3) & 4) | ((byte << 2) & 8);
-        int p1 = (((unsigned)byte >> 6) & 1) | (((unsigned)byte >> 1) & 2) | (((unsigned)byte >> 2) & 4) | ((byte << 3) & 8);
-        pen = (pixel % 8) < 4 ? p0 : p1;
-        if (mode == 3) pen &= 3;
-    } else if (mode == 1) {
-        int byte = pixel < 8 ? left : right, p = pixel % 8;
-        int values[4] = {
-            (((unsigned)byte >> 7) & 1) | (((unsigned)byte >> 2) & 2),
-            (((unsigned)byte >> 6) & 1) | (((unsigned)byte >> 1) & 2),
-            (((unsigned)byte >> 5) & 1) | (byte & 2),
-            (((unsigned)byte >> 4) & 1) | ((byte & 1) << 1) };
-        pen = values[(unsigned)p >> 1];
-    } else {
-        int byte = pixel < 8 ? left : right; pen = (unsigned)byte >> (7 - (pixel % 8)) & 1;
-    }
+    // ACCC §9.1: the GATE ARRAY's own decode of the byte, not a second copy of it.
+    int pen = gateArray->pixelPen(gateArray->mode, pixel < 8 ? left : right, pixel % 8);
     int rgb = asic->color(pen), r = (unsigned)rgb >> 16 & 255, g = (unsigned)rgb >> 8 & 255, b = rgb & 255;
     return r + g + b >= 384;
 }
@@ -685,11 +653,11 @@ void GX4000::captureRasterState() {
     int displayLine = crtc->scanlineInFrame;
     int lineBase = rasterByteAddress(crtc->rowAddress, crtc->vlc);
     int linePage = lineBase & ~0x07ff;
-    int previous2 = linePage | (lineBase - 2 & 0x07ff);
-    int previous1 = linePage | (lineBase - 1 & 0x07ff);
+    int previous2 = linePage | ((lineBase - 2) & 0x07ff);
+    int previous1 = linePage | ((lineBase - 1) & 0x07ff);
     const Bytes& spritePatterns = snapshotSpritePatterns();
     bool existing = displayLine >= 0 && displayLine < (int)rasterCapture.size() && rasterCapture[displayLine];
-    if (displayLine >= 0 && displayLine < 512 && (plusHardware != false || !existing)) {
+    if (displayLine >= 0 && displayLine < 512 && !existing) {
         auto line = std::make_shared<RasterLine>();
         line->mode = gateArray->mode; line->locked = asic->locked;
         line->gaPalette = arrToVec(gateArray->gaPalette); line->palette = arrToVec16(asic->palette);
@@ -700,10 +668,9 @@ void GX4000::captureRasterState() {
         line->displaySkewBits = crtc->behaviour->displaySkew(*crtc);
         line->interlaceField = crtc->interlaceField;
         line->crtcFrame = crtc->frame; line->horizontalCounterAtMonitorLine = crtc->horizontal;
-        line->monitorLineOffset = plusHardware == false
-            ? classicMonitorLineOffset + monitorRenderer->lineSnap16 : 0;
+        line->monitorLineOffset = classicMonitorLineOffset + monitorRenderer->lineSnap16;
         line->cHsyncRiseAdvance16 = crtc->behaviour->cHsyncRiseAdvance16();
-        line->sweepPhase16 = plusHardware == false ? (monitorRenderer->pixel & 15) : 0;
+        line->sweepPhase16 = monitorRenderer->pixel & 15;
         line->monitorCalibration16 = monitorCalibration16();
         line->hsyncAtMonitorLine = crtc->hsync;
         line->vsync = crtc->vsyncPinActive();
@@ -735,9 +702,9 @@ void GX4000::captureRasterCharacter() {
     std::shared_ptr<RasterLine> line = displayLine < (int)rasterCapture.size() ? rasterCapture[displayLine] : nullptr;
     if (!line) { captureRasterState(); line = displayLine < (int)rasterCapture.size() ? rasterCapture[displayLine] : nullptr; }
     if (!line) return;
-    int character = plusHardware == false ? (classicMonitorCharacter & 0xff) : (crtc->horizontal & 0xff);
+    int character = classicMonitorCharacter & 0xff;
     // ...moved along by any re-lock taken earlier in this sweep line (relockRefile).
-    if (plusHardware == false && lineSlotShift != 0) {
+    if (lineSlotShift != 0) {
         character = classicMonitorCharacter + lineSlotShift;
         if (character < 0 || character > 0xff) return;
     }
@@ -793,7 +760,7 @@ void GX4000::loadCartridge(const Cartridge& cart, LoadCartridgeOptions options) 
     ramExpansion = selectedRam > 64;
     ramKiB = selectedRam;
     plusHardware = true; gateArray->setPlusHardware(true); crtc->setType(3); ppi->setPlusMode(true);
-    crtc->hostOwnsScanlineIndex = false;   // on Plus the CRTC frame IS the capture frame
+    crtc->hostOwnsScanlineIndex = true;    // the monitor owns the capture index, as on a CPC
     // ACCC §9.3.4: the Pixel-M2 at which the GA switches graphic mode is a property
     // of the CRTC it is paired with, so it travels with the chip profile.
     gateArray->modeSwitchPixelInByte = crtc->behaviour->modeSwitchPixelInByte();
@@ -814,7 +781,7 @@ void GX4000::loadClassicFirmware(const LoadClassicOptions& options) {
                      : options.crtcType == 4 ? gateArrayModel40226()
                      : gateArrayModel40010();
     gateArray->modeSwitchPixelInByte = crtc->behaviour->modeSwitchPixelInByte();   // ACCC §9.3.4
-    crtc->hostOwnsScanlineIndex = true;   // classic monitor owns the capture index
+    crtc->hostOwnsScanlineIndex = true;   // the monitor owns the capture index
     memory->setRamSize(selectedRam);
     memory->loadCartridge({}); memory->setLowerRom(options.lowerRom);
     for (auto& r : memory->upperRoms) r.clear();
@@ -1134,32 +1101,13 @@ bool GX4000::debuggerBreakpointHit() {
 }
 int GX4000::runFrame() {
     if (debuggerPaused) return 0;
-    if (plusHardware == false) {
-        int targetFrame = classicMonitorFrame + 1;
-        videoCaptureRegisters = crtc->registers;
-        int elapsed = 0;
-        while (classicMonitorFrame < targetFrame && elapsed < 200000) {
-            if (debuggerBreakpointHit()) {
-                debuggerPaused = true;
-                stepTarget = -1;
-                if (onBreakpoint) onBreakpoint();
-                break;
-            }
-            elapsed += stepInstruction();
-            if (debuggerPaused) break;
-        }
-        if (!debuggerPaused) v9990->endFrame();
-        return elapsed;
-    }
-    // One call is one MONITOR frame, as on the classic side above -- the picture the Plus
-    // completes on a real VSYNC (o.onFrame) or the flyback failsafe. It used to be one
-    // CRTC frame (crtc->frame, the C4 wrap), and a rupture display restarts the CRTC
-    // several times per picture: Alcon 2020's R4=9 sub-frames made each call ~7.5 ms of
-    // CPC time, so the front end, pacing one call per 1/50 s, ran the game at ~37% speed
-    // with a picture every second or third call (the stutter), and read "133 Hz".
-    int targetFrame = plusMonitorFrame + 1;
+    // One call is one MONITOR picture, on every machine: a rupture display restarts the
+    // CRTC several times per picture (Alcon 2020's R4=9 sub-frames), and one CRTC frame
+    // per call ran such a game at a third of its speed with a picture every third call.
+    int targetFrame = classicMonitorFrame + 1;
+    videoCaptureRegisters = crtc->registers;
     int elapsed = 0;
-    while (plusMonitorFrame < targetFrame && elapsed < 200000) {
+    while (classicMonitorFrame < targetFrame && elapsed < 200000) {
         if (debuggerBreakpointHit()) {
             debuggerPaused = true;
             stepTarget = -1;
@@ -1180,8 +1128,10 @@ void GX4000::reset() {
     monitorRenderer->reset(); syncClassicMonitorTiming(); classicDisplayOriginY = 40;
     // A set stays plugged in across a reset; with none chosen the machine has the one it
     // came with, which is ACCC 15.1's centred pairing (monitor_model.h).
-    if (!monitorRenderer->model) monitorRenderer->model = shippedMonitorModel();
-    plusMonitorLine = 0; plusVsyncPending = false;
+    // Taken at EVERY reset, not only the first: a reset follows each machine build, and a
+    // CRTC 4 machine built after the default CRTC 1 one used to keep that one's plain CTM
+    // (every SHAKER CRTC 4 run until 2026-09-26 was a character out because of it).
+    monitorRenderer->model = monitorSet ? monitorSet : shippedMonitorModel();
     memory->reset(); asic->reset(); gateArray->reset(); rasterCapture.clear(); rasterFrame.clear(); previousRasterFrame.clear();
     spritePatternSnapshot.clear(); spritePatternRevision = -1; crtc->reset();
     videoFrameRegisters = crtc->registers; videoCaptureRegisters = crtc->registers;

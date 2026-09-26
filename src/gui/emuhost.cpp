@@ -1,6 +1,7 @@
 // CPCSyntaxError GUI — emulator host implementation.
 #include "emuhost.h"
 #include "../core/monitor_model.h"
+#include "../core/monitor_renderer.h"
 #include "keymap.h"
 #include "core/emulator.h"
 #include "core/video.h"
@@ -274,6 +275,7 @@ bool EmuHost::bootModel(int index, int ram, int crtc) {
         emu->hasFdc = m.amsdos;
         applyAudioRate();
         applySettings();
+        applyMonitorSet();                 // a Plus came with a CM14 (ACCC 15.1)
         currentModel = index;
         cartName.clear();
         paused = false;
@@ -551,6 +553,7 @@ bool EmuHost::loadCartridgeFile(const std::string& path) {
     emu->hasFdc = m.computer && m.amsdos;
     applyAudioRate();
     applySettings();
+    applyMonitorSet();
     cartName = std::filesystem::path(path).filename().string();
     paused = false;
     status = "Loaded " + cartName + " into " + m.label;
@@ -654,7 +657,7 @@ void EmuHost::runFrame() {
         // GX4000::runFrame's loop, with the debugger's question asked after every
         // instruction and each instruction's start kept for the watchpoints. One call is
         // one monitor picture, as there.
-        auto picture = [this]() { return emu->plusHardware ? emu->plusMonitorFrame : (long)emu->classicMonitorFrame; };
+        auto picture = [this]() { return emu->classicMonitorFrame; };
         const long start = picture();
         if (!emu->plusHardware) emu->videoCaptureRegisters = emu->crtc->registers;
         elapsedTStates = 0;
@@ -747,11 +750,10 @@ void EmuHost::setMonitorSet(const std::string& id) {
 
 void EmuHost::applyMonitorSet() {
     if (!emu) return;
-    const MonitorModel* set = monitorSetId.empty()
-        ? emu->shippedMonitorModel()
-        : monitorModelFor(monitorSetId);
-    emu->setMonitorModel(set);
-    if (video) { video->setMonitorModel(set); video->setMonitorMode(monitorMode); }
+    // No set chosen is nullptr, not the shipped set: the core then re-takes the machine's
+    // own at every reset, so a later model change gets its own monitor.
+    emu->setMonitorModel(monitorSetId.empty() ? nullptr : monitorModelFor(monitorSetId));
+    if (video) { video->setMonitorModel(emu->monitorRenderer->model); video->setMonitorMode(monitorMode); }
 }
 
 } // namespace cpcse

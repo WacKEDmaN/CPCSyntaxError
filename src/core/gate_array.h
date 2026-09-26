@@ -130,7 +130,6 @@ public:
     void onCrtcVsyncPin(bool high);
     bool monitorSyncStarted = false;    // set on the V26 0->2 edge, consumed by the host
     bool consumeMonitorSyncStart() { bool v = monitorSyncStarted; monitorSyncStarted = false; return v; }
-    bool monitorSyncActive() const { return sigGaVsync; }
     bool blanking() const { return cblackVsync; }
 
     // ---- ACCC §16.2.3 C-SYNC ALGORITHM (p.166) -----------------------------------
@@ -161,6 +160,11 @@ public:
     // for the CRTC (one character per 16) and the sound chip. Anything else clocked
     // from it -- the monitor's sweep, which sees C-SYNC change WITHIN a character --
     // hangs off this rather than off the CRTC's slower one.
+    // The monitor, clocked on every Pixel-M2: a plain function pointer, because this is
+    // called 16 million times per emulated second. onPixel is an optional extra observer
+    // (the SHAKER runner's recorders, ga-check), called after it.
+    void (*pixelSink)(void*) = nullptr;
+    void* pixelSinkContext = nullptr;
     std::function<void()> onPixel;
     int h06Pixels = 0;                  // Pixel-M2 since HSYNC-CRTC rose
     long tipTraceBudget = 0;            // diagnostic: log this many C-HSYNC ends
@@ -216,10 +220,6 @@ public:
     bool consumeCHsyncStart() { bool v = cHsyncStarted; cHsyncStarted = false; return v; }
     // C-SYNC as the monitor sees it: active low, so active when the two signals differ.
     bool csyncActive() const { return sigGaHsync != sigGaVsync; }
-    // BLACKCOLOR=CBLACK_HSYNC or CBLACK_VSYNC. blanking() above is deliberately only
-    // the VSYNC half: the renderers already take the HSYNC region out of the display
-    // window themselves, and folding CBLACK_HSYNC in here would blank it twice.
-    bool blackColor() const { return cblackHsync || cblackVsync; }
     void onHsync() { onHsync(cpu); }
     void onHsync(Z80* cpu);
 

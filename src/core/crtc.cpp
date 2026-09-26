@@ -95,6 +95,8 @@ void CRTC6845::write(int port, int value) {
 }
 
 void CRTC6845::writeRegister(int reg, int value) {
+    if (reg < 0 || reg >= 16) return;      // R16/R17 are the light pen's, read-only
+
     // CPCSE_TRACE_REG=<n> logs every write of register n with the counters it lands on,
     // to stderr, capped at CPCSE_TRACE_REG_MAX (default 400) so a per-line technique does
     // not fill the disk.
@@ -154,7 +156,7 @@ void CRTC6845::writeRegister(int reg, int value) {
         // early (GateArray::interruptRaiseIn) on SHAKER B6/A's "OUTI ON C0=0,R0=0" line.
         if (lastWriteBlockIo && horizontal == 0
             && behaviour->unwrapsC0OnBlockR0Write())
-            horizontal = r0Previous + 1 & 0xff;
+            horizontal = (r0Previous + 1) & 0xff;
         horizontalTotalMatch = behaviour->horizontalCounterAtTotal(*this);
     }
     if (reg == 12 || reg == 13) {
@@ -177,7 +179,7 @@ void CRTC6845::writeRegister(int reg, int value) {
         // Whether with R5 or R9, IT IS IMPOSSIBLE TO OVERFLOW C9." On CRTC 1 and 2 the
         // same write overflows C5 and counts all the way round instead (§11.3.1/2).
         if (behaviour->adjustmentCannotOverflow() && limit <= adjustLine) verticalAdjust = 1;
-        else verticalAdjust = limit - adjustLine & 0x1f;
+        else verticalAdjust = (limit - adjustLine) & 0x1f;
     }
     if (reg == 6 && vertical == registers[6] && behaviour->considersR6WriteImmediately()
         && !(behaviour->r6FirstLineWriteIsConflict() && vertical == 0 && raster == 0)) {
@@ -412,7 +414,7 @@ void CRTC6845::refreshTrojanLightgun() {
 // bus when the strobe arrived. So the register takes the chip's own counter; it is not
 // a position worked back out of R1, R2, R7 and R12/R13.
 void CRTC6845::strobeLightPen() {
-    lightgunAddress = maRow + 2 & 0x3fff;
+    lightgunAddress = (maRow + 2) & 0x3fff;
     registers[16] = (uint8_t)(lightgunAddress >> 8 & 0x3f);
     registers[17] = (uint8_t)(lightgunAddress & 0xff);
     lpenStrobe = true;
@@ -511,7 +513,7 @@ void CRTC6845::updateHsyncStandard() {
     if (hsyncOverflow) {
         // §15.3.2: "C3 will increment up to 15, return to 0 and then back to 1."
         // The HSYNC cannot end until the counter has come back round.
-        hsyncCounter = hsyncCounter + 1 & 0x0f;
+        hsyncCounter = (hsyncCounter + 1) & 0x0f;
         if (hsyncCounter == 0) hsyncOverflow = false;
         return;
     }
@@ -536,7 +538,7 @@ void CRTC6845::updateHsyncStandard() {
     // falls after a start-of-character one is exactly the JIT black zone §9.3.4.2
     // describes, which hsyncEndedJit already carries to the renderer.
     if (r3JitPending) {
-        hsyncCounter = hsyncCounter + 1 & 0x0f;
+        hsyncCounter = (hsyncCounter + 1) & 0x0f;
         hsync = false; hsyncEndedThisCharacter = true;
         hsyncEndedJit = true; r3JitPending = false;
         onHsync();
@@ -546,7 +548,7 @@ void CRTC6845::updateHsyncStandard() {
     // at the start of the character" — an equality, so §14.5's "if R3l is changed with
     // a value less than C3l, then C3l is overflowing" falls out, as does R3l=0 meaning
     // all 16 values on the chips that treat 0 as a value to reach.
-    hsyncCounter = hsyncCounter + 1 & 0x0f;
+    hsyncCounter = (hsyncCounter + 1) & 0x0f;
     if (hsyncCounter == (width & 0x0f)) {
         // ACCC §15.3.1: "On the CRTC's 1, 2, 3 and 4, there is a bug if C0=R2 on
         // C0=R2+R3." §15.3.2: "the HSYNC does not end and C3 will overflow. C3 will
@@ -850,9 +852,9 @@ void CRTC6845::newFrame() {
     r4Match = registers[4] == 0;
     r9Match = registers[9] == 0;
     latchRequestedStartAddress();
-    // The ASIC CRTCs keep their own scanline index for the Plus's per-line renderer,
-    // where a CRTC frame IS the capture frame. On a classic CPC the monitor owns that
-    // index (hostOwnsScanlineIndex) and a CRTC frame is not a monitor frame at all: a
+    // The ASIC CRTCs keep their own scanline index for a host that does not own it (a
+    // harness driving the chip alone). In a machine -- CPC or Plus -- the monitor owns
+    // that index (hostOwnsScanlineIndex) and a CRTC frame is not a monitor frame at all: a
     // rupture restarts the CRTC many times inside one displayed frame, and zeroing the
     // index here sent each of those restarts' characters to capture line 0 while the
     // monitor kept assigning the real line -- ~8 captured characters per 64-character
@@ -939,15 +941,15 @@ bool CRTC6845::updateVerticalType1() {
             // is updated with R12/R13 and not VMA', and this as long as C4=1." Recorded
             // here, before C4 takes its step, exactly as the general path records it.
             adjustFromFrameStart = vertical == 0 && !adjustBlocksRegisterReload;
-            if (registers[5] != 0) vertical = vertical + 1 & 0x7f;
+            if (registers[5] != 0) vertical = (vertical + 1) & 0x7f;
             // ACCC §11.3.2: the internal additional-management state is armed only when
             // R5>0 HERE. With R5 already 0 there is no state and no adjustment, which is
             // the ordinary "R5=0 adds no lines" case.
             adjustStateEngaged = (registers[5] & 0x1f) != 0;
             verticalAdjust = 0; adjustmentInterlaceExtra = 0;
-        } else vertical = vertical + 1 & 0x7f;
+        } else vertical = (vertical + 1) & 0x7f;
     } else {
-        raster = raster + rasterStep() & 0x1f;
+        raster = (raster + rasterStep()) & 0x1f;
         // ACCC §19.8.2: the latched C9/R9 test is the per-chip one — in IVM it masks
         // parity off both sides rather than comparing against R9 + the interlace bit.
         if (behaviour->rasterMatches(*this)) r9Match = true;
@@ -985,7 +987,7 @@ bool CRTC6845::updateVerticalType1() {
             // of the lines displayed via R5" holds on this chip too.
             if (!claimInterlaceAdjustLine()) { adjustStateEngaged = false; newFrame(); return true; }
         }
-        verticalAdjust = verticalAdjust + 1 & 0x1f;
+        verticalAdjust = (verticalAdjust + 1) & 0x1f;
     }
 
     if (vertical == registers[6]) vDisplay = false;
@@ -1019,7 +1021,7 @@ bool CRTC6845::updateVerticalGeneral() {
             // where even that first step does not happen: "If R0 goes to 0 on C0=0 of
             // this line, then C9 REMAINS FIXED AT 0 and C4 can only go to 0 when C9 is
             // managed again (as soon as C0=1)."
-            if (!r0FreezeHiccup && verticalAdjust == 0) raster = raster + rasterStep() & 0x1f;
+            if (!r0FreezeHiccup && verticalAdjust == 0) raster = (raster + rasterStep()) & 0x1f;
             // ACCC §13.2.6 (p.109): "If C9=R9 and C4=R4 then C4=R4+1. When R0>0, C4 is
             // managed by C9/R5." — the freeze arms the additional management too, "and
             // which will remain so when C0 can once again exceed 1. It is then R5 which
@@ -1030,7 +1032,7 @@ bool CRTC6845::updateVerticalGeneral() {
             }
         } else if (r0FreezeHiccup) {
             r0FreezeHiccup = false;
-            vertical = vertical + 1 & 0x7f;
+            vertical = (vertical + 1) & 0x7f;
         }
         return false;
     }
@@ -1046,7 +1048,7 @@ bool CRTC6845::updateVerticalGeneral() {
             // order to prevent resetting C9 to 0 from leading to a loop if R5>R9+1 ...
             // As long as C4<>R4 in vertical adjustment, C9 can no longer be zeroed" —
             // hence a plain increment, with no R9 comparison in the way.
-            raster = raster + rasterStep() & 0x1f;
+            raster = (raster + rasterStep()) & 0x1f;
             // ACCC §11.3: R5 is read live — "if R5 is modified with C9+1 on line C9,
             // then the vertical adjustment is stopped", and "if R5 is modified with a
             // value less than C9+1, then the counter overflows and continues to count
@@ -1076,10 +1078,10 @@ bool CRTC6845::updateVerticalGeneral() {
             if (rasterMatchesMaximum()) {
                 rasterMatchForced = false;
                 raster = baseRaster();
-                vertical = vertical + 1 & 0x7f;
+                vertical = (vertical + 1) & 0x7f;
                 if (vertical == registers[6]) vDisplay = false;
             } else {
-                raster = raster + rasterStep() & 0x1f;
+                raster = (raster + rasterStep()) & 0x1f;
             }
             if (verticalAdjust == 0) {
                 if (claimInterlaceAdjustLine()) { verticalAdjust = 1; return false; }
@@ -1090,7 +1092,7 @@ bool CRTC6845::updateVerticalGeneral() {
         // ACCC §11.3.3 (CRTC 3, 4): the R5 lines end "when the number of the next additional
         // line (C9+1) reaches R5" -- counted one by one even in IVM, where §19.4.4 says R5
         // "still contains a finite number of lines without considering the Interlace mode".
-        raster = raster + (behaviour->additionalLinesCountFromZero() ? 1 : rasterStep()) & 0x1f;
+        raster = (raster + (behaviour->additionalLinesCountFromZero() ? 1 : rasterStep())) & 0x1f;
         if (verticalAdjust == 0) {
             // ACCC §11.9 (p.92): the interlace adjustment line "is evaluated on the last
             // line of a frame, when C0=R0, and only if R8 contains the right value on
@@ -1109,7 +1111,7 @@ bool CRTC6845::updateVerticalGeneral() {
         // ACCC §13.2.4 (p.103): CRTC 0 increments C4 exactly once for the whole
         // adjustment — that one step happened on entry below. Every other chip
         // keeps stepping C4 on each adjustment line, so C4 can reach R6/R7 here.
-        if (behaviour->incrementsVerticalEachAdjustLine()) vertical = vertical + 1 & 0x7f;
+        if (behaviour->incrementsVerticalEachAdjustLine()) vertical = (vertical + 1) & 0x7f;
     // ACCC §10.3.1 (p.77): "When the last line state is true without active vertical
     // adjustment, then C4 AND C9 are reset to 0 for the next line." Both counters, and
     // on the strength of the LATCHED state -- so on CRTC 0 and 2 the row has to
@@ -1189,13 +1191,13 @@ bool CRTC6845::updateVerticalGeneral() {
                     // RETURNING TO 0 leaves the additional management activated... C9 will
                     // increment to display lines 8 to 31, until it reaches R5". So no second
                     // step and no reset: C9 carries on, and the count ends where it meets R5.
-                    raster = raster + rasterStep() & 0x1f;
+                    raster = (raster + rasterStep()) & 0x1f;
                     const int limit = (registers[5] & 0x1f) + adjustmentInterlaceExtra;
                     if (behaviour->adjustmentCountsRasterToR5() && raster == (limit & 0x1f)) {
                         verticalAdjust = 0; newFrame(); return true;
                     }
                 } else {
-                    if (behaviour->incrementsVerticalOnAdjustEntry()) vertical = vertical + 1 & 0x7f;
+                    if (behaviour->incrementsVerticalOnAdjustEntry()) vertical = (vertical + 1) & 0x7f;
                     raster = behaviour->additionalLinesCountFromZero() ? 0 : baseRaster();
                 }
             }
@@ -1203,18 +1205,18 @@ bool CRTC6845::updateVerticalGeneral() {
             // ACCC §10.3.1: an R9 written onto C9 exactly at C0=R0 resets C9 but finds the
             // C4 step already decided against -- verticalStepSuppressed (CRTC 0).
             if (!verticalStepSuppressed) {
-                vertical = vertical + 1 & 0x7f;
+                vertical = (vertical + 1) & 0x7f;
                 if (vertical == registers[6]) vDisplay = false;
             }
             raster = baseRaster();
         }
     } else {
-        raster = raster + rasterStep() & 0x1f;
+        raster = (raster + rasterStep()) & 0x1f;
         // ACCC §10.3.1 (CRTC 0): an R9 write landing exactly on C0=R0, on a line whose
         // C9 already matched the OLD R9, leaves the C4 increment armed even though the
         // new R9 no longer matches — so both counters step on this one line.
         if (verticalStepForced) {
-            vertical = vertical + 1 & 0x7f;
+            vertical = (vertical + 1) & 0x7f;
             if (vertical == registers[6]) vDisplay = false;
         }
         if (behaviour->clearsVDisplayOnRowMatch() && vertical == registers[6]) vDisplay = false;
@@ -1268,7 +1270,7 @@ bool CrtcBehaviour::addsInterlaceLine(CRTC6845& crtc) const { return (crtc.parit
 void CrtcBehaviour::advanceHsync(CRTC6845& crtc) const { crtc.updateHsyncStandard(); }
 // Default next-row start-address reload at C0=R1: on a raster-max match. ASIC honours splits.
 void CrtcBehaviour::reloadNextRowAddress(CRTC6845& crtc) const {
-    if (crtc.rasterMatchesMaximum()) crtc.nextRowAddress = crtc.rowAddress + crtc.horizontal & 0x3fff;
+    if (crtc.rasterMatchesMaximum()) crtc.nextRowAddress = (crtc.rowAddress + crtc.horizontal) & 0x3fff;
 }
 void CRTC6845::updateVertical() {
     bool newFrameStarted = false;
@@ -1297,7 +1299,7 @@ void CRTC6845::updateVertical() {
         if (vsyncSkipsFirstLineEnd) {
             vsyncSkipsFirstLineEnd = false;
         } else {
-            vsyncCounter = vsyncCounter + 1 & 0x0f;
+            vsyncCounter = (vsyncCounter + 1) & 0x0f;
             if (vsyncCounter == (width & 0x0f)) { vsync = false; vsyncCounter = 0; vsyncGhost = false; }
         }
     }
@@ -1348,7 +1350,7 @@ void CRTC6845::updateVertical() {
         if (!behaviour->freezesStartAddressReload(*this)) nextRowAddress = rowAddress;
         maRow = rowAddress;
         vlc = videoRaster(verticalScroll);
-        if (behaviour->tracksScanlineInFrame() && !hostOwnsScanlineIndex) scanlineInFrame = scanlineInFrame + 1 & 0x3ff;
+        if (behaviour->tracksScanlineInFrame() && !hostOwnsScanlineIndex) scanlineInFrame = (scanlineInFrame + 1) & 0x3ff;
         startDelayedVsyncLine();
         startVsyncIfNeeded();
     } else vlc = videoRaster(verticalScroll);
@@ -1443,12 +1445,12 @@ void CRTC6845::tickCharacter() {
         else if (registers[1] == 0) hDisplay = false;   // otherwise off at C0=skew, below
         horizontalOverflowed = false;
     } else {
-        horizontal = horizontal + 1 & 0xff;
+        horizontal = (horizontal + 1) & 0xff;
         // ACCC §17.1 (p.176): "if C0 returns to 0 because it reached 255 having
         // overflowed, this does not authorize the display."
         horizontalOverflowed = horizontal == 0;
         if (horizontal == registers[0]) horizontalTotalMatch = true;
-        maRow = maRow + 1 & 0x3fff;
+        maRow = (maRow + 1) & 0x3fff;
     }
     vlc = videoRaster();
     if (horizontal == registers[1]) {

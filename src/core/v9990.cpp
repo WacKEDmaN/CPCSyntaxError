@@ -152,7 +152,7 @@ int V9990::readPort(int port, long long tStates) {
         case 0: {
             int value = readBuffer;
             if (!(registers[5] & 0x80)) {
-                int next = getAddress(3) + 1 & VRAM_MASK;
+                int next = (getAddress(3) + 1) & VRAM_MASK;
                 setAddress(3, next);
                 readBuffer = vram[mapCpuAddress(next)];
             }
@@ -246,9 +246,9 @@ void V9990::advancePalettePointer() {
     if (registers[13] & 0x10) return;
     int pointer = registers[14];
     switch (pointer & 3) {
-        case 0: case 1: registers[14] = (uint8_t)(pointer + 1 & 0xff); break;
-        case 2: registers[14] = (uint8_t)(pointer + 2 & 0xff); break;
-        default: registers[14] = (uint8_t)(pointer - 3 & 0xff); break;
+        case 0: case 1: registers[14] = (uint8_t)((pointer + 1) & 0xff); break;
+        case 2: registers[14] = (uint8_t)((pointer + 2) & 0xff); break;
+        default: registers[14] = (uint8_t)((pointer - 3) & 0xff); break;
     }
 }
 void V9990::writePalette(int value) {
@@ -384,13 +384,13 @@ void V9990::advanceTransfer(V9990Transfer& state, int pixels) {
     int dx = registers[44] & ARG_DIX ? -1 : 1;
     int dy = registers[44] & ARG_DIY ? -1 : 1;
     while (pixels-- > 0 && state.remainingY > 0) {
-        state.x = state.x + dx & 0x7ff;
+        state.x = (state.x + dx) & 0x7ff;
         state.remainingX -= 1;
         if (state.remainingX <= 0) {
             state.remainingY -= 1;
             if (state.remainingY <= 0) break;
             state.x = state.originX;
-            state.y = state.y + dy & 0x0fff;
+            state.y = (state.y + dy) & 0x0fff;
             state.remainingX = sizeX();
         }
     }
@@ -529,7 +529,7 @@ void V9990::commandBmll() {
             int wm = phys & 0x40000 ? registers[47] : registers[46];
             writeBx(destination, (dst & ~wm) | (result & wm));
         }
-        source = source + delta & VRAM_MASK; destination = destination + delta & VRAM_MASK;
+        source = (source + delta) & VRAM_MASK; destination = (destination + delta) & VRAM_MASK;
     }
     finishCommand();
 }
@@ -643,7 +643,7 @@ std::vector<P1Sprite> V9990::p1VisibleSprites(int displayY) {
     int lineSlots = 16;
     for (int sprite = 0; sprite < 125 && lineSlots > 0; sprite += 1) {
         int at = table + sprite * 4;
-        int line = key - (vram[at] + 1 & 0xff) & 0xff;
+        int line = (key - ((vram[at] + 1) & 0xff)) & 0xff;
         if (line >= 16) continue;
         lineSlots -= 1;
         int attr = vram[at + 3];
@@ -651,7 +651,7 @@ std::vector<P1Sprite> V9990::p1VisibleSprites(int displayY) {
         int x = vram[at + 2] | (attr & 3) << 8;
         if (x > 1008) x -= 1024;
         int spriteNo = vram[at + 1];
-        result.push_back({ x, !!(attr & 0x20), ((unsigned)attr >> 2) & 0x30,
+        result.push_back({ x, !!(attr & 0x20), (int)(((unsigned)attr >> 2) & 0x30),
             patternBase + 128 * ((spriteNo & 0xf0) + line) + 8 * (spriteNo & 0x0f) });
     }
     if (p1SpriteLineCache) (*p1SpriteLineCache)[key] = result;
@@ -704,7 +704,7 @@ std::vector<V9990Cursor> V9990::cursorDescriptors() {
         int attr = readBx(attrAddress + 6);
         if ((attr & 0x10) || (attr & 0xe0) == 0) continue;
         int yDelay = registers[7] & 2 ? 2 : 1;
-        int y = (readBx(attrAddress) | (readBx(attrAddress + 2) & 1) << 8) + yDelay & 511;
+        int y = ((readBx(attrAddress) | (readBx(attrAddress + 2) & 1) << 8) + yDelay) & 511;
         int x = (readBx(attrAddress + 4) | (attr & 3) << 8) & 1023;
         int cc = (unsigned)attr >> 6 & 3;
         bool doBackgroundXor = (attr & 0xe0) == 0x20;

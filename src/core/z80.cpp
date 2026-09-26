@@ -1,5 +1,6 @@
 // CPCSyntaxError — Z80A CPU core.
 #include "z80.h"
+#include <cstring>
 
 namespace cpcse {
 
@@ -32,13 +33,13 @@ void Z80::notifyAccess(const AccessEvent& event) {
     accessObserver(e);
 }
 
-int Z80::busRead(int address, int cycles, const std::string& accessType) {
+int Z80::busRead(int address, int cycles, const char* accessType) {
     address &= 0xffff;
     if (inInstruction) { const int aligned = busCycleStart(); alignmentWaits += aligned - busOffset; busOffset = aligned; }
     applyMemoryWait(address, false);
     if (inInstruction) memory->accessTiming(address, busOffset + waitStates + cycles, false);
     int value = memory->read(address) & 0xff;
-    if (accessType != "execute") {
+    if (accessObserver && std::strcmp(accessType, "execute") != 0) {
         AccessEvent ev; ev.type = accessType; ev.address = address; ev.value = value;
         notifyAccess(ev);
     }
@@ -53,15 +54,17 @@ void Z80::busWrite(int address, int value, int cycles) {
     if (inInstruction) memory->accessTiming(address, busOffset + waitStates + cycles, true);
     int previous = memory->read(address) & 0xff;
     memory->write(address, value);
-    AccessEvent ev; ev.type = "write"; ev.address = address; ev.value = value; ev.previous = previous;
-    notifyAccess(ev);
+    if (accessObserver) {
+        AccessEvent ev; ev.type = "write"; ev.address = address; ev.value = value; ev.previous = previous;
+        notifyAccess(ev);
+    }
     if (inInstruction) { busOffset += cycles; lastBusAccessEnd = busOffset; }
 }
 
 int Z80::fetchOpcode() {
     int value = busRead(pc, 4, "execute");
-    pc = pc + 1 & 0xffff;
-    r = (r & 0x80) | (r + 1 & 0x7f);
+    pc = (pc + 1) & 0xffff;
+    r = (r & 0x80) | ((r + 1) & 0x7f);
     return value;
 }
 
@@ -72,8 +75,10 @@ int Z80::portRead(int address, const std::string& kind) {
     waitStates += std::max(0, delay | 0);
     int sampleOffset = busOffset + waitStates + 3;
     int value = ports.read ? ports.read(address, sampleOffset, kind) : 0xff;
-    AccessEvent ev; ev.type = "in"; ev.port = address; ev.address = address; ev.value = value & 0xff;
-    notifyAccess(ev);
+    if (accessObserver) {
+        AccessEvent ev; ev.type = "in"; ev.port = address; ev.address = address; ev.value = value & 0xff;
+        notifyAccess(ev);
+    }
     if (inInstruction) { busOffset += 4; lastBusAccessEnd = busOffset; }
     return value & 0xff;
 }
@@ -85,8 +90,10 @@ void Z80::portWrite(int address, int value, const std::string& kind) {
     waitStates += std::max(0, delay | 0);
     int sampleOffset = busOffset + waitStates + 3;
     if (ports.write) ports.write(address, value & 0xff, sampleOffset, kind);
-    AccessEvent ev; ev.type = "out"; ev.port = address; ev.address = address; ev.value = value & 0xff;
-    notifyAccess(ev);
+    if (accessObserver) {
+        AccessEvent ev; ev.type = "out"; ev.port = address; ev.address = address; ev.value = value & 0xff;
+        notifyAccess(ev);
+    }
     if (inInstruction) { busOffset += 4; lastBusAccessEnd = busOffset; }
 }
 
@@ -99,19 +106,19 @@ void Z80::push(int value, int internalCycles) {
     // An interrupt or NMI passes 0: its idle T-state is already inside the longer
     // acknowledge M-cycle, and does not come after it.
     busInternal(internalCycles);
-    sp = sp - 1 & 0xffff; write(sp, value >> 8);
-    sp = sp - 1 & 0xffff; write(sp, value);
+    sp = (sp - 1) & 0xffff; write(sp, value >> 8);
+    sp = (sp - 1) & 0xffff; write(sp, value);
 }
 int Z80::pop() {
-    int low = read(sp); sp = sp + 1 & 0xffff;
-    int high = read(sp); sp = sp + 1 & 0xffff;
+    int low = read(sp); sp = (sp + 1) & 0xffff;
+    int high = read(sp); sp = (sp + 1) & 0xffff;
     return low | high << 8;
 }
 
 int Z80::interrupt() {
-    if (halted) pc = pc + 1 & 0xffff;
+    if (halted) pc = (pc + 1) & 0xffff;
     halted = false; iff1 = iff2 = false;
-    r = (r & 0x80) | (r + 1 & 0x7f);
+    r = (r & 0x80) | ((r + 1) & 0x7f);
     if (inInstruction) busOffset = 7; // interrupt acknowledge/internal cycle
     push(pc, 0);
     if (im == 2) pc = readWord(i << 8 | pendingInterrupt);
@@ -123,9 +130,9 @@ int Z80::interrupt() {
 }
 
 int Z80::nmi() {
-    if (halted) pc = pc + 1 & 0xffff;
+    if (halted) pc = (pc + 1) & 0xffff;
     halted = false; iff2 = iff1; iff1 = false;
-    r = (r & 0x80) | (r + 1 & 0x7f);
+    r = (r & 0x80) | ((r + 1) & 0x7f);
     if (inInstruction) busOffset = 5;
     push(pc, 0); pc = 0x66; pendingNmi = false; return 11;
 }
@@ -178,12 +185,12 @@ int Z80::szp(int value) { value &= 0xff; return (value & S) | (value == 0 ? Z : 
 int Z80::szxy(int value) { value &= 0xff; return (value & S) | (value == 0 ? Z : 0) | (value & (Y | X)); }
 
 int Z80::inc8(int value) {
-    int result = value + 1 & 0xff;
+    int result = (value + 1) & 0xff;
     f = (f & C) | szxy(result) | ((value & 0x0f) == 0x0f ? H : 0) | (value == 0x7f ? PV : 0);
     return result;
 }
 int Z80::dec8(int value) {
-    int result = value - 1 & 0xff;
+    int result = (value - 1) & 0xff;
     f = (f & C) | szxy(result) | N | ((value & 0x0f) ? 0 : H) | (value == 0x80 ? PV : 0);
     return result;
 }
@@ -297,19 +304,19 @@ int Z80::blockInstruction(int opcode) {
     if (operation == 0x00 || operation == 0x08 || operation == 0x10 || operation == 0x18) { // LDI/LDD/LDIR/LDDR
         // LDI/LDD are 4,4,3,3 plus 2 idle T-states after the write (16 T); the repeating
         // forms idle 5 more when they loop (21 T).
-        int value = read(hl()); write(de(), value); busInternal(2); setHl(hl() + direction & 0xffff); setDe(de() + direction & 0xffff); setBc(bc() - 1 & 0xffff);
+        int value = read(hl()); write(de(), value); busInternal(2); setHl((hl() + direction) & 0xffff); setDe((de() + direction) & 0xffff); setBc((bc() - 1) & 0xffff);
         int sum = a + value;
         f = (f & (S | Z | C)) | (bc() ? PV : 0) | (sum & X) | (sum << 4 & Y);
         if (repeat) lastBranchTaken = bc() != 0;
-        if (repeat && bc()) { busInternal(5); pc = pc - 2 & 0xffff; return 21; } return 16;
+        if (repeat && bc()) { busInternal(5); pc = (pc - 2) & 0xffff; return 21; } return 16;
     }
     if (operation == 0x01 || operation == 0x09 || operation == 0x11 || operation == 0x19) { // CPI/CPD/CPIR/CPDR
         // CPI/CPD are 4,4,3 plus 5 idle T-states (16 T); the repeating forms idle 5 more.
-        int value = read(hl()), result = a - value & 0xff; busInternal(5); setHl(hl() + direction & 0xffff); setBc(bc() - 1 & 0xffff);
-        bool half = (a & 0x0f) < (value & 0x0f); int adjusted = result - (half ? 1 : 0) & 0xff;
+        int value = read(hl()), result = (a - value) & 0xff; busInternal(5); setHl((hl() + direction) & 0xffff); setBc((bc() - 1) & 0xffff);
+        bool half = (a & 0x0f) < (value & 0x0f); int adjusted = (result - (half ? 1 : 0)) & 0xff;
         f = (f & C) | N | (result & S) | (result == 0 ? Z : 0) | (half ? H : 0) | (bc() ? PV : 0) | (adjusted & X) | (adjusted << 4 & Y);
         if (repeat) lastBranchTaken = (bc() != 0 && result != 0);
-        if (repeat && bc() && result != 0) { busInternal(5); pc = pc - 2 & 0xffff; return 21; } return 16;
+        if (repeat && bc() && result != 0) { busInternal(5); pc = (pc - 2) & 0xffff; return 21; } return 16;
     }
     bool input = operation == 0x02 || operation == 0x0a || operation == 0x12 || operation == 0x1a; // INI/IND/INIR/INDR
     int value, flagSum;
@@ -319,15 +326,15 @@ int Z80::blockInstruction(int opcode) {
     if (input) {
         value = portRead(bc(), "block-in");
         write(hl(), value);
-        b = b - 1 & 0xff;
-        setHl(hl() + direction & 0xffff);
-        flagSum = value + c + direction & 0xff;
+        b = (b - 1) & 0xff;
+        setHl((hl() + direction) & 0xffff);
+        flagSum = (value + c + direction) & 0xff;
     } else {
         value = read(hl());
-        b = b - 1 & 0xff;
+        b = (b - 1) & 0xff;
         portWrite(bc(), value, "block-out");
-        setHl(hl() + direction & 0xffff);
-        flagSum = value + l & 0xff;
+        setHl((hl() + direction) & 0xffff);
+        flagSum = (value + l) & 0xff;
     }
     // ACCC §24.5 (p.256) OUTI/OUTD AND STATUS REGISTER: "The official documentation is
     // incorrect regarding the N and C bits of the Z80A F register for the OUTI and OUTD
@@ -343,7 +350,7 @@ int Z80::blockInstruction(int opcode) {
         | (sumOverflowed ? H | C : 0)
         | (parity8((flagSum & 0x07) ^ b) ? PV : 0);
     if (repeat) lastBranchTaken = b != 0;
-    if (repeat && b) { busInternal(5); pc = pc - 2 & 0xffff; return 21; } return 16;
+    if (repeat && b) { busInternal(5); pc = (pc - 2) & 0xffff; return 21; } return 16;
 }
 
 int Z80::executeBase(int opcode, int* index) {
@@ -351,7 +358,7 @@ int Z80::executeBase(int opcode, int* index) {
     auto pairL = [&](int code) { return pair(code, index); };
     auto setPairL = [&](int code, int value) { setPair(code, value, index); };
     if (opcode >= 0x40 && opcode <= 0x7f) {
-        if (opcode == 0x76) { halted = true; pc = pc - 1 & 0xffff; return 4; }
+        if (opcode == 0x76) { halted = true; pc = (pc - 1) & 0xffff; return 4; }
         int destination = opcode >> 3 & 7, source = opcode & 7; bool memoryOp = destination == 6 || source == 6;
         setReg(destination, reg(source, index, !memoryOp), index, !memoryOp);
         return indexed && memoryOp ? 19 : memoryOp ? 7 : 4;
@@ -386,9 +393,9 @@ int Z80::executeBase(int opcode, int* index) {
         case 0x17: { int cc = a >> 7, old = f & C; a = (a << 1 | old) & 0xff; f = (f & (S | Z | PV)) | (a & (Y | X)) | cc; return 4; }
         case 0x1f: { int cc = a & 1, old = f & C; a = a >> 1 | old << 7; f = (f & (S | Z | PV)) | (a & (Y | X)) | cc; return 4; }
         case 0x08: std::swap(a, ap); std::swap(f, fp); return 4;
-        case 0x10: { b = b - 1 & 0xff; int displacement0 = signed8(fetch()); lastBranchTaken = b != 0; if (b) { pc = pc + displacement0 & 0xffff; return 13; } return 8; }
-        case 0x18: { int displacement0 = signed8(fetch()); pc = pc + displacement0 & 0xffff; return 12; }
-        case 0x20: case 0x28: case 0x30: case 0x38: { int displacement0 = signed8(fetch()); if (condition(opcode >> 3 & 3)) { pc = pc + displacement0 & 0xffff; return 12; } return 7; }
+        case 0x10: { b = (b - 1) & 0xff; int displacement0 = signed8(fetch()); lastBranchTaken = b != 0; if (b) { pc = (pc + displacement0) & 0xffff; return 13; } return 8; }
+        case 0x18: { int displacement0 = signed8(fetch()); pc = (pc + displacement0) & 0xffff; return 12; }
+        case 0x20: case 0x28: case 0x30: case 0x38: { int displacement0 = signed8(fetch()); if (condition(opcode >> 3 & 3)) { pc = (pc + displacement0) & 0xffff; return 12; } return 7; }
         case 0x22: { int address = fetchWord(); writeWord(address, pairL(2)); return indexed ? 20 : 16; }
         case 0x2a: { int address = fetchWord(); setPairL(2, readWord(address)); return indexed ? 20 : 16; }
         case 0x27: daa(); return 4;
@@ -407,10 +414,10 @@ int Z80::executeBase(int opcode, int* index) {
         // LAST write two -- and it writes the HIGH byte first, so the low byte of the
         // pair is the byte that reaches memory last.
         case 0xe3: {
-            int low = read(sp), high = read(sp + 1 & 0xffff);
+            int low = read(sp), high = read((sp + 1) & 0xffff);
             busInternal(1);
             int old = pairL(2);
-            write(sp + 1 & 0xffff, old >> 8); write(sp, old & 0xff);
+            write((sp + 1) & 0xffff, old >> 8); write(sp, old & 0xff);
             busInternal(2);
             setPairL(2, low | high << 8); return indexed ? 23 : 19;
         }
@@ -460,7 +467,7 @@ int Z80::step() {
     lastWasInterrupt = false;
     if (pendingNmi) cycles = nmi();
     else if (pendingInterrupt != -1 && iff1 && eiDelay == 0) cycles = interrupt();
-    else if (halted) { busRead(pc, 4, "execute"); r = (r & 0x80) | (r + 1 & 0x7f); cycles = 4; }
+    else if (halted) { busRead(pc, 4, "execute"); r = (r & 0x80) | ((r + 1) & 0x7f); cycles = 4; }
     else {
         displacementSet = false;
         int opcode = fetchOpcode(); int* index = nullptr; int prefixCount = 0;
