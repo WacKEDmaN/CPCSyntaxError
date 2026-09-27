@@ -76,7 +76,11 @@ public:
     void accessTiming(int address, int instructionOffset, bool write) override;
 
     void setGateArrayConfig(int value);
-    bool has4MB() const { return (int)ram.size() == 4160 * 1024; }
+    // A board past 512K is a SEGMENTED expansion (the 4 MB design): eight segments of
+    // 512K, the segment picked by the &7Fxx port's high byte (&7F = segment 0 .. &78 = 7).
+    // A smaller board fits fewer segments, one per 512K: 1088K = 64K + two segments.
+    bool segmentedExpansion() const { return ram.size() > (size_t)576 * 1024; }
+    int expansionSegments() const { return (int)((ram.size() / 1024 - 64) / 512); }
     int expansionPageOffset(int page, int segment) const;
     int expansionPageOffset(int page) const { return expansionPageOffset(page, ram4MbSegment ? ram4MbSegment : 0); }
     void setRamConfig(int value, int port = 0x7f00);

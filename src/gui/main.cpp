@@ -40,6 +40,8 @@
 #include "../core/monitor_renderer.h"
 #include "core/emulator.h"
 #include "core/csl.h"
+#include "core/v9990.h"
+#include "core/symbiface_mouse.h"
 #include "core/gamepad.h"
 #include "core/crtc.h"
 #include "core/keyboard.h"
@@ -189,9 +191,9 @@ int main(int argc, char** argv) {
     }
     // Headless screenshot: exercise the exact EmuHost boot/render path the GUI
     // uses, with no window. --shot out.bmp [--model id] [--sna f] [--crtc N] [--gate-array 40007|40008|40010]
-    // [--frames N] [--beam].
+    // [--frames N] [--beam] [--gfx9000] [--v9990-shot out.bmp] (the GFX9000's own monitor).
     {
-        std::string shot, modelId, snaPath, saveSnaPath, dumpRamPath, diskPath, cartPath, tapePath, typeStr, keysStr; int wantCrtc = -1, wantGa = 0, frames = 200, f1at = -1, wantRam = -1, seq = 0; bool beam = false, diag = false;
+        std::string shot, modelId, snaPath, saveSnaPath, dumpRamPath, diskPath, cartPath, tapePath, typeStr, keysStr; int wantCrtc = -1, wantGa = 0, frames = 200, f1at = -1, wantRam = -1, seq = 0; bool beam = false, diag = false, gfx9000 = false, opl4 = false; std::string v9990Shot, video9000Shot, m4Folder, mouseScript, wavPath; bool sf2 = false;
         for (int i = 1; i < argc; i++) { std::string a = argv[i];
             if (a == "--shot" && i + 1 < argc) shot = argv[++i];
             else if (a == "--ram" && i + 1 < argc) wantRam = std::atoi(argv[++i]);
@@ -210,18 +212,36 @@ int main(int argc, char** argv) {
             else if (a == "--frames" && i + 1 < argc) frames = std::atoi(argv[++i]);
             else if (a == "--seq" && i + 1 < argc) seq = std::atoi(argv[++i]);   // save this many CONSECUTIVE frames (motion) from --frames
             else if (a == "--diag") diag = true;
-            else if (a == "--beam") beam = true; }
+            else if (a == "--beam") beam = true;
+            else if (a == "--gfx9000") gfx9000 = true;
+            else if (a == "--opl4") opl4 = true;                              // an OPL4 card on the AMSDAP
+            else if (a == "--wav" && i + 1 < argc) wavPath = argv[++i];        // the sound of the whole run
+            else if (a == "--m4" && i + 1 < argc) m4Folder = argv[++i];   // an M4 board, this folder its SD card
+            else if (a == "--sf2") sf2 = true;                                // a Symbiface II (its PS/2 mouse)
+            else if (a == "--mouse" && i + 1 < argc) { mouseScript = argv[++i]; sf2 = true; }
+            else if (a == "--v9990-shot" && i + 1 < argc) { v9990Shot = argv[++i]; gfx9000 = true; }
+            else if (a == "--video9000-shot" && i + 1 < argc) { video9000Shot = argv[++i]; gfx9000 = true; } }
         if (!shot.empty()) {
             attachParentConsole();
             EmuHost host; host.scanModels();
             host.gateArrayPart = wantGa;
+            if (!m4Folder.empty()) { host.m4Enabled = true; host.m4Folder = m4Folder; }
+            if (sf2) host.symbifaceModule = "sf2";
             int mi = 0; for (int i = 0; i < (int)host.models.size(); i++) if (host.models[i].id == modelId) mi = i;
             host.bootModel(mi, wantRam, wantCrtc);
             if (!snaPath.empty()) host.loadSnapshot(snaPath);
             if (wantCrtc >= 0 && host.emu && host.emu->crtc) host.emu->crtc->setType(wantCrtc);
             host.setBeamRenderer(beam);
+            if (gfx9000) host.setV9990(true);
+            if (opl4) host.setOpl4(true);
             KeyboardMatrix* kb = host.emu ? host.emu->keyboard : nullptr;
-            auto run = [&](int n) { for (int f = 0; f < n; f++) host.runFrame(); };
+            std::vector<int16_t> wav;
+            auto run = [&](int n) {
+                for (int f = 0; f < n; f++) {
+                    host.runFrame();
+                    if (!wavPath.empty()) wav.insert(wav.end(), host.audioOut.begin(), host.audioOut.end());
+                }
+            };
             auto tap = [&](const std::string& code) { if (kb) { kb->setKey(code, true); run(4); kb->setKey(code, false); run(4); } };
             if (!cartPath.empty()) { host.loadCartridgeFile(cartPath); if (wantCrtc >= 0 && host.emu && host.emu->crtc) host.emu->crtc->setType(wantCrtc); run(150); }
             if (!diskPath.empty()) { host.loadDiskFile(diskPath, 0); run(150); }  // let BASIC settle
@@ -238,7 +258,8 @@ int main(int argc, char** argv) {
                 kb->setKey("ShiftLeft", true); kb->setKey(code, true); run(4);
                 kb->setKey(code, false); kb->setKey("ShiftLeft", false); run(4);
             };
-            for (char c : typeStr) {                        // type the boot command
+            auto typeText = [&](const std::string& text) {
+              for (char c : text) {
                 if (c == '\n') { tap("Enter"); continue; }
                 std::string shifted, code;
                 switch (c) {
@@ -264,6 +285,7 @@ int main(int argc, char** argv) {
                     case '^': code = "Equal"; break;        // CPC: the "^ Â£" key
                     case '-': code = "Minus"; break;
                     case '/': code = "Slash"; break;
+                    case '\\': code = "Backslash"; break;
                     case '[': code = "BracketLeft"; break;
                     case ']': code = "BracketRight"; break;
                     case ' ': code = "Space"; break;
@@ -275,7 +297,9 @@ int main(int argc, char** argv) {
                 }
                 if (!shifted.empty()) shiftTap(shifted);
                 else if (!code.empty()) tap(code);
-            }
+              }
+            };
+            typeText(typeStr);                              // type the boot command
             int last = 0;
             if (f1at >= 0 && kb) {
                 for (int t = f1at; t < frames; t += (f1at > 0 ? f1at : frames)) {   // press F1 every f1at frames
@@ -297,6 +321,47 @@ int main(int argc, char** argv) {
                     if (code[0] == 'r' && code.size() > 1 && code.find_first_not_of("0123456789", 1) == std::string::npos) {
                         run(std::atoi(code.c_str() + 1));               // r<N>: run N frames (no key)
                     } else if (kb) { kb->setKey(code, true); run(6); kb->setKey(code, false); run(6); }
+                }
+                if (e == std::string::npos) break;
+                k = e + 1;
+            }
+            // --mouse "w120;m-400,-400;m100,50;c;d;kEnter;s<file.bmp>": after everything else, a
+            // script for the Symbiface mouse -- wait frames, move (relative, in mouse counts),
+            // click, double-click, tap a key, save a screenshot -- so a desktop like SymbOS
+            // can be driven with no window.
+            for (size_t k = 0; k < mouseScript.size() && host.emu && host.emu->symbifaceMouse; ) {
+                size_t e = mouseScript.find(';', k);
+                const std::string tok = mouseScript.substr(k, e == std::string::npos ? std::string::npos : e - k);
+                SymbifaceMouse* mouse = host.emu->symbifaceMouse;
+                auto click = [&]() { mouse->button(0, true); run(3); mouse->button(0, false); run(3); };
+                if (!tok.empty()) switch (tok[0]) {
+                    case 'w': run(std::atoi(tok.c_str() + 1)); break;
+                    case 'm': {
+                        int dx = 0, dy = 0;
+                        std::sscanf(tok.c_str() + 1, "%d,%d", &dx, &dy);
+                        // in steps a mouse would report, a frame apart
+                        const int steps = std::max(1, std::max(std::abs(dx), std::abs(dy)) / 20);
+                        for (int s = 0; s < steps; s++) { mouse->move((double)dx / steps, (double)dy / steps); run(1); }
+                        run(2);
+                        break;
+                    }
+                    case 'j': {                    // j<bits>,<frames>: hold the joystick (b0 up b1 down b2 left b3 right b4 fire)
+                        int bits = 0, frames = 1;
+                        std::sscanf(tok.c_str() + 1, "%d,%d", &bits, &frames);
+                        if (kb) {
+                            for (int b = 0; b < 6; b++) if (bits >> b & 1) kb->setJoystick(b, true);
+                            run(frames);
+                            for (int b = 0; b < 6; b++) if (bits >> b & 1) kb->setJoystick(b, false);
+                            run(2);
+                        }
+                        break;
+                    }
+                    case 'c': click(); break;
+                    case 'd': mouse->button(0, true); run(1); mouse->button(0, false); run(2); mouse->button(0, true); run(1); mouse->button(0, false); run(3); break;
+                    case 't': typeText(tok.substr(1)); break;   // t<text>: typed (then kEnter)
+                    case 'k': if (kb) { kb->setKey(tok.substr(1), true); run(4); kb->setKey(tok.substr(1), false); run(4); } break;
+                    case 's': host.render(); host.saveScreenshotBmp(tok.substr(1)); std::printf("[mouse] shot %s\n", tok.c_str() + 1); break;
+                    default: break;
                 }
                 if (e == std::string::npos) break;
                 k = e + 1;
@@ -415,6 +480,38 @@ int main(int argc, char** argv) {
                     std::printf("[ram] %s (%zu bytes, %s)\n", dumpRamPath.c_str(), ram.size(), ok2 ? "ok" : "FAILED");
                 } else std::printf("[ram] %s (FAILED to open)\n", dumpRamPath.c_str());
             }
+            if (!v9990Shot.empty()) {
+                const V9990Picture* pic = host.v9990Picture();
+                const bool ok = pic && writeVideoBmp(v9990Shot, pic->pixels, pic->width, pic->height);
+                if (pic) std::printf("[v9990] %s %dx%d fields=%lld P#F=%02x%s -> %s (%s)\n", v9990ModeName(pic->mode), pic->width, pic->height,
+                                     pic->fields, host.emu->v9990->outputControl, host.emu->v9990->outputControlWritten ? "" : " (never written)",
+                                     v9990Shot.c_str(), ok ? "ok" : "FAILED");
+                else std::printf("[v9990] not displaying (stand-by, or never set up) -> nothing written\n");
+            }
+            if (!video9000Shot.empty()) {
+                host.render();
+                std::vector<uint32_t> px; int w = 0, h = 0;
+                const bool ok = host.video9000Picture(px, w, h) && writeVideoBmp(video9000Shot, px, w, h);
+                std::printf("[video9000] &FF6F=%02x %dx%d -> %s (%s)\n", host.video9000Control(), w, h, video9000Shot.c_str(), ok ? "ok" : "FAILED");
+            }
+            if (!wavPath.empty()) {
+                // 16-bit stereo PCM at the host's rate; and how loud it was, for a script
+                std::FILE* f = std::fopen(wavPath.c_str(), "wb");
+                if (f) {
+                    const uint32_t bytes = (uint32_t)(wav.size() * 2), rate = (uint32_t)host.sampleRate;
+                    auto u32 = [&](uint32_t v) { std::fwrite(&v, 4, 1, f); };
+                    auto u16 = [&](uint16_t v) { std::fwrite(&v, 2, 1, f); };
+                    std::fwrite("RIFF", 1, 4, f); u32(36 + bytes); std::fwrite("WAVEfmt ", 1, 8, f);
+                    u32(16); u16(1); u16(2); u32(rate); u32(rate * 4); u16(4); u16(16);
+                    std::fwrite("data", 1, 4, f); u32(bytes);
+                    std::fwrite(wav.data(), 2, wav.size(), f);
+                    std::fclose(f);
+                }
+                double sum = 0; int peak = 0;
+                for (int16_t s : wav) { sum += (double)s * s; peak = std::max(peak, std::abs((int)s)); }
+                std::printf("[wav] %s: %.1f s, rms %.0f, peak %d\n", wavPath.c_str(), wav.size() / 2.0 / host.sampleRate,
+                            wav.empty() ? 0.0 : std::sqrt(sum / wav.size()), peak);
+            }
             host.render();
             if (host.emu && host.emu->crtc) { auto* c = host.emu->crtc; std::printf("[regs] type=%d R0=%d R1=%d R2=%d R3=%d R4=%d R5=%d R6=%d R7=%d R8=%d R9=%d R12=%d R13=%d\n",
                 c->type, c->registers[0],c->registers[1],c->registers[2],c->registers[3],c->registers[4],c->registers[5],c->registers[6],c->registers[7],c->registers[8],c->registers[9],c->registers[12],c->registers[13]); }
@@ -499,14 +596,32 @@ int main(int argc, char** argv) {
     host.m4Enabled      = geti("m4", 0) != 0;             // applied by applySettings during boot
     host.symbifaceModule = gets("symbiface", "none");
     host.mouseSensitivity = (float)getf("mousesens", 1.0);
+    host.lightgunType   = gets("lightgun", "none");       // these four are applied by applySettings
+    host.v9990Enabled   = geti("v9990", 0) != 0;
+    host.opl4Enabled    = geti("opl4", 0) != 0;
+    host.opl4RamKiB     = geti("opl4ram", 2048);
+    // One monitor, switched, unless the ini says otherwise (an older ini's v9990beside kept).
+    host.gfx9000Monitor = gets("v9990monitor", ini.count("v9990beside") ? (geti("v9990beside", 1) ? "beside" : "window") : "switch");
+    host.tapeFollowsMotor = geti("tapemotor", 1) != 0;
+    host.tapeRelayDelay = geti("taperelay", 1) != 0;
+    host.beamRenderer   = geti("beam", 0) != 0;
 
     host.gateArrayPart  = geti("gatearray", 0);            // applied by bootModel
     // Boot the default machine.
+    // With no ini (a first start) or a machine whose ROMs have gone: a CPC 6128, else the
+    // first machine there are ROMs for.
     std::string savedModel = gets("model", "");
     int savedRam = geti("ram", -1), savedCrtc = geti("crtc", -1);
-    if (geti("autoboot", 1) && !savedModel.empty()) {
-        for (int i = 0; i < (int)host.models.size(); i++)
-            if (host.models[i].id == savedModel && host.models[i].available) { host.bootModel(i, savedRam, savedCrtc); break; }
+    if (geti("autoboot", 1)) {
+        int pick = -1;
+        auto find = [&](const std::string& id) {
+            for (int i = 0; i < (int)host.models.size(); i++) if (host.models[i].id == id && host.models[i].available) return i;
+            return -1;
+        };
+        if (!savedModel.empty()) pick = find(savedModel);
+        if (pick < 0) { savedRam = -1; savedCrtc = -1; pick = find("cpc6128"); }
+        for (int i = 0; pick < 0 && i < (int)host.models.size(); i++) if (host.models[i].available) pick = i;
+        if (pick >= 0) host.bootModel(pick, savedRam, savedCrtc);
     }
 
     GLuint screenTex = 0;
@@ -529,6 +644,30 @@ int main(int argc, char** argv) {
         SDL_SetWindowFullscreen(window, host.fullscreen ? SDL_WINDOW_FULLSCREEN_DESKTOP : 0);
     };
     shell.toggleFullscreen = toggleFullscreen;
+
+    // The tool windows' pictures (GFX9000 monitor, printer page): one texture per slot,
+    // re-created when the size changes.
+    struct ToolTexture { GLuint id = 0; int w = 0, h = 0; };
+    std::map<int, ToolTexture> toolTextures;
+    shell.uploadTexture = [&](int slot, const uint32_t* rgba, int w, int h) -> unsigned {
+        ToolTexture& t = toolTextures[slot];
+        if (!t.id) {
+            glGenTextures(1, &t.id);
+            glBindTexture(GL_TEXTURE_2D, t.id);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        }
+        glBindTexture(GL_TEXTURE_2D, t.id);
+        if (t.w != w || t.h != h) {
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, rgba);
+            t.w = w; t.h = h;
+        } else {
+            glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, rgba);
+        }
+        return t.id;
+    };
 
     const double FRAME_SECONDS = 1.0 / 50.08;
     uint64_t perfFreq = SDL_GetPerformanceFrequency();
@@ -567,30 +706,45 @@ int main(int argc, char** argv) {
         host.emu->gamepad->update(gs);
     };
 
+    // The mouse grab: a click on a picture takes the host mouse for the CPC's (every motion
+    // reaches it, wherever the host pointer would be); F12, the middle button, or the
+    // window losing the focus gives it back.
+    auto releaseMouse = [&]() {
+        if (!host.mouseCaptured) return;
+        SDL_SetRelativeMouseMode(SDL_FALSE);
+        host.mouseCaptured = false;
+        for (int b = 0; b < 3; b++) host.mouseButton(b, false);
+    };
     bool running = true;
     while (running) {
         SDL_Event ev;
         while (SDL_PollEvent(&ev)) {
-            ImGui_ImplSDL2_ProcessEvent(&ev);
+            const bool mouseEvent = ev.type == SDL_MOUSEMOTION || ev.type == SDL_MOUSEBUTTONDOWN
+                                 || ev.type == SDL_MOUSEBUTTONUP || ev.type == SDL_MOUSEWHEEL;
+            if (!(host.mouseCaptured && mouseEvent)) ImGui_ImplSDL2_ProcessEvent(&ev);
             if (ev.type == SDL_QUIT) running = false;
             if (shell.quitRequested) running = false;
             if (ev.type == SDL_CONTROLLERDEVICEADDED || ev.type == SDL_CONTROLLERDEVICEREMOVED) openPads();
             if (ev.type == SDL_WINDOWEVENT && ev.window.event == SDL_WINDOWEVENT_CLOSE &&
                 ev.window.windowID == SDL_GetWindowID(window)) running = false;
             if (ev.type == SDL_DROPFILE && ev.drop.file) { host.loadByExtension(ev.drop.file); SDL_free(ev.drop.file); }
-            // Route the host mouse to an active Symbiface mouse module.
-            if (host.symbifaceMouseActive() && (shell.screenHovered || !io.WantCaptureMouse)) {
+            // While grabbed, the host mouse is the Symbiface mouse.
+            if (host.mouseCaptured && !host.symbifaceMouseActive()) releaseMouse();
+            if (host.mouseCaptured && mouseEvent) {
                 if (ev.type == SDL_MOUSEMOTION) host.mouseMove((float)ev.motion.xrel, (float)ev.motion.yrel);
+                else if (ev.type == SDL_MOUSEBUTTONDOWN && ev.button.button == SDL_BUTTON_MIDDLE) releaseMouse();
                 else if (ev.type == SDL_MOUSEBUTTONDOWN || ev.type == SDL_MOUSEBUTTONUP) {
-                    int idx = ev.button.button == SDL_BUTTON_RIGHT ? 1 : ev.button.button == SDL_BUTTON_MIDDLE ? 2 : 0;
-                    host.mouseButton(idx, ev.type == SDL_MOUSEBUTTONDOWN);
+                    if (ev.button.button != SDL_BUTTON_MIDDLE)
+                        host.mouseButton(ev.button.button == SDL_BUTTON_RIGHT ? 1 : 0, ev.type == SDL_MOUSEBUTTONDOWN);
                 } else if (ev.type == SDL_MOUSEWHEEL) host.mouseScroll((float)ev.wheel.y);
             }
+            if (ev.type == SDL_WINDOWEVENT && ev.window.event == SDL_WINDOWEVENT_FOCUS_LOST) releaseMouse();
             // Keys reach the CPC unless a text field or a debugger/assembler window has them.
             // Releases always go through, so a key held while the focus moves never sticks.
             if (ev.type == SDL_KEYUP && !ev.key.repeat) host.setKey(ev.key.keysym.scancode, false);
             if (ev.type == SDL_KEYDOWN && !ev.key.repeat && !io.WantTextInput) {
                 if (ev.key.keysym.scancode == SDL_SCANCODE_F11) toggleFullscreen();
+                else if (ev.key.keysym.scancode == SDL_SCANCODE_F12) releaseMouse();
                 else if (shell.keyboardToCpc()) host.setKey(ev.key.keysym.scancode, true);
             }
         }
@@ -639,6 +793,10 @@ int main(int argc, char** argv) {
         info.soundQueuedMs = audioDev ? (float)SDL_GetQueuedAudioSize(audioDev) /
                              (float)(host.sampleRate * 2 * (int)sizeof(int16_t)) * 1000.0f : 0.0f;
         shell.draw(info);
+        if (shell.mouseCaptureRequested) {
+            shell.mouseCaptureRequested = false;
+            if (!host.mouseCaptured && SDL_SetRelativeMouseMode(SDL_TRUE) == 0) host.mouseCaptured = true;
+        }
         if (shell.quitRequested) running = false;
 
         ImGui::Render();
@@ -689,6 +847,14 @@ int main(int argc, char** argv) {
             f << "m4folder=" << host.m4Folder << "\n";
             f << "symbiface=" << host.symbifaceModule << "\n";
             f << "mousesens=" << host.mouseSensitivity << "\n";
+            f << "lightgun=" << host.lightgunType << "\n";
+            f << "v9990=" << (host.v9990Enabled ? 1 : 0) << "\n";
+            f << "opl4=" << (host.opl4Enabled ? 1 : 0) << "\n";
+            f << "opl4ram=" << host.opl4RamKiB << "\n";
+            f << "v9990monitor=" << host.gfx9000Monitor << "\n";
+            f << "tapemotor=" << (host.tapeFollowsMotor ? 1 : 0) << "\n";
+            f << "taperelay=" << (host.tapeRelayDelay ? 1 : 0) << "\n";
+            f << "beam=" << (host.beamRenderer ? 1 : 0) << "\n";
             shell.saveSettings(f);
             f << "winw=" << cw << "\n";
             f << "winh=" << ch << "\n";
@@ -697,6 +863,7 @@ int main(int argc, char** argv) {
 
     if (audioDev) SDL_CloseAudioDevice(audioDev);
     glDeleteTextures(1, &screenTex);
+    for (auto& kv : toolTextures) glDeleteTextures(1, &kv.second.id);
     ImGui_ImplOpenGL3_Shutdown();
     ImGui_ImplSDL2_Shutdown();
     ImGui::DestroyContext();

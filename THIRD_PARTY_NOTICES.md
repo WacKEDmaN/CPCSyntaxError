@@ -9,6 +9,7 @@ files named here.
 | Component | Version | Author | Licence | Where |
 |---|---|---|---|---|
 | Dear ImGui (docking branch) | 1.92.9b | Omar Cornut and contributors | MIT | `third_party/imgui/LICENSE.txt` |
+| ymfm (OPL family: the YMF278B / OPL4) | upstream 81aec25 | Aaron Giles | BSD 3-Clause | `third_party/ymfm/LICENSE` |
 | RASM | 3.3 (upstream 75f4e908) | Edouard BERGE | MIT | `third_party/rasm/LICENSE` |
 | apultra (RASM cruncher) | as shipped with RASM | Emmanuel Marty | zlib | header of `third_party/rasm/apultra-master/src/*.h` |
 | LZSA (RASM cruncher) | as shipped with RASM | Emmanuel Marty | zlib | header of `third_party/rasm/lzsa-master/src/*.h` |

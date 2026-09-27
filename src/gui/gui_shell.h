@@ -7,15 +7,20 @@
 // layout persists in cpcse_layout.ini next to the executable; Window > Reset layout
 // rebuilds the default one.
 //
-// The windows, grouped by what they are about:
-//   Machine   what the machine IS: model, RAM, CRTC, control, ROMs
-//   Media     what is in it: drives, tape, cartridge, snapshots
-//   Settings  how it is presented: display, sound, input, expansions
-//   Screen    the picture
+// The menu bar and the windows are grouped the same way, by what they are about:
+//   Machine     what the machine IS: model, RAM, the video chips (CRTC, Gate Array,
+//               monitor set), control, ROMs
+//   Media       what is in it: drives, tape (and the deck's options), cartridge, snapshots
+//   Video       how the picture is presented: tube, renderer, scaling, CRT effect
+//   Audio       sound, and a DAC on the printer port
+//   Input       keyboard layout, joystick, mouse, lightgun, the Plus analogue port
+//   Expansions  what is plugged into the back: M4, Symbiface, the printer port, GFX9000
+//   Tools       CSL scripts, printer output, GFX9000 output, assembler
+//   (Settings is one window holding Video, Audio, Input and Expansions)
+//   Screen      the picture
 //   CPU, Disassembly, Memory, Breakpoints        the debugger (gui_debugger.h)
-//   Video     CRTC, Gate Array, monitor, Plus ASIC internals
-//   Audio & I/O  PSG, PPI + keyboard matrix, disc controller, tape
-//   Assembler RASM (gui_assembler.h)
+//   Video/Audio & I/O internals, Assembler (gui_debug_views.cpp, gui_assembler.h)
+// The settings sections and the Printer / GFX9000 / CSL windows are in gui_panels.cpp.
 #pragma once
 #include <functional>
 #include <map>
@@ -55,12 +60,17 @@ public:
     void draw(const ShellFrameInfo& info);
 
     std::function<void()> toggleFullscreen;   // set by main (it owns the SDL window)
+    // Set by main (it owns GL): put `rgba` (0xAABBGGRR, w x h) into texture `slot`,
+    // creating or resizing it as needed; returns the texture id. Slot 1 GFX9000, 2 printer.
+    std::function<unsigned(int slot, const uint32_t* rgba, int w, int h)> uploadTexture;
     bool quitRequested = false;
+    bool mouseCaptureRequested = false;        // a click on a picture asks main to grab the mouse
     bool screenHovered = false;               // the mouse is over the emulated picture (Symbiface mouse)
     // Keys go to the CPC unless a debugger or assembler window has the focus.
     bool keyboardToCpc() const { return !toolFocused; }
 
 private:
+    friend struct GuiShellCheck;              // tools/gui_shell_check draws every section headless
     EmuHost& host;
     FileBrowser browser;
     SaveDialog saver;
@@ -101,7 +111,8 @@ private:
     void menuFile();
     void menuMachine();
     void menuMedia();
-    void menuSettings();
+    void menuSection(const char* title, void (GuiShell::*section)(bool));
+    void menuTools();
     void menuDebug();
     void menuWindow();
     void menuHelp();
@@ -112,11 +123,40 @@ private:
     void windowMedia();
     void windowSettings();
     void windowAbout();
-    void sectionDisplay(bool asMenu);
-    void sectionSound(bool asMenu);
+    void sectionRoms(bool asMenu);
+
+    // settings sections and tool windows (gui_panels.cpp)
+    void sectionVideo(bool asMenu);
+    void sectionAudio(bool asMenu);
     void sectionInput(bool asMenu);
     void sectionExpansions(bool asMenu);
-    void sectionRoms(bool asMenu);
+    void sectionTape(bool asMenu);
+    void printerPortItems(bool asMenu);
+    void lightgunItems(bool asMenu);
+    void windowPrinter();
+    void windowGfx9000();
+    void windowCslScripts();
+    // the lightgun: where the mouse is over the picture, in framebuffer pixels
+    void lightgunFromScreen(float ox, float oy, float drawW, float drawH, int texW, int texH);
+
+    // printer / GFX9000 textures
+    unsigned printerTexture = 0, gfxTexture = 0;
+    long long gfxTextureFields = -1;
+    unsigned video9000Texture = 0;
+    std::vector<uint32_t> video9000Pixels;
+    // The GFX9000's last field in gfxTexture (uploaded when a new one is complete); its
+    // picture, or null while its monitor has no signal.
+    const V9990Picture* gfxPictureTexture();
+    // draws the GFX9000 monitor into a box: its picture, or "no signal"
+    void drawGfxMonitor(ImDrawList* dl, float x, float y, float w, float h);
+    int printerTextureRevision = -1;
+    std::string printerTabDevice;     // the printer-port device the Printer window last showed
+    // CSL scripts window
+    std::string cslScript, cslOut = "screenshots", cslDiskDir;
+    int cslCrtc = -1;                 // -1 = as the script says
+    bool cslChain = true, cslErrata = true;
+    struct CslRun;
+    std::shared_ptr<CslRun> cslRun;
 
     // debugger windows (gui_debug_views.cpp)
     void windowCpu();

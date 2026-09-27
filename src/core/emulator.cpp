@@ -15,6 +15,7 @@
 #include "cpcdos.h"
 #include "m4.h"
 #include "v9990.h"
+#include "opl4.h"
 #include "symbiface_mouse.h"
 #include "sf2_rtc.h"
 #include "sf3.h"
@@ -36,7 +37,8 @@ GX4000::GX4000() {
     gateArray = new GateArray(memory, asic, true);
     cpcDos = new CpcDos(this);
     m4 = new M4Board(this);
-    v9990 = new V9990([this](int vector) { if (cpu) cpu->requestInterrupt(vector); });
+    v9990 = new V9990();
+    opl4 = new Opl4Card();
     symbifaceMouse = new SymbifaceMouse();
     sf2Rtc = new Symbiface2Rtc();
     sf3 = new Symbiface3();
@@ -303,7 +305,7 @@ GX4000::GX4000() {
 
 GX4000::~GX4000() {
     delete cpu; delete fdc; delete gamepad; delete ppi; delete tape; delete dac; delete ay; delete keyboard;
-    delete crtc; delete monitorRenderer; delete sf3; delete sf2Rtc; delete symbifaceMouse; delete v9990;
+    delete crtc; delete monitorRenderer; delete sf3; delete sf2Rtc; delete symbifaceMouse; delete v9990; delete opl4;
     delete m4; delete cpcDos; delete gateArray; delete asic; delete memory;
 }
 
@@ -802,13 +804,14 @@ void GX4000::loadClassicFirmware(const LoadClassicOptions& options) {
 }
 void GX4000::setDacType(const std::string& type) { dac->setMode(type); }
 void GX4000::writePort(int port, int value) {
-    int high = (unsigned)port >> 8 & 0xff, low = port & 0xff;
-    if (v9990->writePort(port, value, cpu ? cpu->tStates : 0)) return;
+    int high = (unsigned)port >> 8 & 0xff;
+    if (v9990->writePort(port, value, machineCycles + hardwareCyclesAdvanced)) return;
+    if (opl4->handlesPort(port)) { opl4->writePort(port, value, machineCycles + hardwareCyclesAdvanced); return; }
     if (symbifaceMouse->handlesWritePort(port)) { symbifaceMouse->writePort(port, value); return; }
     if (sf2Rtc->handlesWritePort(port)) { sf2Rtc->writePort(port, value); return; }
     if (sf3->handlesWritePort(port)) { sf3->writePort(port, value); return; }
-    if (m4->enabled && high == 0xfd && (low == 0x3e || low == 0x3f) && m4->helperTrap(low, cpu)) return;
-    if (m4->enabled && (high == 0xfe || high == 0xff)) { m4->dataPortWrite(value); return; }
+    // M4: DATAPORT &FExx takes the command, ACKPORT &FCxx starts it (M4ROM.s)
+    if (m4->enabled && high == 0xfe) { m4->dataPortWrite(value); return; }
     if (m4->enabled && high == 0xfc) { m4->ack(cpu); return; }
     if ((port & 0xc000) == 0x4000) {
         // CPCSE_TRACE_GA=<budget>: every GATE ARRAY write with the CRTC position it landed
@@ -863,11 +866,12 @@ void GX4000::writePort(int port, int value) {
 int GX4000::readPort(int port) {
     int value = 0xff;
     int high = (unsigned)port >> 8 & 0xff;
-    if (v9990->handlesPort(port)) return v9990->readPort(port, cpu ? cpu->tStates : 0);
+    if (v9990->handlesPort(port)) return v9990->readPort(port, machineCycles + hardwareCyclesAdvanced);
+    if (opl4->handlesPort(port)) return opl4->readPort(port, machineCycles + hardwareCyclesAdvanced);
     if (symbifaceMouse->handlesPort(port)) return symbifaceMouse->readPort(port);
     if (sf2Rtc->handlesPort(port)) return sf2Rtc->readPort(port);
     if (sf3->handlesPort(port)) return sf3->readPort(port);
-    if (m4->enabled && (high == 0xfe || high == 0xff)) return m4->dataPortRead();
+    if (m4->enabled && high == 0xfe) return m4->dataPortRead();
     bool crtcSelected = (port & 0x4000) == 0;
     int crtcPort = (unsigned)port >> 8 & 3;
     int plusMachineId = plusComputer && ((ramKiB > 0 ? ramKiB : (int)(memory->ram.size() / 1024)) > 64) ? 0x79 : 0x78;
@@ -1093,6 +1097,18 @@ int GX4000::stepInstruction() {
     }
     machineCycles += cycles;
     timingInstructionActive = false;
+    // The GFX9000 runs its own raster; its /INT is a level on the CPC's /INT, held while a
+    // flag it enables is set, so the Z80A is asked again after each acknowledge until the
+    // program clears the flag (V9990 manual p.76, p.82).
+    if (v9990->enabled) {
+        v9990->advanceTo(machineCycles);
+        if (v9990->intAsserted() && cpu->pendingInterrupt == -1 && interruptHeldOver == -1) cpu->requestInterrupt(0xff);
+    }
+    // The OPL4's IRQ (its timers) is a level on /INT too.
+    if (opl4->enabled) {
+        opl4->tick(machineCycles);
+        if (opl4->intAsserted() && cpu->pendingInterrupt == -1 && interruptHeldOver == -1) cpu->requestInterrupt(0xff);
+    }
     if (watchpointPending.has_value()) {
         std::any hit = watchpointPending;
         watchpointPending.reset();
@@ -1132,7 +1148,6 @@ int GX4000::runFrame() {
         elapsed += stepInstruction();
         if (debuggerPaused) break;
     }
-    if (!debuggerPaused) v9990->endFrame();
     return elapsed;
 }
 void GX4000::reset() {
@@ -1150,7 +1165,7 @@ void GX4000::reset() {
     memory->reset(); asic->reset(); gateArray->reset(); rasterCapture.clear(); rasterFrame.clear(); previousRasterFrame.clear();
     spritePatternSnapshot.clear(); spritePatternRevision = -1; crtc->reset();
     videoFrameRegisters = crtc->registers; videoCaptureRegisters = crtc->registers;
-    keyboard->reset(); ay->reset(); ppi->reset(); fdc->reset(); dac->reset(); tape->reset(); cpcDos->reset(); m4->reset(); v9990->reset(); symbifaceMouse->reset(); sf2Rtc->reset(); sf3->reset(); cpu->reset();
+    keyboard->reset(); ay->reset(); ppi->reset(); fdc->reset(); dac->reset(); tape->reset(); cpcDos->reset(); m4->reset(); v9990->reset(); opl4->reset(); symbifaceMouse->reset(); sf2Rtc->reset(); sf3->reset(); cpu->reset();
     cpu->sp = 0xbfff;
 }
 void GX4000::acknowledgeInterrupt() {

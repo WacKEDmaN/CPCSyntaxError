@@ -17,9 +17,18 @@
 #include "core/crtc.h"
 #include "core/z80.h"
 #include "core/v9990.h"
+#include "core/opl4.h"
 #include "core/m4.h"
 #include "core/symbiface_mouse.h"
 #include "core/sf3.h"
+#include "core/matrix_printer.h"
+#include "core/dac.h"
+#include "core/ppi.h"
+#include "core/keyboard.h"
+#include "core/crtc.h"
+#include "core/asic.h"
+#include "core/tape.h"
+#include "core/csl.h"
 #include <algorithm>
 #include <cctype>
 #include <cstdio>
@@ -32,102 +41,6 @@ namespace cpcse {
 static const int SCREEN_W = 768;
 static const int SCREEN_H = 544;
 
-// ----------------------------------------------------------------------------
-// An M4 virtual drive backed by a real host folder. The M4 firmware sees the
-// folder's contents as its SD card. File data is loaded into the base struct's
-// `files`/`dirs` maps (which M4Board reads directly); mutations write back to
-// the folder. Names are upper-cased FAT-style, keyed by absolute path.
-// ----------------------------------------------------------------------------
-namespace {
-
-std::string m4Upper(std::string s) { for (char& c : s) c = (char)std::toupper((unsigned char)c); return s; }
-std::string m4BaseName(const std::string& full) { auto s = full.rfind('/'); return s == std::string::npos ? full : full.substr(s + 1); }
-std::string m4ParentOf(const std::string& full) { auto s = full.rfind('/'); if (s == std::string::npos || s == 0) return "/"; return full.substr(0, s); }
-std::string m4Join(const std::string& cwd, const std::string& name) {
-    std::string n = name;
-    for (char& c : n) if (c == '\\') c = '/';
-    if (!n.empty() && n[0] == '/') return m4Upper(n);
-    std::string r = cwd;
-    if (r.empty() || r.back() != '/') r += '/';
-    r += n;
-    return m4Upper(r);
-}
-
-class HostFolderM4Drive : public M4Drive {
-public:
-    std::string root;
-    explicit HostFolderM4Drive(const std::string& dir) : root(dir) {
-        readOnly = false; limitBytes = 16 * 1024 * 1024; cwd = "/";
-        rescan();
-    }
-    void rescan() {
-        files.clear(); dirs.clear(); dirs.insert("/");
-        namespace fs = std::filesystem; std::error_code ec;
-        if (root.empty() || !fs::is_directory(root, ec)) return;
-        for (auto it = fs::recursive_directory_iterator(root, ec);
-             it != fs::recursive_directory_iterator(); it.increment(ec)) {
-            std::error_code rc;
-            std::string rel = fs::relative(it->path(), root, rc).generic_string();
-            if (rel.empty() || rel[0] == '.') continue;
-            std::string full = m4Upper("/" + rel);
-            if (it->is_directory(ec)) dirs.insert(full);
-            else if (it->is_regular_file(ec)) {
-                bool ok = false; Bytes data = EmuHost::readFile(it->path().string(), ok);
-                files[full] = M4File{ full, m4BaseName(full), data, (int)data.size() };
-            }
-        }
-    }
-    std::string hostPathFor(const std::string& full) const {
-        std::string p = full; if (!p.empty() && p[0] == '/') p = p.substr(1);
-        return (std::filesystem::path(root) / p).string();
-    }
-    std::vector<M4DriveRow> list(const std::string& path) override {
-        std::vector<M4DriveRow> rows;
-        std::string p = path.empty() ? "/" : path;
-        for (const auto& d : dirs) if (d != "/" && m4ParentOf(d) == p) rows.push_back({ m4BaseName(d), "dir", 0 });
-        for (const auto& kv : files) if (m4ParentOf(kv.second.path) == p) rows.push_back({ kv.second.name, "file", kv.second.size });
-        return rows;
-    }
-    M4File* find(const std::string& name) override {
-        std::string full = m4Join(cwd, name);
-        auto it = files.find(full);
-        return it == files.end() ? nullptr : &it->second;
-    }
-    void chdir(const std::string& path) override { if (dirs.count(path)) cwd = path; }
-    void addFile(const std::string& path, const Bytes& data) override {
-        if (readOnly) return;
-        std::string full = m4Upper(path);
-        std::error_code ec;
-        std::filesystem::create_directories(std::filesystem::path(hostPathFor(full)).parent_path(), ec);
-        std::ofstream f(hostPathFor(full), std::ios::binary);
-        if (f) f.write((const char*)data.data(), (std::streamsize)data.size());
-        files[full] = M4File{ full, m4BaseName(full), data, (int)data.size() };
-    }
-    void deletePath(const std::string& path) override {
-        if (readOnly) return;
-        std::string full = m4Upper(path);
-        std::error_code ec; std::filesystem::remove(hostPathFor(full), ec);
-        files.erase(full); dirs.erase(full);
-    }
-    bool rename(const std::string& oldName, const std::string& newName) override {
-        if (readOnly) return false;
-        std::string oldFull = m4Join(cwd, oldName), newFull = m4Join(cwd, newName);
-        auto it = files.find(oldFull);
-        if (it == files.end()) return false;
-        std::error_code ec; std::filesystem::rename(hostPathFor(oldFull), hostPathFor(newFull), ec);
-        M4File nf = it->second; nf.path = newFull; nf.name = m4BaseName(newFull);
-        files.erase(it); files[newFull] = nf;
-        return true;
-    }
-    void ensureDir(const std::string& path) override {
-        if (readOnly) return;
-        std::string full = m4Upper(path);
-        std::error_code ec; std::filesystem::create_directories(hostPathFor(full), ec);
-        dirs.insert(full);
-    }
-};
-
-} // namespace
 
 void EmuHost::setBeamRenderer(bool on) {
     beamRenderer = on;
@@ -157,13 +70,28 @@ EmuHost::EmuHost() {
     // A calm dark field before anything is booted.
     std::fill(video->pixels.begin(), video->pixels.end(), 0xff101418u);
     applyAudioRate();
+    // The printer port's output. The CpcDac lives as long as the machine, so this is wired
+    // once: it only delivers bytes while its mode is "printer" or "matrix".
+    matrixPrinter = new MatrixPrinter();
+    emu->dac->onPrinterChar = [this](const std::string& s) {
+        for (char ch : s) { if (ch == 13) continue; printerText.push_back(ch == 10 ? '\n' : ch); }
+        printerRevision += 1;
+    };
+    emu->dac->onMatrixPrinterByte = [this](int byte) { matrixPrinter->writeByte(byte); printerRevision += 1; };
+    // A Gunstick reads the brightness of the spot it points at -- off the rendered picture.
+    emu->lightgunPixelSampler = [this](int x, int y) -> std::optional<int> {
+        if (!video || x < 0 || y < 0 || x >= video->width || y >= video->height) return std::nullopt;
+        const uint32_t p = video->pixels[(size_t)y * video->width + x];
+        const int rgb = (int)((p & 0xff) << 16 | (p >> 8 & 0xff) << 8 | (p >> 16 & 0xff));
+        return video->lightgunRgbBright(rgb) ? 1 : 0;
+    };
     scanModels();
 }
 
 EmuHost::~EmuHost() {
     delete video;
     delete emu;
-    delete m4Drive;
+    delete matrixPrinter;
 }
 
 void EmuHost::applyAudioRate() {
@@ -334,10 +262,14 @@ void EmuHost::applySettings() {
         emu->keyboard->setJoystickEnabled(joystickEnabled);
         emu->keyboard->setRegion(keyboardRegion);
     }
-    emu->setDacType(dacType);
+    applyPrinter();
     applyExpansionRoms();
     applyM4();
     applySymbiface();
+    applyLightgun();
+    applyTapeOptions();
+    if (emu->v9990) emu->v9990->setEnabled(v9990Enabled);
+    applyOpl4();
     applyAudioRate();
 }
 
@@ -348,10 +280,9 @@ void EmuHost::applyM4() {
     if (romPath.empty()) romPath = findRom("m4");
     bool ok = false; Bytes rom = readFile(romPath, ok);
     if (!ok || rom.empty()) return;
-    if (!m4Drive) m4Drive = new HostFolderM4Drive(m4Folder);
-    emu->m4->setDrive(m4Drive);
-    emu->m4->loadRomDefaults(rom);
-    emu->memory->setUpperRom(6, rom);
+    if (!emu->m4->storage || emu->m4->storage->root != m4Folder) emu->m4->setCard(m4Folder);
+    emu->m4->setRom(rom);
+    emu->memory->setUpperRom(emu->m4->romSlot, rom);   // for the debugger's views; the board answers reads
     emu->m4->setEnabled(true);
 }
 
@@ -363,19 +294,17 @@ bool EmuHost::setM4(bool enabled, const std::string& folder) {
         if (romPath.empty()) romPath = findRom("m4");
         bool ok = false; Bytes rom = readFile(romPath, ok);
         if (!ok || rom.empty()) { status = "M4ROM.ROM not found in " + romDir; return false; }
-        delete m4Drive; m4Drive = new HostFolderM4Drive(folder);
-        emu->m4->setDrive(m4Drive);
-        emu->m4->loadRomDefaults(rom);
-        emu->memory->setUpperRom(6, rom);
+        emu->m4->setCard(folder);
+        emu->m4->setRom(rom);
+        emu->memory->setUpperRom(emu->m4->romSlot, rom);
         emu->m4->setEnabled(true);
         m4Enabled = true; m4Folder = folder;
         emu->reset();   // let the firmware re-scan ROMs and register the M4 RSX (|CD, |DIR…)
-        status = "M4 enabled — " + folder + " (" + std::to_string((int)m4Drive->files.size()) + " file(s))";
+        status = "M4 enabled — " + folder;
     } else {
         emu->m4->setEnabled(false);
-        emu->m4->setDrive(nullptr);
-        delete m4Drive; m4Drive = nullptr;
-        emu->memory->setUpperRom(6, Bytes{});
+        emu->m4->setCard("");
+        emu->memory->setUpperRom(emu->m4->romSlot, Bytes{});
         m4Enabled = false;
         emu->reset();
         status = "M4 disabled";
@@ -384,7 +313,7 @@ bool EmuHost::setM4(bool enabled, const std::string& folder) {
 }
 
 void EmuHost::rescanM4() {
-    if (m4Drive) { static_cast<HostFolderM4Drive*>(m4Drive)->rescan(); status = "M4 folder rescanned"; }
+    if (emu && emu->m4 && emu->m4->storage) { emu->m4->rescan(); status = "M4 folder rescanned"; }
 }
 
 void EmuHost::applySymbiface() {
@@ -482,8 +411,152 @@ void EmuHost::setKeyboardRegion(const std::string& region) {
 
 void EmuHost::setDacType(const std::string& type) {
     dacType = type;
-    if (emu) emu->setDacType(type);
+    applyPrinter();
     applyAudioRate();
+}
+void EmuHost::applyPrinter() {
+    if (!emu) return;
+    emu->setDacType(dacType);
+    // A printer that is plugged in and switched on answers BUSY low; with nothing there the
+    // firmware sees BUSY stuck high and waits (PPI port B bit 6).
+    if (emu->ppi) emu->ppi->printerOnline = printerAttached();
+}
+void EmuHost::clearPrinter() {
+    printerText.clear();
+    if (matrixPrinter) matrixPrinter->reset();
+    printerRevision += 1;
+}
+bool EmuHost::savePrinterText(const std::string& path) const {
+    std::ofstream f(path, std::ios::binary);
+    if (!f) return false;
+    f << printerText;
+    return (bool)f;
+}
+bool EmuHost::savePrinterPageBmp(const std::string& path) const {
+    if (!matrixPrinter || matrixPrinter->pageCount() == 0) return false;
+    std::vector<uint8_t>& page = matrixPrinter->pageData(matrixPrinter->pageNumber() - 1);
+    std::vector<uint32_t> px((size_t)matrixPrinter->width * matrixPrinter->height);
+    for (size_t i = 0; i < px.size(); i += 1)
+        px[i] = 0xff000000u | (uint32_t)page[i * 4 + 2] << 16 | (uint32_t)page[i * 4 + 1] << 8 | page[i * 4];
+    return writeVideoBmp(path, px, matrixPrinter->width, matrixPrinter->height);
+}
+bool EmuHost::savePrinterPageSvg(const std::string& path) const {
+    if (!matrixPrinter || matrixPrinter->pageCount() == 0) return false;
+    std::ofstream f(path, std::ios::binary);
+    if (!f) return false;
+    f << matrixPrinter->toSvg();
+    return (bool)f;
+}
+
+void EmuHost::setLightgun(const std::string& type) {
+    lightgunType = (type == "trojan" || type == "gunstick" || type == "westphaser") ? type : "none";
+    applyLightgun();
+}
+void EmuHost::applyLightgun() {
+    if (!emu || !emu->keyboard || !emu->crtc) return;
+    const bool on = lightgunActive();
+    if (on) { emu->keyboard->setLightgunType(lightgunType); emu->crtc->setLightgunType(lightgunType); }
+    emu->keyboard->setLightgunEnabled(on);
+    emu->crtc->setTrojanLightgunEnabled(on);
+}
+void EmuHost::lightgunAim(double x, double y, bool trigger) {
+    if (!emu || !lightgunActive()) return;
+    if (x < 0 || y < 0) { emu->crtc->releaseTrojanLightgun(); emu->keyboard->setLightgunTrigger(false); return; }
+    emu->crtc->setTrojanLightgun(x, y, trigger, SCREEN_W, SCREEN_H);
+    emu->keyboard->setLightgunTrigger(trigger);
+}
+
+void EmuHost::setOpl4(bool on) {
+    opl4Enabled = on;
+    applyOpl4();
+}
+void EmuHost::applyOpl4() {
+    if (!emu || !emu->opl4) return;
+    Opl4Card& card = *emu->opl4;
+    card.setRamKiB(opl4RamKiB);
+    if (opl4Enabled && card.rom.empty()) {
+        const std::string path = findRom("yrw801");
+        bool ok = false;
+        if (!path.empty()) card.rom = readFile(path, ok);
+        if (!ok) card.rom.clear();
+    }
+    card.setEnabled(opl4Enabled);
+}
+bool EmuHost::opl4HasRom() const { return emu && emu->opl4 && !emu->opl4->rom.empty(); }
+
+void EmuHost::setV9990(bool on) {
+    v9990Enabled = on;
+    if (emu && emu->v9990) emu->v9990->setEnabled(on);
+}
+bool EmuHost::gfx9000OnMainScreen() const {
+    if (!v9990Enabled || gfx9000Monitor != "switch" || !emu || !emu->v9990 || !emu->v9990->displaying()) return false;
+    const V9990& v = *emu->v9990;
+    if (!(v.registers[8] & 0x80)) return false;                       // DISP off: nothing to show
+    return !(v.outputControlWritten && (v.outputControl & 0x10));
+}
+int EmuHost::video9000Control() const {
+    if (!emu || !emu->v9990) return 0x10;
+    return emu->v9990->outputControlWritten ? emu->v9990->outputControl : 0x10;
+}
+
+bool EmuHost::video9000Picture(std::vector<uint32_t>& out, int& width, int& height) const {
+    if (!emu || !emu->v9990 || !video) return false;
+    const int ctl = video9000Control();
+    const bool gen = ctl & 0x10, tran = ctl & 0x08, ymix = ctl & 0x02, ym = ctl & 0x01;
+    const bool rgbInput = !(ctl & 0x40);                  // S1 = 0: the computer's RGB
+    const V9990Picture* pic = v9990Picture();
+    V9990Picture blank;                                    // the GFX9000 showing nothing: black
+    if (!pic) { blank.width = 568; blank.height = 290; blank.pixels.assign(568 * 290, 0xff000000u); blank.ys.assign(568 * 290, 0); pic = &blank; }
+    width = pic->width; height = pic->height;
+    out.resize((size_t)width * height);
+    if (!gen) { out = pic->pixels; return true; }
+    // The input, lined up on the sync the genlock shares: the CPC's picture is 16 texture
+    // pixels a microsecond and two rows a line; both are centred on the line and the field.
+    const int cw = video->width, ch = video->height;
+    const double gfxMidUs = pic->startUs + pic->spanUs * 0.5;
+    const int rowsPerLine = std::max(1, height / std::max(1, pic->lines));
+    auto input = [&](int x, int y) -> uint32_t {
+        if (!rgbInput) return 0xff000000u;                // CVBS / S-VHS: nothing plugged in
+        const double us = pic->startUs + (x + 0.5) * pic->spanUs / width;
+        const int cx = (int)std::floor(cw * 0.5 + (us - gfxMidUs) * 16.0);
+        const double line = (double)y / rowsPerLine;
+        const int cy = (int)std::floor(ch * 0.5 + (line - pic->lines * 0.5) * 2.0);
+        if (cx < 0 || cy < 0 || cx >= cw || cy >= ch) return 0xff000000u;
+        return video->pixels[(size_t)cy * cw + cx] | 0xff000000u;
+    };
+    auto half = [](uint32_t c) { return 0xff000000u | ((c >> 1) & 0x007f7f7fu); };
+    auto mix = [](uint32_t a, uint32_t b) {
+        return 0xff000000u | (((a & 0x00fefefeu) >> 1) + ((b & 0x00fefefeu) >> 1));
+    };
+    for (int y = 0; y < height; y++)
+        for (int x = 0; x < width; x++) {
+            const size_t i = (size_t)y * width + x;
+            const uint32_t ext = input(x, y);
+            if (!tran || pic->ys[i]) out[i] = ym ? half(ext) : ext;
+            else out[i] = ymix ? mix(pic->pixels[i], ext) : pic->pixels[i];
+        }
+    return true;
+}
+
+const V9990Picture* EmuHost::v9990Picture() const {
+    if (!emu || !emu->v9990 || !v9990Enabled || !emu->v9990->displaying()) return nullptr;
+    const V9990Picture& p = emu->v9990->picture();
+    return p.width > 0 && p.height > 0 ? &p : nullptr;
+}
+
+void EmuHost::applyTapeOptions() {
+    if (!emu || !emu->tape) return;
+    emu->tape->requireMotor = tapeFollowsMotor;
+    emu->tape->tapeRelayDelay = tapeRelayDelay;
+}
+
+int EmuHost::analogue(int channel) const {
+    if (!emu || !emu->asic || channel < 0 || channel > 7) return 0;
+    return emu->asic->analogueInput[channel] & 0x3f;
+}
+void EmuHost::setAnalogue(int channel, int value) {
+    if (!emu || !emu->asic || channel < 0 || channel > 7) return;
+    emu->asic->analogueInput[channel] = (uint8_t)std::clamp(value, 0, 63);
 }
 
 int EmuHost::readMem(int addr) const {
@@ -682,7 +755,6 @@ void EmuHost::runFrame() {
                 break;
             }
         }
-        if (!emu->debuggerPaused && emu->v9990) emu->v9990->endFrame();
     }
     emu->memory->watchArmed = false;
     instructionPc = -1;
@@ -719,14 +791,25 @@ void EmuHost::drainAudio() {
     const double gain = (double)masterVolume * 16000.0;
     int available = (int)ay->sampleQueue.size() - ay->sampleReadIndex;
     if (available <= 0) return;
+    // The OPL4 card's 44.1 kHz, as the same stretch of CPC time made it, laid over the
+    // frame's samples (stretched to them, so the two never drift apart).
+    Opl4Card* opl = emu->opl4 && emu->opl4->enabled ? emu->opl4 : nullptr;
+    size_t oplPairs = 0;
+    if (opl) { opl->advanceTo(emu->machineCycles); oplPairs = opl->samples.size() / 2; }
+    const double oplGain = (double)masterVolume * 0.75;
     audioOut.reserve((size_t)available * 2);
     for (int i = 0; i < available; i++) {
         std::array<double, 2> s = ay->readSample();
-        int l = (int)(s[0] * gain);
-        int r = (int)(s[1] * gain);
-        audioOut.push_back((int16_t)std::clamp(l, -32768, 32767));
-        audioOut.push_back((int16_t)std::clamp(r, -32768, 32767));
+        double l = s[0] * gain, r = s[1] * gain;
+        if (oplPairs) {
+            const size_t k = std::min(oplPairs - 1, (size_t)((double)i * oplPairs / available));
+            l += opl->samples[k * 2] * oplGain;
+            r += opl->samples[k * 2 + 1] * oplGain;
+        }
+        audioOut.push_back((int16_t)std::clamp((int)l, -32768, 32767));
+        audioOut.push_back((int16_t)std::clamp((int)r, -32768, 32767));
     }
+    if (opl) opl->samples.clear();
 }
 
 void EmuHost::setKey(SDL_Scancode sc, bool pressed) {

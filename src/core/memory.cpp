@@ -18,9 +18,12 @@ GXMemory::GXMemory(int ramKiB) {
 
 void GXMemory::validateRamSize(int ramKiB) {
     switch (ramKiB) {
-        case 64: case 128: case 256: case 320: case 512: case 576: case 4160: return;
-        default: throw std::range_error("RAM size must be 64, 128, 256, 320, 512, 576 or 4160 KiB.");
+        case 64: case 128: case 256: case 320: case 512: case 576: return;
+        default: break;
     }
+    // 64K + 1..8 segments of 512K: 1088, 1600, ... 4160.
+    if (ramKiB > 576 && ramKiB <= 4160 && (ramKiB - 64) % 512 == 0) return;
+    throw std::range_error("RAM size must be 64, 128, 256, 320, 512 or 576 KiB, or 64 KiB + 1 to 8 x 512 KiB (up to 4160).");
 }
 
 void GXMemory::setRamSize(int ramKiB) {
@@ -77,7 +80,7 @@ void GXMemory::setGateArrayConfig(int value) {
 }
 
 int GXMemory::expansionPageOffset(int page, int segment) const {
-    if (has4MB()) {
+    if (segmentedExpansion()) {
         int seg = std::max(0, std::min(7, segment));
         int offset = 0x10000 + (seg * 8 + (page & 7)) * 0x10000;
         return offset + 0x10000 <= (int)ram.size() ? offset : -1;
@@ -89,9 +92,11 @@ int GXMemory::expansionPageOffset(int page, int segment) const {
 
 void GXMemory::setRamConfig(int value, int port) {
     int config = value & 0x3f;
-    if (has4MB()) {
+    if (segmentedExpansion()) {
         int high = (port >> 8) & 0xff;
         ram4MbSegment = (high >= 0x78 && high <= 0x7f) ? 0x7f - high : 0;
+        // A segment the board does not have does not answer: as a missing page below.
+        if (expansionPageOffset((config & 0x38) >> 3, ram4MbSegment) < 0) config = 0;
     } else {
         ram4MbSegment = 0;
         if (expansionPageOffset((config & 0x38) >> 3, 0) < 0) config = 0;

@@ -49,6 +49,16 @@ file(GLOB CPCSE_CORE_SOURCES CONFIGURE_DEPENDS src/core/*.cpp)
 add_library(cpcse-core STATIC ${CPCSE_CORE_SOURCES})
 target_include_directories(cpcse-core PUBLIC src src/core)
 
+# ymfm (Aaron Giles, BSD-3; third_party/ymfm) -- the YMF278B (OPL4) inside the OPL4 card.
+add_library(ymfm STATIC
+  third_party/ymfm/ymfm_opl.cpp
+  third_party/ymfm/ymfm_pcm.cpp
+  third_party/ymfm/ymfm_adpcm.cpp
+)
+target_include_directories(ymfm PUBLIC third_party/ymfm)
+target_compile_options(ymfm PRIVATE -w)
+target_link_libraries(cpcse-core PUBLIC ymfm)
+
 # --------------------------------------------------------------- SDL2
 set(SDL2_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/third_party/SDL2" CACHE PATH
     "SDL2 MinGW development package (the folder with include/, lib/, bin/)")
@@ -119,6 +129,7 @@ add_executable(cpcse
   src/gui/main.cpp
   src/gui/emuhost.cpp
   src/gui/gui_shell.cpp
+  src/gui/gui_panels.cpp
   src/gui/gui_widgets.cpp
   src/gui/gui_debugger.cpp
   src/gui/gui_debug_views.cpp

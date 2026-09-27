@@ -17,7 +17,8 @@ namespace cpcse {
 
 class GX4000;
 class CpcVideo;
-struct M4Drive;
+class MatrixPrinter;
+struct V9990Picture;
 
 struct ModelProfile {
     std::string id;
@@ -64,7 +65,47 @@ public:
     // input / expansion options
     bool joystickEnabled = true;
     std::string keyboardRegion = "uk";      // uk / fr / es
-    std::string dacType = "none";           // none / digiblaster / amdrum
+    // THE PRINTER PORT holds one device at a time: none / digiblaster / amdrum (sound DACs)
+    // / printer (a text printer) / matrix (an Epson-style dot-matrix printer, page image).
+    std::string dacType = "none";
+    // THE JOYSTICK PORT'S LIGHTGUN: none / trojan (Trojan Light Phazer, on the CRTC's light
+    // pen input) / gunstick (Loriciel Gunstick) / westphaser (Loriciel West Phaser). Aimed
+    // with the mouse over the Screen window, left button to fire.
+    std::string lightgunType = "none";
+    // GFX9000: the Yamaha V9990 cartridge at &FF60. Its picture goes to its own monitor --
+    // the GFX9000 window.
+    bool v9990Enabled = false;
+    // AN OPL4 SOUND CARD on the AMSDAP (YMF278B: OPL3 FM + wavetable, &FFC4-7/&FF7E-F),
+    // MoonSound-style. Its General MIDI samples are Yamaha's YRW801 ROM (yrw801*.rom in
+    // the ROM folder); without it the wavetable plays only what programs load into RAM.
+    bool opl4Enabled = false;
+    int opl4RamKiB = 2048;
+    bool opl4HasRom() const;
+    // Where its monitor is: "beside" the CPC's in the Screen window, in a "window" of its
+    // own, or "switch" -- one monitor, showing the GFX9000's picture while it displays one
+    // and the CPC's otherwise, as a Video9000 passes the computer's video through.
+    std::string gfx9000Monitor = "switch";   // + "video9000": one monitor through a Video9000
+    // One monitor, and the GFX9000 has it now: its display on, and no program has handed
+    // the picture back through P#F (&FF6F bit 4, as Video9000 programs do on exit).
+    bool gfx9000OnMainScreen() const;
+    // THE VIDEO9000 (Sunrise; its manual, docs/reference/Video9000-manual.pdf, ch.5): the
+    // GFX9000's genlock and superimposer, its control register at &FF6F --
+    //   b6 S1, b5 S0  input: 0x = RGB (the computer's own picture), 10 = CVBS, 11 = S-VHS
+    //   b4 GEN        genlock on (off: the GFX9000's picture alone)
+    //   b3 TRAN       0: the GFX9000 wholly transparent (the input alone); 1: where its YS
+    //                 bits say (R#8 YSE on, palette R bit 7 / BD16 bit 15 / BD8 dot 0)
+    //   b1 YMIX       the two mixed, each at half brightness (appendix B, MIX)
+    //   b0 YM         half-tone: the input at half brightness where it shows through
+    // At power-on &10 (p.13): genlock on, the GFX9000 transparent -- the CPC's picture.
+    // The monitor's picture, at the GFX9000's own geometry (false: nothing to compose).
+    bool video9000Picture(std::vector<uint32_t>& out, int& width, int& height) const;
+    int video9000Control() const;
+    // The host mouse is grabbed for the CPC's mouse (click the picture; F12 releases).
+    bool mouseCaptured = false;
+    // The tape deck: whether the tape follows the cassette motor relay (as on a CPC), and
+    // the relay's start-up delay.
+    bool tapeFollowsMotor = true;
+    bool tapeRelayDelay = true;
 
     // speed / display preferences (read by the shell)
     float speed = 1.0f;                     // 0.25 .. 4.0
@@ -157,7 +198,39 @@ public:
 
     void setJoystickEnabled(bool on);
     void setKeyboardRegion(const std::string& region);
-    void setDacType(const std::string& type);
+    void setDacType(const std::string& type);   // the printer-port device
+    bool printerAttached() const { return dacType == "printer" || dacType == "matrix"; }
+
+    // Printer output. The text printer's characters, and the dot-matrix printer's pages.
+    std::string printerText;
+    MatrixPrinter* matrixPrinter = nullptr;      // owned; created with the host
+    int printerRevision = 0;                     // bumps on every byte printed
+    void clearPrinter();
+    bool savePrinterText(const std::string& path) const;
+    bool savePrinterPageBmp(const std::string& path) const;
+    bool savePrinterPageSvg(const std::string& path) const;
+
+    // Lightgun.
+    void setLightgun(const std::string& type);
+    bool lightgunActive() const { return lightgunType != "none"; }
+    // Where the gun points, in screen-framebuffer pixels (x < 0: off the screen), and
+    // whether the trigger is held.
+    void lightgunAim(double x, double y, bool trigger);
+
+    // GFX9000 (V9990).
+    void setV9990(bool on);
+    void setOpl4(bool on);
+    void applyOpl4();
+    // The V9990's own monitor: its last field, or null while it shows nothing (not
+    // fitted, in stand-by, or never displayed).
+    const V9990Picture* v9990Picture() const;
+
+    // Tape deck options.
+    void applyTapeOptions();
+
+    // CPC Plus analogue port (ASIC ADC0-7, &6808-&680F): 0..63 per channel.
+    int analogue(int channel) const;
+    void setAnalogue(int channel, int value);
 
     bool fitExpansionRom(int slot, const std::string& path);
     void clearExpansionRom(int slot);
@@ -185,12 +258,13 @@ public:
     static Bytes readFile(const std::string& path, bool& ok);
 
 private:
-    M4Drive* m4Drive = nullptr;              // owned; a host-folder-backed M4 drive
     void drainAudio();
     void applySettings();                    // re-apply region/joystick/DAC after a boot
     void applyExpansionRoms();               // re-fit slot ROMs after a boot
     void applyM4();                          // re-enable M4 after a boot
     void applySymbiface();
+    void applyLightgun();
+    void applyPrinter();
     std::string findRom(const std::string& keyword) const;
     std::string findCart(const std::string& keyword) const;   // search mediaDir/romDir for a .cpr
     void applyAudioRate();

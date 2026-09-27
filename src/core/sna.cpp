@@ -139,7 +139,8 @@ static int targetRamSizeKiB(int kib) {
     if (value <= 320) return 320;
     if (value <= 512) return 512;
     if (value <= 576) return 576;
-    return 4160;
+    // a segmented board: 64K + whole 512K segments, up to eight
+    return std::min(4160, 64 + (value - 64 + 511) / 512 * 512);
 }
 
 Snapshot parseSna(const Bytes& bytes) {

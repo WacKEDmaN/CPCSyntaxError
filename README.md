@@ -18,7 +18,24 @@ around a cycle-level model of the machine's video chips.
 - **CPC Plus ASIC**: sprites, DMA sound, 4096-colour palette, raster interrupts,
   split screen, soft scroll.
 - Disc (DSK/EDSK), tape (CDT/TZX/WAV), cartridge (CPR) and snapshot (SNA) loading,
-  joysticks and game controllers.
+  joysticks and game controllers; RAM expansions up to 4 MB (in 512K steps past 576K).
+- **Expansions** (all in **Expansions** / the Settings window):
+  - **M4 board**: a folder on your PC is its SD card. The M4's own ROM (`M4ROM.ROM`, from
+    [spinpoint.org](http://www.spinpoint.org), not included) goes in `roms/` and runs unmodified;
+    files, directories and long names work from BASIC (`|CD`, `CAT`, `|LS`, `|ERA`,
+    `|REN`, `|COPYF`...), and programs with their own file system -- **SymbOS** -- read and
+    write the card sector by sector, their changes written back to the folder.
+  - **GFX9000** (Yamaha V9990 at `&FF60`): every screen mode, sprites, cursors, the
+    blitter commands, raster timing and interrupts. Its own monitor sits **beside the
+    CPC's**, in its own window, or shares one monitor -- switched, or through an emulated
+    **Video9000** that superimposes it on the CPC's picture.
+  - **OPL4 sound card** (Yamaha YMF278B, MoonSound-style, on the AMSDAP at
+    `&FFC4`/`&FF7E`): 18 FM + 24 wavetable channels, for SymbOS's sound daemon and SymAmp.
+    The General MIDI samples need Yamaha's YRW801 ROM (`yrw801*.rom` in `roms/`, not
+    included).
+  - Symbiface II/III mouse and clock, lightguns (Trojan Light Phazer, Gunstick,
+    West Phaser), a printer or dot-matrix printer on the printer port, DigiBlaster /
+    AmDrum, the Plus analogue port.
 - A **debugger**: breakpoints with conditions, memory watchpoints, step
   into / over / out, disassembly with labels, hex editor, and live views of the
   CRTC, Gate Array, monitor, Plus ASIC, PSG, PPI, keyboard matrix, disc
@@ -61,8 +78,8 @@ around a cycle-level model of the machine's video chips.
    | CPC 6128 | `6128 OS`, `6128 BASIC`, `AMSDOS` |
    | 464 Plus / 6128 Plus / GX4000 | the Plus system cartridge, a `.cpr` whose name contains `burning rubber` |
 
-3. Pick a machine from **Machine → Model**, and load software from the **File** or
-   **Media** menus, or drop a file onto the window.
+3. The first start boots a CPC 6128. Pick another machine from **Machine → Model**, and
+   load software from the **File** or **Media** menus, or drop a file onto the window.
 
 Settings are saved to `cpcse.ini`, and the window layout to `cpcse_layout.ini`, next
 to the executable. **Window → Reset layout** restores the default arrangement.
@@ -77,6 +94,7 @@ to the executable. **Window → Reset layout** restores the default arrangement.
 | F5 | run / pause (in a debugger window, or while paused) |
 | F7 / F8 / Shift+F8 | step into / over / out |
 | F9 / Ctrl+F9 | assemble / assemble and run (assembler window) |
+| F12 / middle button | release the mouse (a click on the picture gives it to the CPC's Symbiface mouse) |
 
 Keys go to the CPC unless a debugger or assembler window has the focus.
 
@@ -88,8 +106,14 @@ mode is also available for scripting:
 ```
 cpcse.exe --shot out.bmp --model cpc6128 --frames 200 [--disk game.dsk] [--type "RUN\"GAME\n"]
           [--cart file.cpr] [--tape file.cdt] [--sna file.sna] [--crtc 0-4]
-          [--gate-array 40007|40008|40010] [--beam]
+          [--gate-array 40007|40008|40010] [--beam] [--ram 64-4160]
+          [--m4 <folder>] [--gfx9000] [--v9990-shot gfx.bmp] [--video9000-shot mixed.bmp]
+          [--opl4] [--wav out.wav] [--sf2] [--mouse "w120;j5,60;j16,2;tDIR;kEnter;s<file.bmp>"]
 ```
+
+`--mouse` is a small script run after everything else: `w`ait frames, `m`ove the mouse,
+`c`lick, `d`ouble-click, hold the `j`oystick (`j<bits>,<frames>`), `t`ype text, tap a
+`k`ey, `s`ave a screenshot -- enough to drive a desktop such as SymbOS with no window.
 
 Models: `cpc464`, `cpc6128`, `cpc464plus`, `cpc6128plus`, `gx4000`.
 
@@ -170,11 +194,12 @@ third_party/   Dear ImGui (docking branch) and RASM, vendored; SDL2 is fetched s
 | Z80, PSG, PPI, disc controller, tape | Working; not yet audited to the same depth as the video chips |
 | CPC Plus ASIC | Working; its picture goes through the same monitor model as a CPC's |
 | CSL / SSM | Complete (CSL 1.5, SSM 1.1) |
-| **User interface** | **Incomplete** -- new and still being refined; expect rough edges and changes |
-| **M4 board** | **Incomplete** |
+| User interface | Every option exposed, grouped by Machine / Media / Video / Audio / Input / Expansions / Tools; still being refined |
+| M4 board | Working: files and raw SD sectors over a host folder, checked against the M4's own ROM source. Not yet: mounting DSK images through the M4, its ROM board, WiFi/network |
+| GFX9000 (V9990) + Video9000 | Working, from Yamaha's application manual; blitter commands complete at once rather than taking their real time |
+| OPL4 (YMF278B) | Working (ymfm core); needs `yrw801*.rom` for the General MIDI samples |
 | **Symbiface II / III** | **Incomplete** -- mouse and RTC only; the IDE/CF interface is not emulated |
-| **DigiBlaster / AmDrum DACs** | **Incomplete** |
-| **Lightgun, printer, V9990 (GFX9000)** | **Incomplete** -- partly present in the core, not exposed in the user interface |
+| **DigiBlaster / AmDrum DACs, lightguns, printers** | Working, lightly tested |
 
 ## Known issues
 

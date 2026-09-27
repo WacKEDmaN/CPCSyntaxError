@@ -22,9 +22,10 @@ namespace cpcse {
 // in the C9=R9 test), a "1-A" does not. Same part, 3 of 7 machines tested.
 static const char* CRTC_NAMES[] = { "0  HD6845S / UM6845", "1  UM6845R (1-A)", "2  MC6845",
                                     "3  ASIC (Plus)", "4  Pre-ASIC", "5  UM6845R (1-B, RFD#10)" };
-static const int RAM_SIZES[] = { 64, 128, 256, 320, 512, 576, 4160 };
+// Past 576K (64K + a 512K board) each step is one more 512K segment of a 4 MB-style board.
+static const int RAM_SIZES[] = { 64, 128, 256, 320, 512, 576, 1088, 1600, 2112, 2624, 3136, 3648, 4160 };
 // Bump when the set of windows or the default layout changes.
-static const int LAYOUT_VERSION = 2;
+static const int LAYOUT_VERSION = 3;
 
 GuiShell::GuiShell(EmuHost& h) : host(h), debugger(h) {
     panels = {
@@ -39,6 +40,9 @@ GuiShell::GuiShell(EmuHost& h) : host(h), debugger(h) {
         { "Video", "win_video", true },
         { "Audio & I/O", "win_audio_io", true },
         { "Assembler", "win_asm", true },
+        { "Printer", "win_printer", true },
+        { "GFX9000", "win_gfx9000", true },
+        { "CSL scripts", "win_csl", true },
     };
     assembler = std::make_unique<AssemblerWindow>(host, debugger, browser, saver);
     assembler->showInDisassembly = [this](int a) { showInDisassembly(a); };
@@ -65,6 +69,9 @@ void GuiShell::loadSettings(const std::map<std::string, std::string>& ini) {
         resetLayout = true;
         for (auto& p : panels) p.open = true;
     }
+    auto str = [&](const char* k, std::string& v) { auto i = ini.find(k); if (i != ini.end()) v = i->second; };
+    str("csl_script", cslScript); str("csl_out", cslOut); str("csl_diskdir", cslDiskDir);
+    auto ci = ini.find("csl_crtc"); if (ci != ini.end()) cslCrtc = std::atoi(ci->second.c_str());
     assembler->loadSettings(ini);
 }
 
@@ -72,6 +79,8 @@ void GuiShell::saveSettings(std::ostream& out) const {
     out << "layout_version=" << LAYOUT_VERSION << "\n";
     for (const auto& p : panels) out << p.iniKey << "=" << (p.open ? 1 : 0) << "\n";
     out << "statusbar=" << (showStatusBar ? 1 : 0) << "\n";
+    out << "csl_script=" << cslScript << "\n" << "csl_out=" << cslOut << "\n"
+        << "csl_diskdir=" << cslDiskDir << "\n" << "csl_crtc=" << cslCrtc << "\n";
     assembler->saveSettings(out);
 }
 
@@ -135,6 +144,9 @@ void GuiShell::draw(const ShellFrameInfo& info) {
         assembler->draw(&panelOpen("Assembler"));
         if (assembler->focused) toolFocusedNow = true;
     }
+    windowPrinter();
+    windowGfx9000();
+    windowCslScripts();
     windowAbout();
     if (showImGuiDemo) ImGui::ShowDemoWindow(&showImGuiDemo);
 
@@ -161,7 +173,8 @@ void GuiShell::buildDefaultLayout(unsigned id) {
     ImGui::DockBuilderDockWindow("CPU", right);
     ImGui::DockBuilderDockWindow("Breakpoints", right);
     ImGui::DockBuilderDockWindow("Disassembly", rightBottom);
-    for (const char* w : { "Assembler", "Memory", "Video", "Audio & I/O" }) ImGui::DockBuilderDockWindow(w, bottom);
+    for (const char* w : { "Assembler", "Memory", "Video", "Audio & I/O", "Printer", "GFX9000", "CSL scripts" })
+        ImGui::DockBuilderDockWindow(w, bottom);
     ImGui::DockBuilderFinish(id);
 }
 
@@ -178,20 +191,46 @@ void GuiShell::windowScreen(const ShellFrameInfo& info) {
     if (visible && info.screenTexture && info.textureWidth > 0) {
         ImVec2 avail = ImGui::GetContentRegionAvail();
         ImVec2 origin = ImGui::GetCursorScreenPos();
-        float drawW = avail.x, drawH = avail.y;
+        // With a GFX9000 fitted its own monitor stands beside the CPC's: the two share the
+        // window, the same height, the GFX9000's a 4:3 set.
+        const bool video9000 = host.v9990Enabled && host.gfx9000Monitor == "video9000";
+        const bool gfxOnMain = host.gfx9000OnMainScreen() || video9000;
+        const bool beside = host.v9990Enabled && host.gfx9000Monitor == "beside";
+        const float gap = beside ? 6.0f : 0.0f;
+        const float gfxAspect = 4.0f / 3.0f;
+        float cpcAvailW = beside ? (avail.x - gap) * 0.5f : avail.x;
+        float drawW = cpcAvailW, drawH = avail.y;
         if (host.maintainAspect) {
-            float scale = std::min(avail.x / (float)info.textureWidth, avail.y / (float)info.textureHeight);
+            const float cpcAspect = (float)info.textureWidth / (float)info.textureHeight;
+            float h = beside ? std::min(avail.y, (avail.x - gap) / (cpcAspect + gfxAspect)) : avail.y;
+            float scale = std::min((beside ? h * cpcAspect : avail.x) / (float)info.textureWidth, h / (float)info.textureHeight);
             if (host.integerScale && scale > 1.0f) scale = std::floor(scale);
             drawW = info.textureWidth * scale; drawH = info.textureHeight * scale;
         }
-        float ox = origin.x + (avail.x - drawW) * 0.5f, oy = origin.y + (avail.y - drawH) * 0.5f;
+        const float gfxW = beside ? (host.maintainAspect ? drawH * gfxAspect : cpcAvailW) : 0.0f;
+        const float totalW = drawW + gap + gfxW;
+        float ox = origin.x + (avail.x - totalW) * 0.5f, oy = origin.y + (avail.y - drawH) * 0.5f;
         ImDrawList* dl = ImGui::GetWindowDrawList();
         ImTextureID tex = (ImTextureID)(intptr_t)info.screenTexture;
+        if (gfxOnMain) {
+            // One monitor, switched to the GFX9000: its picture, a 4:3 set filling the window.
+            float gw = avail.x, gh = avail.y;
+            if (host.maintainAspect) { gh = std::min(avail.y, avail.x * 0.75f); gw = gh * 4.0f / 3.0f; }
+            const float gx = origin.x + (avail.x - gw) * 0.5f, gy = origin.y + (avail.y - gh) * 0.5f;
+            int vw = 0, vh = 0;
+            if (video9000 && uploadTexture && host.video9000Picture(video9000Pixels, vw, vh)) {
+                // one monitor through the Video9000: the composed picture
+                video9000Texture = uploadTexture(3, video9000Pixels.data(), vw, vh);
+                dl->AddImage((ImTextureID)(intptr_t)video9000Texture, ImVec2(gx, gy), ImVec2(gx + gw, gy + gh));
+            } else {
+                drawGfxMonitor(dl, gx, gy, gw, gh);
+            }
+        } else
         dl->AddImage(tex, ImVec2(ox, oy), ImVec2(ox + drawW, oy + drawH));
         // CRT effect: a scanline overlay (dark lines every 2 source rows) and a faint
         // additive bloom pass (the image drawn again, brighter, on top). Cheap, and off
         // unless turned on.
-        if (host.crtEffect) {
+        if (host.crtEffect && !gfxOnMain) {
             if (host.crtBloom > 0.001f) {
                 float g = host.crtBloom * 6.0f;
                 int a = (int)(host.crtBloom * 70.0f);
@@ -206,6 +245,7 @@ void GuiShell::windowScreen(const ShellFrameInfo& info) {
                         dl->AddLine(ImVec2(ox, y), ImVec2(ox + drawW, y), col, std::max(1.0f, step * 0.4f));
             }
         }
+        if (beside) drawGfxMonitor(dl, ox + drawW + gap, oy, gfxW, drawH);
         if (host.paused && host.booted()) {
             const char* label = host.breakReason.empty() ? "PAUSED" : host.breakReason.c_str();
             ImVec2 ts = ImGui::CalcTextSize(label);
@@ -214,7 +254,11 @@ void GuiShell::windowScreen(const ShellFrameInfo& info) {
         }
         ImGui::InvisibleButton("##screenarea", ImVec2(std::max(1.0f, avail.x), std::max(1.0f, avail.y)));
         screenHovered = ImGui::IsItemHovered();
-        if (screenHovered && ImGui::IsMouseDoubleClicked(0) && !host.symbifaceMouseActive() && toggleFullscreen) toggleFullscreen();
+        if (ImGui::IsItemClicked(ImGuiMouseButton_Left) && host.symbifaceMouseActive() && !host.lightgunActive() && !host.mouseCaptured)
+            mouseCaptureRequested = true;
+        if (host.lightgunActive() && !gfxOnMain) lightgunFromScreen(ox, oy, drawW, drawH, info.textureWidth, info.textureHeight);
+        if (screenHovered && ImGui::IsMouseDoubleClicked(0) && !host.symbifaceMouseActive() && !host.lightgunActive()
+            && toggleFullscreen) toggleFullscreen();
     }
     ImGui::End();
 }
@@ -229,6 +273,8 @@ void GuiShell::drawStatusBar(const ShellFrameInfo& info) {
     if (open) {
         ImGui::PushStyleColor(ImGuiCol_Text, kAccent);
         ImGui::TextUnformatted(host.paused ? "PAUSED" : (host.turbo ? "TURBO" : "RUNNING"));
+        if (host.mouseCaptured) { ImGui::SameLine(); ImGui::TextUnformatted("  MOUSE CAPTURED (F12 or middle button releases)"); }
+        else if (host.symbifaceMouseActive()) { ImGui::SameLine(); ImGui::TextDisabled("  click the picture to use the mouse"); }
         ImGui::PopStyleColor();
         ImGui::SameLine(); ImGui::TextDisabled("|"); ImGui::SameLine();
         ImGui::TextUnformatted(host.status.c_str());
@@ -267,6 +313,14 @@ void GuiShell::ramItems(bool asMenu) {
     int cur = host.currentModel;
     for (int r : RAM_SIZES) {
         std::string l = std::to_string(r) + " KB";
+        if (r >= 576) {   // the expansion board's own size, which is how boards were sold
+            char b[48];
+            const int board = r - 64;
+            if (board % 1024 == 0) std::snprintf(b, sizeof b, "  (64K + %d MB)", board / 1024);
+            else if (board > 1024) std::snprintf(b, sizeof b, "  (64K + %d.5 MB)", board / 1024);
+            else std::snprintf(b, sizeof b, "  (64K + %dK)", board);
+            l += b;
+        }
         bool sel = host.ramKiB == r;
         if (asMenu ? ImGui::MenuItem(l.c_str(), nullptr, sel, cur >= 0) : ImGui::Selectable(l.c_str(), sel))
             if (cur >= 0) host.bootModel(cur, r, host.crtcType);
@@ -319,90 +373,7 @@ void GuiShell::monitorSetItems(bool asMenu) {
 }
 
 // ============================================================== settings sections
-// Each is drawn both inside its window and as a fly-out in the Settings menu: plain
-// widgets work in either, only the widths differ.
-static float itemWidth(bool asMenu) { return asMenu ? 220.0f : -1.0f; }
-
-void GuiShell::sectionDisplay(bool asMenu) {
-    // WHICH SET IS PLUGGED IN. Not a rendering option: ACCC 15.1 (p.146) makes the
-    // horizontal calibration the set's, and 16.2.2 gives the colour and green families
-    // different vertical deflection parts. "As shipped" is the pairing Amstrad calibrated.
-    const MonitorModel* current = host.monitorSetId.empty() ? nullptr : monitorModelFor(host.monitorSetId);
-    if (asMenu) {
-        if (ImGui::BeginMenu("Monitor")) { monitorSetItems(true); ImGui::EndMenu(); }
-    } else {
-        ImGui::TextUnformatted("Monitor");
-        ImGui::SetNextItemWidth(-1);
-        if (ImGui::BeginCombo("##monitorset", current ? current->name : "As shipped with the machine")) { monitorSetItems(false); ImGui::EndCombo(); }
-        const MonitorModel* shown = current ? current : (host.emu ? host.emu->shippedMonitorModel() : nullptr);
-        if (shown) {
-            ImGui::TextDisabled("%s tube, vertical %s", shown->phosphor, shown->verticalDeflection);
-            if (shown->calibrationMicroseconds)
-                ImGui::TextDisabled("back porch +%d usec (ACCC 15.1: absorbs the ASIC's HSYNC)", shown->calibrationMicroseconds);
-        }
-    }
-    // ...and the tube override, for looking at a colour program in green or in grey.
-    struct { const char* l; const char* m; } modes[] = { { "As set", "" }, { "Colour", "colour" }, { "Green", "green" }, { "Grey", "grey" }, { "Mono", "mono" } };
-    if (asMenu) {
-        if (ImGui::BeginMenu("Tube")) {
-            for (auto& m : modes) if (ImGui::MenuItem(m.l, nullptr, host.monitorMode == m.m)) host.setMonitorMode(m.m);
-            ImGui::EndMenu();
-        }
-        ImGui::Separator();
-    } else {
-        for (int i = 0; i < 5; i++) { if (i) ImGui::SameLine(); if (ImGui::RadioButton(modes[i].l, host.monitorMode == modes[i].m)) host.setMonitorMode(modes[i].m); }
-    }
-    ImGui::Checkbox("CRT effect", &host.crtEffect);
-    ImGui::BeginDisabled(!host.crtEffect);
-    ImGui::SetNextItemWidth(itemWidth(asMenu)); ImGui::SliderFloat("##scan", &host.crtScanline, 0.0f, 1.0f, "scanlines %.2f");
-    ImGui::SetNextItemWidth(itemWidth(asMenu)); ImGui::SliderFloat("##bloom", &host.crtBloom, 0.0f, 1.0f, "bloom %.2f");
-    ImGui::EndDisabled();
-    ImGui::Checkbox("Integer scaling", &host.integerScale);
-    ImGui::Checkbox("Maintain aspect ratio", &host.maintainAspect);
-    if (asMenu) {
-        ImGui::Separator();
-        if (ImGui::MenuItem(host.fullscreen ? "Windowed" : "Fullscreen", "F11") && toggleFullscreen) toggleFullscreen();
-    } else if (ImGui::Button(host.fullscreen ? "Windowed (F11)" : "Fullscreen (F11)", ImVec2(-1, 0)) && toggleFullscreen) {
-        toggleFullscreen();
-    }
-}
-
-void GuiShell::sectionSound(bool asMenu) {
-    ImGui::Checkbox("Enabled", &host.audioEnabled);
-    float volPct = host.masterVolume * 100.0f;
-    ImGui::SetNextItemWidth(itemWidth(asMenu));
-    if (ImGui::SliderFloat("##vol", &volPct, 0.0f, 100.0f, "volume %.0f%%")) host.masterVolume = volPct / 100.0f;
-    ImGui::TextDisabled("DAC");
-    struct { const char* l; const char* t; } dacs[] = { { "None", "none" }, { "DigiBlaster", "digiblaster" }, { "AmDrum", "amdrum" } };
-    for (int i = 0; i < 3; i++) { if (i) ImGui::SameLine(); if (ImGui::RadioButton(dacs[i].l, host.dacType == dacs[i].t)) host.setDacType(dacs[i].t); }
-}
-
-void GuiShell::sectionInput(bool asMenu) {
-    ImGui::TextDisabled("Keyboard");
-    struct { const char* l; const char* r; } regions[] = { { "UK", "uk" }, { "French", "fr" }, { "Spanish", "es" } };
-    for (int i = 0; i < 3; i++) { if (i) ImGui::SameLine(); if (ImGui::RadioButton(regions[i].l, host.keyboardRegion == regions[i].r)) host.setKeyboardRegion(regions[i].r); }
-    bool joy = host.joystickEnabled;
-    if (ImGui::Checkbox("Joystick emulation", &joy)) host.setJoystickEnabled(joy);
-    float sens = host.mouseSensitivity;
-    ImGui::SetNextItemWidth(itemWidth(asMenu));
-    if (ImGui::SliderFloat("##sens", &sens, 0.1f, 4.0f, "mouse sensitivity %.2f")) host.setMouseSensitivity(sens);
-}
-
-void GuiShell::sectionExpansions(bool asMenu) {
-    bool m4 = host.m4Enabled;
-    if (ImGui::Checkbox("M4 board", &m4)) host.setM4(m4, host.m4Folder.empty() ? host.romDir : host.m4Folder);
-    ImGui::SameLine();
-    if (ImGui::SmallButton("Folder..."))
-        browser.openDir("M4 files folder", host.m4Folder.empty() ? host.romDir : host.m4Folder,
-                        [this](const std::string& dir) { host.m4Folder = dir; if (host.m4Enabled) host.setM4(true, dir); });
-    if (host.m4Enabled) { ImGui::SameLine(); if (ImGui::SmallButton("Rescan")) host.rescanM4(); }
-    if (!host.m4Folder.empty()) ImGui::TextDisabled("  %s", host.m4Folder.c_str());
-    ImGui::TextDisabled("Symbiface (mouse + RTC)");
-    struct { const char* l; const char* m; } sf[] = { { "Off", "none" }, { "SF2", "sf2" }, { "SF3", "sf3" } };
-    for (int i = 0; i < 3; i++) { if (i) ImGui::SameLine(); if (ImGui::RadioButton(sf[i].l, host.symbifaceModule == sf[i].m)) host.setSymbiface(sf[i].m); }
-    (void)asMenu;
-}
-
+// Video / Audio / Input / Expansions / tape options are in gui_panels.cpp.
 void GuiShell::sectionRoms(bool asMenu) {
     int cur = host.currentModel;
     if (cur >= 0 && !host.models[cur].plus) {
@@ -449,7 +420,11 @@ void GuiShell::drawMenuBar() {
     menuFile();
     menuMachine();
     menuMedia();
-    menuSettings();
+    menuSection("Video", &GuiShell::sectionVideo);
+    menuSection("Audio", &GuiShell::sectionAudio);
+    menuSection("Input", &GuiShell::sectionInput);
+    menuSection("Expansions", &GuiShell::sectionExpansions);
+    menuTools();
     menuDebug();
     menuWindow();
     menuHelp();
@@ -473,6 +448,8 @@ void GuiShell::menuFile() {
     if (ImGui::MenuItem("Save screenshot...", nullptr, false, host.booted()))
         saver.open("Save screenshot", host.romDir, "screenshot.bmp", [this](const std::string& p) { host.saveScreenshotBmp(p); });
     ImGui::Separator();
+    if (ImGui::MenuItem("Run CSL script...")) panelOpen("CSL scripts") = true;
+    ImGui::Separator();
     if (ImGui::MenuItem("ROM folder...")) browser.openDir("ROM folder", host.romDir, [this](const std::string& d) { host.setRomDir(d); });
     ImGui::Separator();
     if (ImGui::MenuItem("Exit", "Alt+F4")) quitRequested = true;
@@ -483,9 +460,12 @@ void GuiShell::menuMachine() {
     if (!ImGui::BeginMenu("Machine")) return;
     if (ImGui::BeginMenu("Model")) { modelItems(true); ImGui::EndMenu(); }
     if (ImGui::BeginMenu("RAM", host.currentModel >= 0)) { ramItems(true); ImGui::EndMenu(); }
+    ImGui::Separator();
+    ImGui::TextDisabled("Video chips");
     if (ImGui::BeginMenu("CRTC", host.currentModel >= 0)) { crtcItems(true); ImGui::EndMenu(); }
     if (ImGui::BeginMenu("Gate Array", host.currentModel >= 0)) { gateArrayItems(true); ImGui::EndMenu(); }
     if (ImGui::BeginMenu("Monitor")) { monitorSetItems(true); ImGui::EndMenu(); }
+    ImGui::Separator();
     if (ImGui::BeginMenu("ROMs")) { sectionRoms(true); ImGui::EndMenu(); }
     ImGui::Separator();
     if (ImGui::MenuItem("Reset", "Ctrl+R", false, host.booted())) host.reset();
@@ -499,9 +479,6 @@ void GuiShell::menuMachine() {
         }
         ImGui::EndMenu();
     }
-    ImGui::Separator();
-    bool beam = host.beamRenderer;
-    if (ImGui::MenuItem("Beam renderer (pin-accurate CRT)", nullptr, &beam)) host.setBeamRenderer(beam);
     ImGui::EndMenu();
 }
 
@@ -521,6 +498,8 @@ void GuiShell::menuMedia() {
         if (ImGui::MenuItem("Insert...")) browser.open("Insert tape", host.romDir, { ".cdt", ".tzx", ".tap", ".wav" }, [this](const std::string& p) { host.loadTapeFile(p); });
         if (ImGui::MenuItem(host.tapePlaying ? "Stop" : "Play", nullptr, false, !host.tapeName.empty())) host.tapePlayToggle();
         if (ImGui::MenuItem("Rewind", nullptr, false, !host.tapeName.empty())) host.tapeRewind();
+        ImGui::Separator();
+        sectionTape(true);
         ImGui::EndMenu();
     }
     if (ImGui::BeginMenu("Cartridge")) {
@@ -536,12 +515,21 @@ void GuiShell::menuMedia() {
     ImGui::EndMenu();
 }
 
-void GuiShell::menuSettings() {
-    if (!ImGui::BeginMenu("Settings")) return;
-    if (ImGui::BeginMenu("Display")) { sectionDisplay(true); ImGui::EndMenu(); }
-    if (ImGui::BeginMenu("Sound")) { sectionSound(true); ImGui::EndMenu(); }
-    if (ImGui::BeginMenu("Input")) { sectionInput(true); ImGui::EndMenu(); }
-    if (ImGui::BeginMenu("Expansions")) { sectionExpansions(true); ImGui::EndMenu(); }
+void GuiShell::menuSection(const char* title, void (GuiShell::*section)(bool)) {
+    if (!ImGui::BeginMenu(title)) return;
+    (this->*section)(true);
+    ImGui::EndMenu();
+}
+
+void GuiShell::menuTools() {
+    if (!ImGui::BeginMenu("Tools")) return;
+    ImGui::MenuItem("CSL scripts", nullptr, &panelOpen("CSL scripts"));
+    ImGui::MenuItem("Printer output", nullptr, &panelOpen("Printer"));
+    ImGui::MenuItem("GFX9000 output", nullptr, &panelOpen("GFX9000"));
+    ImGui::Separator();
+    ImGui::MenuItem("Assembler", nullptr, &panelOpen("Assembler"));
+    if (ImGui::MenuItem("Assemble", "F9")) { panelOpen("Assembler") = true; assembler->assemble(false); }
+    if (ImGui::MenuItem("Assemble and run", "Ctrl+F9")) { panelOpen("Assembler") = true; assembler->assemble(true); }
     ImGui::EndMenu();
 }
 
@@ -573,7 +561,9 @@ void GuiShell::menuWindow() {
     ImGui::Separator();
     for (const char* w : { "Machine", "Media", "Settings" }) ImGui::MenuItem(w, nullptr, &panelOpen(w));
     ImGui::Separator();
-    for (const char* w : { "CPU", "Disassembly", "Memory", "Breakpoints", "Video", "Audio & I/O", "Assembler" })
+    for (const char* w : { "CSL scripts", "Printer", "GFX9000", "Assembler" }) ImGui::MenuItem(w, nullptr, &panelOpen(w));
+    ImGui::Separator();
+    for (const char* w : { "CPU", "Disassembly", "Memory", "Breakpoints", "Video", "Audio & I/O" })
         ImGui::MenuItem(w, nullptr, &panelOpen(w));
     ImGui::Separator();
     ImGui::MenuItem("Status bar", nullptr, &showStatusBar);
@@ -651,11 +641,6 @@ void GuiShell::windowMachine() {
                 if (ImGui::BeginCombo("##machinemonitor", set ? set->name : "As shipped with the machine")) { monitorSetItems(false); ImGui::EndCombo(); }
             }
             ImGui::EndDisabled();
-            bool beam = host.beamRenderer;
-            if (ImGui::Checkbox("Beam renderer (pin-accurate CRT)", &beam)) host.setBeamRenderer(beam);
-            if (ImGui::IsItemHovered())
-                ImGui::SetTooltip("Draws each Gate Array character at the live CRT beam\nposition (HSYNC/VSYNC-driven), instead of reconstructing\n"
-                                  "from per-line snapshots. Classic machines only; Plus keeps\nthe legacy compositor.");
         }
         if (ImGui::CollapsingHeader("Control", ImGuiTreeNodeFlags_DefaultOpen)) {
             if (ImGui::Button("Reset machine", ImVec2(-1, 0))) host.reset();
@@ -704,6 +689,7 @@ void GuiShell::windowMedia() {
                 ImGui::TextDisabled("(no tape)");
             }
             if (ImGui::Button("Insert tape...")) browser.open("Insert tape", host.romDir, { ".cdt", ".tzx", ".tap", ".wav" }, [this](const std::string& p) { host.loadTapeFile(p); });
+            ImGui::PushID("tapeopts"); sectionTape(false); ImGui::PopID();
         }
         if (ImGui::CollapsingHeader("Cartridge")) {
             if (!host.cartName.empty()) ImGui::TextWrapped("%s", host.cartName.c_str());
@@ -725,8 +711,8 @@ void GuiShell::windowMedia() {
 void GuiShell::windowSettings() {
     if (!panelOpen("Settings")) return;
     if (ImGui::Begin("Settings", &panelOpen("Settings"))) {
-        if (ImGui::CollapsingHeader("Display", ImGuiTreeNodeFlags_DefaultOpen)) { ImGui::PushID("display"); sectionDisplay(false); ImGui::PopID(); }
-        if (ImGui::CollapsingHeader("Sound")) { ImGui::PushID("sound"); sectionSound(false); ImGui::PopID(); }
+        if (ImGui::CollapsingHeader("Video", ImGuiTreeNodeFlags_DefaultOpen)) { ImGui::PushID("video"); sectionVideo(false); ImGui::PopID(); }
+        if (ImGui::CollapsingHeader("Audio")) { ImGui::PushID("audio"); sectionAudio(false); ImGui::PopID(); }
         if (ImGui::CollapsingHeader("Input")) { ImGui::PushID("input"); sectionInput(false); ImGui::PopID(); }
         if (ImGui::CollapsingHeader("Expansions")) { ImGui::PushID("exp"); sectionExpansions(false); ImGui::PopID(); }
     }

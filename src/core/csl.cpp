@@ -857,7 +857,6 @@ void CslPlayer::stepOne() {
     }
     if (picture() != before) {
         if (!emu.plusHardware) emu.videoCaptureRegisters = emu.crtc->registers;
-        emu.v9990->endFrame();
         handlePicture();
     }
 }
