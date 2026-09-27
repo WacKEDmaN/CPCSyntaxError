@@ -482,6 +482,21 @@ void EmuHost::applyOpl4() {
     }
     card.setEnabled(opl4Enabled);
 }
+bool EmuHost::installRom(const std::string& source, const std::string& destName, size_t size, std::string& why) {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    const auto have = fs::file_size(source, ec);
+    if (ec) { why = "cannot read " + source; return false; }
+    if (have != size) {
+        why = "it is " + std::to_string(have) + " bytes, not " + std::to_string(size) +
+              (have < size && have > 0 ? " (a zip? unpack it, then choose the ROM itself)" : "");
+        return false;
+    }
+    fs::create_directories(romDir, ec);
+    fs::copy_file(source, fs::path(romDir) / destName, fs::copy_options::overwrite_existing, ec);
+    if (ec) { why = "cannot write to " + romDir + ": " + ec.message(); return false; }
+    return true;
+}
 bool EmuHost::opl4HasRom() const { return emu && emu->opl4 && !emu->opl4->rom.empty(); }
 
 void EmuHost::setV9990(bool on) {

@@ -136,6 +136,12 @@ private:
     void windowPrinter();
     void windowGfx9000();
     void windowCslScripts();
+    // A ROM a device needs and the ROM folder lacks: fetch it (a URL) or choose it.
+    void romPrompt();
+    std::string romPromptFor;          // "opl4" / "m4" while the prompt is up
+    char romUrl[512] = {};
+    struct RomFetch;
+    std::shared_ptr<RomFetch> romFetch;
     // the lightgun: where the mouse is over the picture, in framebuffer pixels
     void lightgunFromScreen(float ox, float oy, float drawW, float drawH, int texW, int texH);
 

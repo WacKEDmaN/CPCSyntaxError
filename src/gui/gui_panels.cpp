@@ -23,6 +23,7 @@
 #endif
 #include <windows.h>
 #include <shellapi.h>
+#include <urlmon.h>
 #endif
 
 #include "emuhost.h"
@@ -31,6 +32,7 @@
 #include "core/matrix_printer.h"
 #include "core/monitor_model.h"
 #include "core/v9990.h"
+#include "core/opl4.h"
 
 namespace cpcse {
 
@@ -245,7 +247,10 @@ void GuiShell::printerPortItems(bool asMenu) {
 void GuiShell::sectionExpansions(bool asMenu) {
     if (!asMenu) ImGui::TextDisabled("M4 board (SD card, network)");
     bool m4 = host.m4Enabled;
-    if (ImGui::Checkbox("M4 board", &m4)) host.setM4(m4, host.m4Folder.empty() ? host.romDir : host.m4Folder);
+    if (ImGui::Checkbox("M4 board", &m4)) {
+        if (m4 && !host.m4HasRom()) romPromptFor = "m4";
+        else host.setM4(m4, host.m4Folder.empty() ? host.romDir : host.m4Folder);
+    }
     if (asMenu) {
         if (ImGui::MenuItem("M4 folder..."))
             browser.openDir("M4 files folder", host.m4Folder.empty() ? host.romDir : host.m4Folder,
@@ -298,7 +303,10 @@ void GuiShell::sectionExpansions(bool asMenu) {
     auto ramLabel = [](int k) { return k >= 1024 ? std::to_string(k / 1024) + " MB" : std::to_string(k) + "K"; };
     if (asMenu) {
         ImGui::Separator();
-        if (ImGui::MenuItem("OPL4 sound card (YMF278B)", nullptr, &opl)) host.setOpl4(opl);
+        if (ImGui::MenuItem("OPL4 sound card (YMF278B)", nullptr, &opl)) {
+            host.setOpl4(opl);
+            if (opl && !host.opl4HasRom()) romPromptFor = "opl4";
+        }
         if (ImGui::BeginMenu("OPL4 sample RAM", host.opl4Enabled)) {
             for (int k : ramSizes)
                 if (ImGui::MenuItem(ramLabel(k).c_str(), nullptr, host.opl4RamKiB == k)) { host.opl4RamKiB = k; host.applyOpl4(); }
@@ -306,7 +314,10 @@ void GuiShell::sectionExpansions(bool asMenu) {
         }
     } else {
         sectionHeading("Sound card");
-        if (ImGui::Checkbox("OPL4 (YMF278B, AMSDAP &FFC4/&FF7E)", &opl)) host.setOpl4(opl);
+        if (ImGui::Checkbox("OPL4 (YMF278B, AMSDAP &FFC4/&FF7E)", &opl)) {
+            host.setOpl4(opl);
+            if (opl && !host.opl4HasRom()) romPromptFor = "opl4";
+        }
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("A MoonSound-style OPL4: 18 FM channels (OPL3) and 24 wavetable channels.\n"
                               "SymbOS / SymAmp use it for FM, MOD and wavetable music.");
@@ -318,8 +329,10 @@ void GuiShell::sectionExpansions(bool asMenu) {
             ImGui::EndCombo();
         }
         ImGui::EndDisabled();
-        if (host.opl4Enabled)
-            ImGui::TextDisabled(host.opl4HasRom() ? "YRW801 sample ROM fitted" : "No yrw801*.rom in the ROM folder: GM instruments silent");
+        if (host.opl4Enabled) {
+            ImGui::TextDisabled(host.opl4HasRom() ? "YRW801 sample ROM fitted" : "No yrw801*.rom: GM instruments silent");
+            if (!host.opl4HasRom()) { ImGui::SameLine(); if (ImGui::SmallButton("Get it...")) romPromptFor = "opl4"; }
+        }
     }
 }
 
@@ -407,6 +420,100 @@ void GuiShell::windowPrinter() {
         }
     }
     ImGui::End();
+}
+
+// ============================================================== a ROM that is missing
+// The download runs on its own thread (URLDownloadToFile) into a temporary file, which is
+// then checked and copied into the ROM folder like a chosen one.
+struct GuiShell::RomFetch {
+    std::atomic<bool> done { false };
+    std::atomic<bool> ok { false };
+    std::string path, error;
+    std::thread worker;
+    ~RomFetch() { if (worker.joinable()) worker.join(); }
+};
+
+void GuiShell::romPrompt() {
+    if (romPromptFor.empty()) return;
+    const bool opl = romPromptFor == "opl4";
+    const char* title = opl ? "OPL4 sample ROM" : "M4 board ROM";
+    const std::string dest = opl ? "yrw801.rom" : "M4ROM.ROM";
+    const size_t size = opl ? 2097152 : 16384;
+    if (!ImGui::IsPopupOpen(title)) ImGui::OpenPopup(title);
+    static std::string status;
+    auto installed = [&](const std::string& from) {
+        std::string why;
+        if (!host.installRom(from, dest, size, why)) { status = "Not fitted: " + why; return; }
+        status.clear();
+        if (opl) { host.emu->opl4->rom.clear(); host.applyOpl4(); }
+        else host.setM4(true, host.m4Folder.empty() ? host.romDir : host.m4Folder);
+        romPromptFor.clear();
+        ImGui::CloseCurrentPopup();
+    };
+    ImGui::SetNextWindowSize(ImVec2(560, 0), ImGuiCond_Appearing);
+    if (ImGui::BeginPopupModal(title, nullptr, ImGuiWindowFlags_NoSavedSettings)) {
+        if (opl) {
+            ImGui::TextWrapped("The OPL4's General MIDI instruments are in Yamaha's YRW801 sample ROM "
+                               "(2 MB), which is not included with CPCSyntaxError. Without it the card "
+                               "still plays FM, and samples programs load into its RAM.");
+        } else {
+            ImGui::TextWrapped("The M4 board needs its own ROM (M4ROM.ROM, 16K, by Duke -- spinpoint.org).");
+        }
+        ImGui::Spacing();
+        ImGui::TextWrapped("Download it from a URL, or choose a copy you already have. It is saved to the ROM folder as %s.",
+                           dest.c_str());
+        ImGui::SetNextItemWidth(-90);
+        ImGui::InputTextWithHint("##romurl", "https://...", romUrl, sizeof romUrl);
+        ImGui::SameLine();
+        const bool busy = romFetch && !romFetch->done;
+        ImGui::BeginDisabled(busy || !romUrl[0]);
+        if (ImGui::Button("Download", ImVec2(-1, 0))) {
+            status = "Downloading...";
+            auto fetch = std::make_shared<RomFetch>();
+            std::error_code ec;
+            fetch->path = (std::filesystem::temp_directory_path(ec) / ("cpcse_" + dest + ".part")).string();
+            RomFetch* f = fetch.get();
+            const std::string url = romUrl;
+            fetch->worker = std::thread([f, url] {
+#ifdef _WIN32
+                CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+                const HRESULT hr = URLDownloadToFileA(nullptr, url.c_str(), f->path.c_str(), 0, nullptr);
+                CoUninitialize();
+                f->ok = SUCCEEDED(hr);
+                if (!f->ok) { char b[64]; std::snprintf(b, sizeof b, "download failed (0x%08lx)", (unsigned long)hr); f->error = b; }
+#else
+                f->error = "downloading needs Windows";
+#endif
+                f->done = true;
+            });
+            romFetch = fetch;
+        }
+        ImGui::EndDisabled();
+        if (romFetch && romFetch->done) {
+            auto f = romFetch;
+            romFetch.reset();
+            if (f->ok) installed(f->path); else status = "Not fitted: " + f->error;
+            std::error_code ec;
+            std::filesystem::remove(f->path, ec);   // the download's own temporary file
+        }
+        if (ImGui::Button("Choose file...")) {
+            browser.open(title, host.romDir, { ".rom", ".bin" }, [this, installed](const std::string& p) mutable {
+                std::string why;
+                const bool opl2 = romPromptFor == "opl4";
+                if (!host.installRom(p, opl2 ? "yrw801.rom" : "M4ROM.ROM", opl2 ? 2097152 : 16384, why)) { status = "Not fitted: " + why; return; }
+                status.clear();
+                if (opl2) { host.emu->opl4->rom.clear(); host.applyOpl4(); }
+                else host.setM4(true, host.m4Folder.empty() ? host.romDir : host.m4Folder);
+                romPromptFor.clear();
+            });
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Not now")) { romPromptFor.clear(); status.clear(); ImGui::CloseCurrentPopup(); }
+        if (!status.empty()) ImGui::TextColored(status.rfind("Not", 0) == 0 ? ImVec4(1, 0.5f, 0.4f, 1) : kAccent, "%s", status.c_str());
+        if (romPromptFor.empty()) ImGui::CloseCurrentPopup();
+        ImGui::EndPopup();
+    }
+    (void)installed;
 }
 
 // ============================================================== GFX9000 monitor

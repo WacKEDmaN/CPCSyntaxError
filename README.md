@@ -20,8 +20,8 @@ around a cycle-level model of the machine's video chips.
 - Disc (DSK/EDSK), tape (CDT/TZX/WAV), cartridge (CPR) and snapshot (SNA) loading,
   joysticks and game controllers; RAM expansions up to 4 MB (in 512K steps past 576K).
 - **Expansions** (all in **Expansions** / the Settings window):
-  - **M4 board**: a folder on your PC is its SD card. The M4's own ROM (`M4ROM.ROM`, from
-    [spinpoint.org](http://www.spinpoint.org), not included) goes in `roms/` and runs unmodified;
+  - **M4 board**: a folder on your PC is its SD card. The M4's own ROM (`M4ROM.ROM`, by Duke,
+    [spinpoint.org](http://www.spinpoint.org) -- included in `roms/` with his permission) runs unmodified;
     files, directories and long names work from BASIC (`|CD`, `CAT`, `|LS`, `|ERA`,
     `|REN`, `|COPYF`...), and programs with their own file system -- **SymbOS** -- read and
     write the card sector by sector, their changes written back to the folder.
@@ -31,8 +31,8 @@ around a cycle-level model of the machine's video chips.
     **Video9000** that superimposes it on the CPC's picture.
   - **OPL4 sound card** (Yamaha YMF278B, MoonSound-style, on the AMSDAP at
     `&FFC4`/`&FF7E`): 18 FM + 24 wavetable channels, for SymbOS's sound daemon and SymAmp.
-    The General MIDI samples need Yamaha's YRW801 ROM (`yrw801*.rom` in `roms/`, not
-    included).
+    The General MIDI samples need Yamaha's YRW801 ROM (not included): turning the card on
+    without it opens a prompt to download it from a URL or choose a copy, saved to `roms/`.
   - Symbiface II/III mouse and clock, lightguns (Trojan Light Phazer, Gunstick,
     West Phaser), a printer or dot-matrix printer on the printer port, DigiBlaster /
     AmDrum, the Plus analogue port.
@@ -77,6 +77,8 @@ around a cycle-level model of the machine's video chips.
    | CPC 464 | `464 OS`, `464 BASIC` |
    | CPC 6128 | `6128 OS`, `6128 BASIC`, `AMSDOS` |
    | 464 Plus / 6128 Plus / GX4000 | the Plus system cartridge, a `.cpr` whose name contains `burning rubber` |
+| M4 board | `M4ROM` (included) |
+| OPL4 card's GM samples | `yrw801` (not included -- the emulator prompts for it) |
 
 3. The first start boots a CPC 6128. Pick another machine from **Machine → Model**, and
    load software from the **File** or **Media** menus, or drop a file onto the window.

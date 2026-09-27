@@ -145,7 +145,7 @@ target_link_libraries(cpcse PRIVATE
   mingw32
   ${SDL2_ROOT}/lib/libSDL2main.a
   ${SDL2_ROOT}/lib/libSDL2.dll.a
-  opengl32 gdi32 winmm imm32)
+  opengl32 gdi32 winmm imm32 urlmon ole32)
 if(MINGW)
   # Ship one DLL (SDL2.dll), not the GCC runtime as well.
   target_link_options(cpcse PRIVATE -static-libgcc -static-libstdc++ -static)

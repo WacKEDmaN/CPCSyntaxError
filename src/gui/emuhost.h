@@ -81,6 +81,10 @@ public:
     bool opl4Enabled = false;
     int opl4RamKiB = 2048;
     bool opl4HasRom() const;
+    bool m4HasRom() const { return !findRom("m4rom").empty() || !findRom("m4").empty(); }
+    // Copies a ROM file into the ROM folder as destName, after checking its size; the
+    // reason on failure.
+    bool installRom(const std::string& source, const std::string& destName, size_t size, std::string& why);
     // Where its monitor is: "beside" the CPC's in the Screen window, in a "window" of its
     // own, or "switch" -- one monitor, showing the GFX9000's picture while it displays one
     // and the CPC's otherwise, as a Video9000 passes the computer's video through.

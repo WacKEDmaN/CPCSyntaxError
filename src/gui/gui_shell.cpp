@@ -145,6 +145,7 @@ void GuiShell::draw(const ShellFrameInfo& info) {
         if (assembler->focused) toolFocusedNow = true;
     }
     windowPrinter();
+    romPrompt();
     windowGfx9000();
     windowCslScripts();
     windowAbout();
