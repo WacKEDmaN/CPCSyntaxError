@@ -73,7 +73,7 @@ around a cycle-level model of the machine's video chips.
 
 1. Download `CPCSyntaxError-win64.zip` from the
    [Releases](../../releases) page, unzip it anywhere and run `cpcse.exe` -- or build
-   it yourself (below).
+   it yourself (below; Windows and Linux).
 2. The CPC 464 and 6128 firmware ROMs and the CPC Plus / GX4000 system cartridge are
    included, in `roms/` (Amstrad have kindly given their permission for the
    redistribution of their copyrighted material but retain that copyright). The release
@@ -178,7 +178,9 @@ player lengthens that one wait to 16 s and says so in the log; `--no-errata` tur
 
 ## Building from source
 
-Requirements: Windows, a MinGW-w64 GCC with C++17 (GCC 10 or later), CMake 3.16+,
+### Windows
+
+Requirements: a MinGW-w64 GCC with C++17 (GCC 10 or later), CMake 3.16+,
 Ninja (optional), and the **SDL2 MinGW development package**
 (`SDL2-devel-2.x.x-mingw.zip` from <https://github.com/libsdl-org/SDL/releases>).
 
@@ -191,6 +193,25 @@ or unpack the SDL2 package's `x86_64-w64-mingw32` folder into `third_party/SDL2`
 run `build.bat`. The result is `build/cpcse.exe`, with `SDL2.dll` and the `roms`
 folder copied beside it; the GCC runtime is linked statically, so nothing else is
 needed to run it.
+
+### Linux
+
+Requirements: GCC 10+ (or Clang), CMake 3.16+, Ninja (optional), pkg-config, and the
+SDL2 and OpenGL development packages. On Debian / Ubuntu:
+
+```
+sudo apt install build-essential cmake ninja-build pkg-config libsdl2-dev libgl-dev
+cmake -S . -B build -G Ninja
+cmake --build build
+./build/cpcse
+```
+
+The result is `build/cpcse`, with the `roms` and `sounds` folders copied beside it.
+Run it from that folder, or pass `--roms <folder>`; drive and keyboard sounds are
+looked for in `sounds/` next to the executable, then in the working directory. On
+Linux the GUI runs CSL scripts with `fork`/`exec`, opens folders with `xdg-open`,
+and downloads ROMs with `curl` (or `wget`). Paths in Windows-authored CSL scripts
+are matched case-insensitively.
 
 ## Source layout
 

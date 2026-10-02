@@ -72,11 +72,14 @@ std::string iniFilePath() {
 }
 
 // The drive's and the keyboard's recordings (core/machine_sounds.h), beside the program.
+// Beside the program first, then the working directory (a build directory, or a Linux
+// install whose binary sits elsewhere), then ../share/cpcsyntaxerror beside the binary.
 void loadMachineSounds() {
     char* b = SDL_GetBasePath();
     std::string p = b ? b : "";
     if (b) SDL_free(b);
-    machineSounds.load(p + "sounds");
+    for (const std::string& dir : { p + "sounds", std::string("sounds"), p + "../share/cpcsyntaxerror/sounds" })
+        if (machineSounds.load(dir) > 0) return;
 }
 
 std::map<std::string, std::string> parseIni(const std::string& path) {

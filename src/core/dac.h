@@ -17,6 +17,11 @@ public:
     int sampleReadIndex = 0;
     double lastOutputSample = 0;
     double alpha = 0.45;
+    // The output's coupling capacitor: a DAC card drives the amplifier through one, so only
+    // CHANGES reach the speaker -- a level the port is left at (the firmware leaves &7F on the
+    // printer port at boot, full scale to a DigiBlaster) decays to silence instead of sitting
+    // there as a DC offset in front of every other sound. One pole at ~15 Hz.
+    double coupledIn = 0, coupledOut = 0;
     std::string printerBuffer;
     int printerInitSeen = 0;
     bool printerStrobe = false;

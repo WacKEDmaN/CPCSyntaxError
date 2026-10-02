@@ -53,11 +53,36 @@ bool isDir(const std::string& path) { std::error_code ec; return !path.empty() &
 
 // A directory instruction is a PREFIX: "it will be concatenated before the name". A
 // folder written without its closing slash still means that folder.
+// Scripts are written on Windows: names in either case and with '\' separators. Where the
+// path as written does not exist (a case-sensitive file system), each part is looked up in
+// its folder ignoring case, as a Windows host would have found it.
+static std::string resolveHostCase(std::string path) {
+#ifndef _WIN32
+    for (char& c : path) if (c == '\\') c = '/';
+    std::error_code ec;
+    if (path.empty() || fs::exists(path, ec)) return path;
+    auto lowerOf = [](std::string s) { for (char& c : s) c = (char)std::tolower((unsigned char)c); return s; };
+    fs::path p(path), out = p.has_root_path() ? p.root_path() : fs::path(".");
+    for (const fs::path& part : p.relative_path()) {
+        fs::path next = out / part;
+        if (!fs::exists(next, ec) && fs::is_directory(out, ec)) {
+            const std::string want = lowerOf(part.string());
+            for (auto it = fs::directory_iterator(out, ec); it != fs::directory_iterator(); it.increment(ec))
+                if (lowerOf(it->path().filename().string()) == want) { next = it->path(); break; }
+        }
+        out = next;
+    }
+    return p.has_root_path() ? out.string() : out.lexically_normal().string();
+#else
+    return path;
+#endif
+}
+
 std::string joinPrefix(const std::string& prefix, const std::string& name) {
-    if (prefix.empty()) return name;
+    if (prefix.empty()) return resolveHostCase(name);
     char last = prefix.back();
-    if (last == '/' || last == '\\' || !isDir(prefix)) return prefix + name;
-    return prefix + "/" + name;
+    if (last == '/' || last == '\\' || !isDir(prefix)) return resolveHostCase(prefix + name);
+    return resolveHostCase(prefix + "/" + name);
 }
 
 // The typographic quotes a word processor puts in a script (the standard's own examples

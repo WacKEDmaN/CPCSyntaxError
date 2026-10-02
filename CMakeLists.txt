@@ -6,8 +6,9 @@
 #   rasm         the RASM assembler, built in (third_party/rasm)
 #   cpcse        the desktop emulator (SDL2 + OpenGL + Dear ImGui)
 #
-# SDL2 is not bundled. Point SDL2_ROOT at an SDL2 MinGW development package
-# (the folder holding include/, lib/ and bin/) -- see third_party/SDL2/README.md.
+# SDL2 is not bundled. On Windows point SDL2_ROOT at an SDL2 MinGW development
+# package (the folder holding include/, lib/ and bin/) -- see third_party/SDL2/README.md.
+# On Linux the system SDL2 is used: apt install libsdl2-dev libgl-dev.
 
 cmake_minimum_required(VERSION 3.16)
 project(CPCSyntaxError C CXX)
@@ -71,12 +72,40 @@ target_compile_options(minimp3 PRIVATE -w)
 target_link_libraries(cpcse-core PUBLIC minimp3)
 
 # --------------------------------------------------------------- SDL2
-set(SDL2_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/third_party/SDL2" CACHE PATH
-    "SDL2 MinGW development package (the folder with include/, lib/, bin/)")
-if(NOT EXISTS "${SDL2_ROOT}/include/SDL2/SDL.h")
-  message(FATAL_ERROR "SDL2 not found in ${SDL2_ROOT}. Download the SDL2 MinGW development "
-                      "package and pass -DSDL2_ROOT=<its x86_64-w64-mingw32 folder>, or unpack "
-                      "it into third_party/SDL2 (see third_party/SDL2/README.md).")
+# cpcse-sdl carries SDL2 + OpenGL for every target that needs them.
+add_library(cpcse-sdl INTERFACE)
+if(WIN32)
+  # Windows: an SDL2 MinGW development package. (The default is not cached as
+  # SDL2_ROOT: CMake reads <Package>_ROOT as a find_package search prefix.)
+  if(DEFINED SDL2_ROOT)
+    set(SDL2_LOCAL ${SDL2_ROOT})
+  else()
+    set(SDL2_LOCAL ${CMAKE_CURRENT_SOURCE_DIR}/third_party/SDL2)
+  endif()
+  if(NOT EXISTS "${SDL2_LOCAL}/include/SDL2/SDL.h")
+    message(FATAL_ERROR "SDL2 not found in ${SDL2_LOCAL}. Download the SDL2 MinGW development "
+                        "package and pass -DSDL2_ROOT=<its x86_64-w64-mingw32 folder>, or unpack "
+                        "it into third_party/SDL2 (see third_party/SDL2/README.md).")
+  endif()
+  target_include_directories(cpcse-sdl INTERFACE ${SDL2_LOCAL}/include/SDL2)
+  # Link order matters on MinGW: mingw32, SDL2main, then the SDL2 DLL import library.
+  target_link_libraries(cpcse-sdl INTERFACE
+    mingw32 ${SDL2_LOCAL}/lib/libSDL2main.a ${SDL2_LOCAL}/lib/libSDL2.dll.a
+    opengl32 gdi32 winmm imm32 urlmon ole32)
+else()
+  # Linux and friends: the system SDL2 (apt install libsdl2-dev libgl-dev).
+  set(OpenGL_GL_PREFERENCE GLVND)
+  find_package(OpenGL REQUIRED)
+  find_package(Threads REQUIRED)
+  find_package(SDL2 CONFIG QUIET)
+  if(TARGET SDL2::SDL2)
+    target_link_libraries(cpcse-sdl INTERFACE SDL2::SDL2)
+  else()
+    find_package(PkgConfig REQUIRED)
+    pkg_check_modules(SDL2PC REQUIRED IMPORTED_TARGET sdl2)
+    target_link_libraries(cpcse-sdl INTERFACE PkgConfig::SDL2PC)
+  endif()
+  target_link_libraries(cpcse-sdl INTERFACE OpenGL::GL Threads::Threads ${CMAKE_DL_LIBS})
 endif()
 
 # --------------------------------------------------------------- Dear ImGui
@@ -90,7 +119,8 @@ add_library(imgui STATIC
   ${IMGUI_DIR}/backends/imgui_impl_sdl2.cpp
   ${IMGUI_DIR}/backends/imgui_impl_opengl3.cpp
 )
-target_include_directories(imgui PUBLIC ${IMGUI_DIR} ${IMGUI_DIR}/backends ${SDL2_ROOT}/include/SDL2)
+target_include_directories(imgui PUBLIC ${IMGUI_DIR} ${IMGUI_DIR}/backends)
+target_link_libraries(imgui PUBLIC cpcse-sdl)
 
 # --------------------------------------------------------------- RASM
 # RASM (Edouard BERGE, MIT) with every cruncher it ships. Each cruncher keeps its
@@ -149,21 +179,19 @@ add_executable(cpcse
 # A GUI-subsystem executable: no console window. SDL2main provides the WinMain
 # and forwards to main() (renamed SDL_main).
 set_target_properties(cpcse PROPERTIES WIN32_EXECUTABLE TRUE)
-target_include_directories(cpcse PRIVATE src ${SDL2_ROOT}/include/SDL2)
-# Link order matters on MinGW: mingw32, SDL2main, then the SDL2 DLL import library.
-target_link_libraries(cpcse PRIVATE
-  cpcse-core imgui rasm
-  mingw32
-  ${SDL2_ROOT}/lib/libSDL2main.a
-  ${SDL2_ROOT}/lib/libSDL2.dll.a
-  opengl32 gdi32 winmm imm32 urlmon ole32)
+target_include_directories(cpcse PRIVATE src)
+target_link_libraries(cpcse PRIVATE cpcse-core imgui rasm cpcse-sdl)
 if(MINGW)
   # Ship one DLL (SDL2.dll), not the GCC runtime as well.
   target_link_options(cpcse PRIVATE -static-libgcc -static-libstdc++ -static)
 endif()
-# SDL2.dll must sit next to the executable at runtime, and the firmware in roms/
-# beside it is what the emulator boots from.
+if(WIN32)
+  # SDL2.dll must sit next to the executable at runtime.
+  add_custom_command(TARGET cpcse POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different ${SDL2_LOCAL}/bin/SDL2.dll $<TARGET_FILE_DIR:cpcse>)
+endif()
+# The firmware in roms/ and the drive/keyboard recordings in sounds/ go beside the
+# executable: that is where the emulator looks for them.
 add_custom_command(TARGET cpcse POST_BUILD
-  COMMAND ${CMAKE_COMMAND} -E copy_if_different ${SDL2_ROOT}/bin/SDL2.dll $<TARGET_FILE_DIR:cpcse>
   COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_CURRENT_SOURCE_DIR}/roms $<TARGET_FILE_DIR:cpcse>/roms
   COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_CURRENT_SOURCE_DIR}/sounds $<TARGET_FILE_DIR:cpcse>/sounds)

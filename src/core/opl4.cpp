@@ -1,6 +1,9 @@
 // CPCSyntaxError — an OPL4 sound card on the AMSDAP. See opl4.h.
 #include "opl4.h"
 #include "ymfm_opl.h"
+#include <climits>
+#include <cstdio>
+#include <cstdlib>
 
 namespace cpcse {
 
@@ -66,16 +69,19 @@ static int chipOffset(int low) {
 // CPCSE_TRACE_OPL4=<n>: the first n accesses, to see what a program does with the card.
 static long traceLeft() { static long n = std::getenv("CPCSE_TRACE_OPL4") ? std::atol(std::getenv("CPCSE_TRACE_OPL4")) : 0; return n; }
 static long traced = 0;
+// CPCSE_TRACE_OPL4_FROM=<T-states>: start tracing only at this moment of machine time, so a
+// program reached a minute in (SymbOS playing a song) can be traced without the boot.
+static long long traceFrom() { static long long f = std::getenv("CPCSE_TRACE_OPL4_FROM") ? std::atoll(std::getenv("CPCSE_TRACE_OPL4_FROM")) : 0; return f; }
 int Opl4Card::readPort(int port, long long cpcCycles) {
     advanceTo(cpcCycles);
     const int off = chipOffset(port & 0xff);
     const int v = (off == 0 || off == 5) ? chip->chip.read((uint32_t)off) : 0xff;
-    if (traced < traceLeft()) { traced++; std::fprintf(stderr, "OPL4 IN  %04x -> %02x\n", port & 0xffff, v); }
+    if (cpcCycles >= traceFrom() && traced < traceLeft()) { traced++; std::fprintf(stderr, "OPL4 IN  %04x -> %02x  @%lld\n", port & 0xffff, v, cpcCycles); }
     return v;
 }
 void Opl4Card::writePort(int port, int value, long long cpcCycles) {
     advanceTo(cpcCycles);
-    if (traced < traceLeft()) { traced++; std::fprintf(stderr, "OPL4 OUT %04x <- %02x\n", port & 0xffff, value & 0xff); }
+    if (cpcCycles >= traceFrom() && traced < traceLeft()) { traced++; std::fprintf(stderr, "OPL4 OUT %04x <- %02x  @%lld\n", port & 0xffff, value & 0xff, cpcCycles); }
     chip->chip.write((uint32_t)chipOffset(port & 0xff), (uint8_t)value);
 }
 

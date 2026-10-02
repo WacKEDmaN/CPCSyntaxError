@@ -25,6 +25,11 @@
 #include <windows.h>
 #include <shellapi.h>
 #include <urlmon.h>
+#else
+#include <csignal>
+#include <fcntl.h>
+#include <sys/wait.h>
+#include <unistd.h>
 #endif
 
 #include "emuhost.h"
@@ -35,6 +40,37 @@
 #include "core/v9990.h"
 #include "core/opl4.h"
 #include "core/speech.h"
+
+#ifndef _WIN32
+namespace {
+// Start a program with these arguments (no shell: nothing in them is interpreted), with
+// stdout and stderr on `outFd` if it is not -1. Returns the child's pid, or -1.
+pid_t spawnArgs(const std::vector<std::string>& args, int outFd, bool search) {
+    std::vector<char*> argv;
+    for (const std::string& a : args) argv.push_back(const_cast<char*>(a.c_str()));
+    argv.push_back(nullptr);
+    const pid_t pid = fork();
+    if (pid == 0) {
+        if (outFd >= 0) { dup2(outFd, 1); dup2(outFd, 2); close(outFd); }
+        if (search) execvp(argv[0], argv.data()); else execv(argv[0], argv.data());
+        _exit(127);
+    }
+    return pid;
+}
+// ...and forget it, reaping it when it ends (a file manager, a browser).
+void spawnDetached(const std::vector<std::string>& args) {
+    const pid_t pid = spawnArgs(args, -1, true);
+    if (pid > 0) std::thread([pid] { int st = 0; waitpid(pid, &st, 0); }).detach();
+}
+// This program's own path, to run its windowless modes.
+std::string selfExecutable() {
+    char buf[4096];
+    const ssize_t n = readlink("/proc/self/exe", buf, sizeof buf - 1);
+    if (n > 0) { buf[n] = 0; return buf; }
+    return "cpcse";
+}
+}  // namespace
+#endif
 
 namespace cpcse {
 
@@ -567,7 +603,17 @@ void GuiShell::romPrompt() {
                 f->ok = SUCCEEDED(hr);
                 if (!f->ok) { char b[64]; std::snprintf(b, sizeof b, "download failed (0x%08lx)", (unsigned long)hr); f->error = b; }
 #else
-                f->error = "downloading needs Windows";
+                // curl, else wget: whichever the system has. Exit 127 = not installed.
+                auto fetch = [&](const std::vector<std::string>& args) {
+                    const pid_t pid = spawnArgs(args, -1, true);
+                    if (pid <= 0) return 127;
+                    int st = 0; waitpid(pid, &st, 0);
+                    return WIFEXITED(st) ? WEXITSTATUS(st) : 1;
+                };
+                int rc = fetch({ "curl", "-fsSL", "-o", f->path, url });
+                if (rc == 127) rc = fetch({ "wget", "-q", "-O", f->path, url });
+                f->ok = rc == 0;
+                if (!f->ok) f->error = rc == 127 ? "needs curl or wget" : "download failed (exit " + std::to_string(rc) + ")";
 #endif
                 f->done = true;
             });
@@ -663,10 +709,14 @@ struct GuiShell::CslRun {
     std::thread reader;
 #ifdef _WIN32
     HANDLE process = nullptr;
+#else
+    pid_t pid = -1;
 #endif
     ~CslRun() {
 #ifdef _WIN32
         if (running && process) TerminateProcess(process, 1);
+#else
+        if (running && pid > 0) kill(pid, SIGTERM);
 #endif
         if (reader.joinable()) reader.join();
 #ifdef _WIN32
@@ -773,6 +823,46 @@ void GuiShell::windowCslScripts() {
             }
             CloseHandle(writeEnd);
             cslRun = run;
+#else
+            std::vector<std::string> args = { selfExecutable(), "--csl", cslScript, "--out", cslOut, "--roms", host.romDir };
+            if (cslCrtc >= 0) { args.push_back("--crtc"); args.push_back(std::to_string(cslCrtc)); }
+            if (!cslDiskDir.empty()) { args.push_back("--disk-dir"); args.push_back(cslDiskDir); }
+            if (!cslChain) args.push_back("--no-chain");
+            if (!cslErrata) args.push_back("--no-errata");
+            std::error_code ec;
+            std::filesystem::create_directories(cslOut, ec);
+            auto run = std::make_shared<CslRun>();
+            std::string shown = ">";
+            for (const std::string& a : args) shown += " " + a;
+            int fds[2] = { -1, -1 };
+            if (pipe(fds) == 0) {
+                fcntl(fds[0], F_SETFD, FD_CLOEXEC);
+                run->pid = spawnArgs(args, fds[1], false);
+                close(fds[1]);
+            }
+            if (run->pid > 0) {
+                run->log = shown + "\n";
+                CslRun* r = run.get();
+                const int readEnd = fds[0];
+                run->reader = std::thread([r, readEnd] {
+                    char buf[1024];
+                    ssize_t got;
+                    while ((got = read(readEnd, buf, sizeof buf)) > 0) {
+                        std::lock_guard<std::mutex> g(r->lock);
+                        for (ssize_t i = 0; i < got; i++) if (buf[i] != '\r') r->log.push_back(buf[i]);
+                    }
+                    close(readEnd);
+                    int st = 0;
+                    waitpid(r->pid, &st, 0);
+                    r->exitCode = WIFEXITED(st) ? WEXITSTATUS(st) : 128 + (WIFSIGNALED(st) ? WTERMSIG(st) : 0);
+                    r->running = false;
+                });
+            } else {
+                if (fds[0] >= 0) close(fds[0]);
+                run->log = "Could not start:" + shown.substr(1) + "\n";
+                run->running = false;
+            }
+            cslRun = run;
 #endif
         }
         ImGui::EndDisabled();
@@ -781,6 +871,8 @@ void GuiShell::windowCslScripts() {
         if (ImGui::Button("Stop")) {
 #ifdef _WIN32
             if (cslRun && cslRun->process) TerminateProcess(cslRun->process, 1);
+#else
+            if (cslRun && cslRun->pid > 0) kill(cslRun->pid, SIGTERM);
 #endif
         }
         ImGui::EndDisabled();
@@ -790,6 +882,10 @@ void GuiShell::windowCslScripts() {
             std::error_code ec;
             const std::string abs = std::filesystem::absolute(cslOut, ec).string();
             ShellExecuteA(nullptr, "open", abs.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+#else
+            std::error_code ec;
+            std::filesystem::create_directories(cslOut, ec);
+            spawnDetached({ "xdg-open", std::filesystem::absolute(cslOut, ec).string() });
 #endif
         }
         if (cslRun) {

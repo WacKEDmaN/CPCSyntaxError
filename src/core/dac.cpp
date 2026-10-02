@@ -26,6 +26,7 @@ void CpcDac::reset() {
     sampleQueue.clear();
     sampleReadIndex = 0;
     lastOutputSample = 0;
+    coupledIn = coupledOut = 0;
 }
 void CpcDac::setMode(const std::string& mode_) {
     mode = mode_;
@@ -78,7 +79,10 @@ void CpcDac::advanceTStates(int tStates) {
     while (samplePhase >= 1) {
         samplePhase -= 1;
         filteredSample += alpha * (currentSample - filteredSample);
-        lastOutputSample = filteredSample;
+        const double rc = 1.0 / (2.0 * 3.14159265358979 * 15.0), dt = 1.0 / outputSampleRate;
+        coupledOut = rc / (rc + dt) * (coupledOut + filteredSample - coupledIn);
+        coupledIn = filteredSample;
+        lastOutputSample = coupledOut;
         sampleQueue.push_back(lastOutputSample);
     }
     int maximum = (int)std::ceil(outputSampleRate / 4);
