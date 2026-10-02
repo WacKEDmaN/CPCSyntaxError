@@ -12,6 +12,7 @@
 
 #include "gui_assembler.h"
 #include "core/emulator.h"
+#include "core/memory.h"
 #include "core/video.h"
 #include "core/z80.h"
 #include "core/monitor_model.h"
@@ -25,7 +26,7 @@ static const char* CRTC_NAMES[] = { "0  HD6845S / UM6845", "1  UM6845R (1-A)", "
 // Past 576K (64K + a 512K board) each step is one more 512K segment of a 4 MB-style board.
 static const int RAM_SIZES[] = { 64, 128, 256, 320, 512, 576, 1088, 1600, 2112, 2624, 3136, 3648, 4160 };
 // Bump when the set of windows or the default layout changes.
-static const int LAYOUT_VERSION = 3;
+static const int LAYOUT_VERSION = 4;
 
 GuiShell::GuiShell(EmuHost& h) : host(h), debugger(h) {
     panels = {
@@ -37,11 +38,13 @@ GuiShell::GuiShell(EmuHost& h) : host(h), debugger(h) {
         { "Disassembly", "win_disasm", true },
         { "Memory", "win_memory", true },
         { "Breakpoints", "win_breakpoints", true },
+        { "Memory map", "win_memory_map", true },
         { "Video", "win_video", true },
         { "Audio & I/O", "win_audio_io", true },
         { "Assembler", "win_asm", true },
         { "Printer", "win_printer", true },
         { "GFX9000", "win_gfx9000", true },
+        { "GFX9000 internals", "win_gfx9000_internals", true },
         { "CSL scripts", "win_csl", true },
     };
     assembler = std::make_unique<AssemblerWindow>(host, debugger, browser, saver);
@@ -138,6 +141,9 @@ void GuiShell::draw(const ShellFrameInfo& info) {
     windowDisassembly();
     windowMemory();
     windowBreakpoints();
+    // The memory map records only while its window is open (and Record is on).
+    if (host.emu && host.emu->memory) host.emu->memory->trackAccess = panelOpen("Memory map") && memMapRecord;
+    windowMemoryMap();
     windowVideo();
     windowAudioIo();
     if (panelOpen("Assembler")) {
@@ -147,6 +153,7 @@ void GuiShell::draw(const ShellFrameInfo& info) {
     windowPrinter();
     romPrompt();
     windowGfx9000();
+    windowGfx9000Internals();
     windowCslScripts();
     windowAbout();
     if (showImGuiDemo) ImGui::ShowDemoWindow(&showImGuiDemo);
@@ -174,7 +181,8 @@ void GuiShell::buildDefaultLayout(unsigned id) {
     ImGui::DockBuilderDockWindow("CPU", right);
     ImGui::DockBuilderDockWindow("Breakpoints", right);
     ImGui::DockBuilderDockWindow("Disassembly", rightBottom);
-    for (const char* w : { "Assembler", "Memory", "Video", "Audio & I/O", "Printer", "GFX9000", "CSL scripts" })
+    for (const char* w : { "Assembler", "Memory", "Memory map", "Video", "Audio & I/O", "Printer", "GFX9000",
+                           "GFX9000 internals", "CSL scripts" })
         ImGui::DockBuilderDockWindow(w, bottom);
     ImGui::DockBuilderFinish(id);
 }
@@ -548,7 +556,8 @@ void GuiShell::menuDebug() {
     }
     if (ImGui::MenuItem("Remove all watchpoints", nullptr, false, !debugger.watchpoints.empty())) debugger.watchpoints.clear();
     ImGui::Separator();
-    for (const char* w : { "CPU", "Disassembly", "Memory", "Breakpoints", "Video", "Audio & I/O", "Assembler" })
+    for (const char* w : { "CPU", "Disassembly", "Memory", "Memory map", "Breakpoints", "Video", "Audio & I/O",
+                           "GFX9000 internals", "Assembler" })
         ImGui::MenuItem(w, nullptr, &panelOpen(w));
     ImGui::Separator();
     if (ImGui::MenuItem("Assemble", "F9")) { panelOpen("Assembler") = true; assembler->assemble(false); }
@@ -564,7 +573,8 @@ void GuiShell::menuWindow() {
     ImGui::Separator();
     for (const char* w : { "CSL scripts", "Printer", "GFX9000", "Assembler" }) ImGui::MenuItem(w, nullptr, &panelOpen(w));
     ImGui::Separator();
-    for (const char* w : { "CPU", "Disassembly", "Memory", "Breakpoints", "Video", "Audio & I/O" })
+    for (const char* w : { "CPU", "Disassembly", "Memory", "Memory map", "Breakpoints", "Video", "Audio & I/O",
+                           "GFX9000 internals" })
         ImGui::MenuItem(w, nullptr, &panelOpen(w));
     ImGui::Separator();
     ImGui::MenuItem("Status bar", nullptr, &showStatusBar);

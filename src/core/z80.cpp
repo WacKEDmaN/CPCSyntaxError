@@ -39,6 +39,9 @@ int Z80::busRead(int address, int cycles, const char* accessType) {
     applyMemoryWait(address, false);
     if (inInstruction) memory->accessTiming(address, busOffset + waitStates + cycles, false);
     int value = memory->read(address) & 0xff;
+    if (memory->trackAccess)    // "execute" over 4 T-states is the M1 cycle, over 3 an operand
+        memory->noteAccess(address, accessType[0] != 'e' ? Z80Memory::ACCESS_READ
+                                    : cycles == 4 ? Z80Memory::ACCESS_OPCODE : Z80Memory::ACCESS_OPERAND);
     if (accessObserver && std::strcmp(accessType, "execute") != 0) {
         AccessEvent ev; ev.type = accessType; ev.address = address; ev.value = value;
         notifyAccess(ev);
@@ -54,6 +57,7 @@ void Z80::busWrite(int address, int value, int cycles) {
     if (inInstruction) memory->accessTiming(address, busOffset + waitStates + cycles, true);
     int previous = memory->read(address) & 0xff;
     memory->write(address, value);
+    if (memory->trackAccess) memory->noteAccess(address, Z80Memory::ACCESS_WRITE);
     if (accessObserver) {
         AccessEvent ev; ev.type = "write"; ev.address = address; ev.value = value; ev.previous = previous;
         notifyAccess(ev);
@@ -73,6 +77,7 @@ int Z80::portRead(int address, const std::string& kind) {
     if (inInstruction) { const int aligned = busCycleStart(); alignmentWaits += aligned - busOffset; busOffset = aligned; }
     int delay = ports.contend ? ports.contend(address, busOffset + waitStates) : 0;
     waitStates += std::max(0, delay | 0);
+    if (ports.ioWait) waitStates += std::max(0, ports.ioWait(address, busOffset + waitStates, false));
     int sampleOffset = busOffset + waitStates + 3;
     int value = ports.read ? ports.read(address, sampleOffset, kind) : 0xff;
     if (accessObserver) {
@@ -88,6 +93,7 @@ void Z80::portWrite(int address, int value, const std::string& kind) {
     if (inInstruction) { const int aligned = busCycleStart(); alignmentWaits += aligned - busOffset; busOffset = aligned; }
     int delay = ports.contend ? ports.contend(address, busOffset + waitStates) : 0;
     waitStates += std::max(0, delay | 0);
+    if (ports.ioWait) waitStates += std::max(0, ports.ioWait(address, busOffset + waitStates, true));
     int sampleOffset = busOffset + waitStates + 3;
     if (ports.write) ports.write(address, value & 0xff, sampleOffset, kind);
     if (accessObserver) {

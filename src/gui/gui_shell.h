@@ -174,6 +174,16 @@ private:
     void windowVideo();
     void windowAudioIo();
     void debugToolbar();
+    // Memory map + GFX9000 internals (gui_memory_views.cpp)
+    void windowMemoryMap();
+    void windowGfx9000Internals();
+    int memMapChunk = 0;
+    bool memMapRecord = true, memMapLive = false, memMapWrittenCode = false;
+    std::vector<uint32_t> memMapPixels;
+    int gfxVramZoom = 1;
+    int gfxInternalsTab = -1;        // a tab to bring to the front (then -1)
+    char gfxVramGoto[16] = {0};
+    std::vector<uint32_t> gfxVramPixels;
     void showInDisassembly(int address);
     void showInMemory(int address);
     int disasmPrevious(int address);

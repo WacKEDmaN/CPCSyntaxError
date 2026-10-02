@@ -219,6 +219,34 @@ void GXMemory::write(int address, int value) {
     else if ((size_t)offset + (address & 0x1fff) < ram.size()) ram[(size_t)offset + (address & 0x1fff)] = (uint8_t)value;
 }
 
+int GXMemory::physicalAddress(int address, bool write) const {
+    address &= 0xffff;
+    if (!write) {   // readMapped()'s order: the ROMs and the cartridge before the RAM
+        if (lowerEnabled && lowerSlotFor(address)) {
+            if (cartridgeByte(lowerPage, address) != -1) return -1;
+            const Bytes& lower = !snapshotLowerRom.empty() ? snapshotLowerRom : lowerRom;
+            if (lowerLocation == 0 && !lower.empty()) return -1;
+        }
+        if (upperEnabled && address >= 0xc000) {
+            if (useCartridgeUpper && cartridgeByte(upperCartridgePage, address) != -1) return -1;
+            if (!snapshotUpperRoms[upperRom].empty() || !upperRoms[upperRom].empty() ||
+                !snapshotUpperRoms[0].empty() || !upperRoms[0].empty() || (!useCartridgeUpper && upperRomReadHandler))
+                return -1;
+        }
+    }
+    const uint32_t offset = (write ? writeMap : readMap)[(unsigned)address >> 13];
+    if (offset == 0xffffffff) return -1;
+    const size_t idx = (size_t)offset + (address & 0x1fff);
+    return idx < ram.size() ? (int)idx : -1;
+}
+
+void GXMemory::noteAccess(int address, int kind) {
+    const int at = physicalAddress(address, kind == Z80Memory::ACCESS_WRITE);
+    if (at < 0) return;
+    if (accessMap.size() != ram.size()) accessMap.resize(ram.size(), 0);
+    accessMap[(size_t)at] |= (uint8_t)kind;
+}
+
 int GXMemory::readVideo(int address) const {
     size_t idx = address & 0xffff;
     return idx < ram.size() ? ram[idx] : 0;

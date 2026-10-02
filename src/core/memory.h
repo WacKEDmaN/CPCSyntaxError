@@ -98,6 +98,15 @@ public:
     // the front end arms it only while the machine runs, so its own views stay silent.
     std::function<void(int address, int value, bool write)> watchHook;
     bool watchArmed = false;
+    // The memory map's recording: one byte per byte of `ram`, the Z80Memory::AccessKind
+    // bits of every access the CPU made there since it was cleared. Kept only while
+    // trackAccess is set (the debugger's Memory map window); ROM and ASIC RAM are not kept.
+    std::vector<uint8_t> accessMap;
+    void noteAccess(int address, int kind) override;
+    void clearAccessMap() { accessMap.assign(ram.size(), 0); }
+    // Where a CPU address lands in `ram` for a read or a write, or -1 when a ROM, the
+    // cartridge or the ASIC page answers there instead.
+    int physicalAddress(int address, bool write) const;
     int readVideo(int address) const;
     int readBase(int address) const;
 };

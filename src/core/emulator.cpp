@@ -244,6 +244,14 @@ GX4000::GX4000() {
         crtc->lastWriteBlockIo = kind == "block-out";
         writePort(port, value);
     };
+    // /WAIT on the expansion bus: the GFX9000's V9990 holds an access while it is busy
+    // (its pin description, p.5), and lets it go when it is done. The Gate Array lets the
+    // Z80 go only on its microsecond, so the hold is whole microseconds.
+    ports.ioWait = [this](int port, int timingOffset, bool write) -> int {
+        if (!v9990->handlesPort(port)) return 0;
+        const double us = v9990->ioWait(port, write, machineCycles + timingOffset);
+        return us > 0 ? (int)std::ceil(us - 1e-9) * 4 : 0;
+    };
     ports.read = [this](int port, int timingOffset, const std::string& kind) {
         advanceHardwareToInstructionOffset(cpcIoEffectOffset(timingOffset, kind, port));
         cpuIoAccessed = true;

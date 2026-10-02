@@ -26,7 +26,9 @@ around a cycle-level model of the machine's video chips.
     `|REN`, `|COPYF`...), and programs with their own file system -- **SymbOS** -- read and
     write the card sector by sector, their changes written back to the folder.
   - **GFX9000** (Yamaha V9990 at `&FF60`): every screen mode, sprites, cursors, the
-    blitter commands, raster timing and interrupts. Its own monitor sits **beside the
+    blitter commands -- taking their real time, with the chip's **/WAIT** holding the Z80
+    while it is busy -- raster timing and interrupts, and the behaviour measured on a
+    real V9990 on a CPC (the Powergraph notes). Its own monitor sits **beside the
     CPC's**, in its own window, or shares one monitor -- switched, or through an emulated
     **Video9000** that superimposes it on the CPC's picture.
   - **OPL4 sound card** (Yamaha YMF278B, MoonSound-style, on the AMSDAP at
@@ -49,7 +51,10 @@ around a cycle-level model of the machine's video chips.
 - A **debugger**: breakpoints with conditions, memory watchpoints, step
   into / over / out, disassembly with labels, hex editor, and live views of the
   CRTC, Gate Array, monitor, Plus ASIC, PSG, PPI, keyboard matrix, disc
-  controller and tape.
+  controller and tape. A **memory map** shows any 64K of RAM (the base 64K or an
+  expansion bank) a pixel a byte, coloured by what the Z80 did there -- opcode fetch,
+  operand, read, write -- and **GFX9000 internals** shows the V9990's registers, ports,
+  palette, command engine and VRAM.
 - **CSL scripts and SSM screenshots** (Longshot's CPC Script Language 1.5 and ScreenShot
   Management 1.1): `cpcse.exe --csl <script>` plays a script with no window and saves the
   screenshots the running program asks for -- which is how SHAKER's own scripts drive
@@ -232,7 +237,7 @@ third_party/   Dear ImGui (docking branch) and RASM, vendored; SDL2 is fetched s
 | CSL / SSM | Complete (CSL 1.5, SSM 1.1) |
 | User interface | Every option exposed, grouped by Machine / Media / Video / Audio / Input / Expansions / Tools; still being refined |
 | M4 board | Working: files and raw SD sectors over a host folder, checked against the M4's own ROM source. Not yet: mounting DSK images through the M4, its ROM board, WiFi/network |
-| GFX9000 (V9990) + Video9000 | Working, from Yamaha's application manual; blitter commands complete at once rather than taking their real time |
+| GFX9000 (V9990) + Video9000 | Working, from Yamaha's application manual and tests of a real V9990 on a CPC; the blitter at openMSX's measured speeds (LMMC, LMCM and CMMC estimated), /WAIT on the bus |
 | OPL4 (YMF278B) | Working (ymfm core); needs `yrw801*.rom` for the General MIDI samples |
 | PlayCity | Working: both YMZ294s and the CTC's clock measured; its NMI / IM2 timers follow the Z80 CTC manual but are not yet tested with PlayCity software |
 | SSA-1 / dk'tronics speech | Working (MAME's SP0256 core); needs `sp0256-al2.bin` |
@@ -248,6 +253,12 @@ third_party/   Dear ImGui (docking branch) and RASM, vendored; SDL2 is fetched s
   a fraction of a microsecond longer than the Compendium's table (§14.4, p.134). The
   documented width is not used yet because the monitor's recovery after a short sync
   is not modelled, and without that model it makes some pictures worse.
+- **SymAmp under SymbOS**: some SA2 songs (those written for 60/70 Hz) play too slowly on
+  the OPL4, and MP3 playback is not available (it needs an MSX MP3 cartridge, which is not
+  emulated).
+- **GFX9000**: the chip's intermittent command faults that real-hardware tests report (a
+  command reusing DY or NX/NY may go astray or hang) are not reproduced; LMMV's colour
+  order with DIX=1 is approximate.
 - The user interface and the expansions listed as incomplete above.
 
 ## Credits and licence

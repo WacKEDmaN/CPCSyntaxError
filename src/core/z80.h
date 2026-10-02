@@ -26,6 +26,12 @@ struct Z80Memory {
     virtual void write(int address, int value) = 0;
     virtual int contend(int address, int instructionOffset, bool write) { return 0; }
     virtual void accessTiming(int address, int instructionOffset, bool write) {}
+    // A memory map's recording (the debugger's): while trackAccess is set, the CPU reports
+    // every memory access with what it was for -- an opcode fetch (M1), an operand byte
+    // of the instruction, or a data read or write.
+    enum AccessKind { ACCESS_OPCODE = 1, ACCESS_OPERAND = 2, ACCESS_READ = 4, ACCESS_WRITE = 8 };
+    bool trackAccess = false;
+    virtual void noteAccess(int address, int kind) { (void)address; (void)kind; }
 };
 
 // The Z80's `ports` collaborator — an object literal in CPCSyntaxError. Each optional
@@ -34,6 +40,9 @@ struct Z80Ports {
     std::function<int(int port, int timingOffset, const std::string& kind)> read;
     std::function<void(int port, int value, int timingOffset, const std::string& kind)> write;
     std::function<int(int address, int instructionOffset)> contend;
+    // /WAIT from a device on an I/O cycle: the T-states it holds the cycle (asked before
+    // the access, at the cycle's start).
+    std::function<int(int port, int instructionOffset, bool write)> ioWait;
     std::function<int(int vector)> im0Address;
     std::function<void()> acknowledge;
     std::function<bool(Z80&)> edff;

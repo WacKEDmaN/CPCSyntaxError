@@ -12,16 +12,18 @@ static const int STATUS_MCS = 0x04, STATUS_EO = 0x02, STATUS_CE = 0x01;
 // R#44 (p.52)
 static const int ARG_DIY = 0x08, ARG_DIX = 0x04, ARG_NEQ = 0x02, ARG_MAJ = 0x01;
 
-// 12.2 (p.80-85): the bits each register holds. A bit the manual shows as 0 cannot be set.
+// 12.2 (p.80-85): the bits each register holds. A bit the manual shows as 0 cannot be set
+// -- except where the Powergraph notes found more: R#7, R#15, R#26 and R#27 hold all eight,
+// R#9 &87, R#22 &C1, R#25 &CF.
 static const uint8_t REG_MASK[29] = {
     0xff, 0xff, 0x87,           // R#0-2  VRAM write address (R#2: CVWAIH + A18-16)
     0xff, 0xff, 0x87,           // R#3-5  VRAM read address
-    0xff, 0x7f, 0xff,           // R#6-8  screen mode, control
-    0x07, 0xff, 0x83, 0x0f,     // R#9-12 interrupt
-    0xff, 0xff, 0x3f, 0xff,     // R#13-16 palette control/pointer, back drop, adjust
+    0xff, 0xff, 0xff,           // R#6-8  screen mode, control
+    0x87, 0xff, 0x83, 0x0f,     // R#9-12 interrupt
+    0xff, 0xff, 0xff, 0xff,     // R#13-16 palette control/pointer, back drop, adjust
     0xff, 0xdf, 0x07, 0xff,     // R#17-20 scroll A
-    0xff, 0x01, 0x07, 0x3f,     // R#21-24 scroll B
-    0x0f, 0x1f, 0x0f, 0x0f,     // R#25-28 SGBA, LCD, priority, sprite palette
+    0xff, 0xc1, 0x07, 0x3f,     // R#21-24 scroll B
+    0xcf, 0xff, 0xff, 0x0f,     // R#25-28 SGBA, LCD, priority, sprite palette
 };
 
 static int expand5(int v) { v &= 31; return v << 3 | v >> 2; }
@@ -72,13 +74,14 @@ void V9990::reset() {
     pendingIrq = 0;
     commandStatus = 0;
     borderX = 0;
-    transfer.reset();
-    commandReadQueue.clear();
+    pointerX = pointerY = pointHighByte = lmmvHighByte = 0;
+    engine = Engine{};
     field = 0;
     line = 0;
     lineStartUs = nowUs;
     hiFiredThisLine = false;
     raster = rasterFor(mode(), 0);
+    latchFieldScroll();
     work.width = raster.visibleDots();
     work.height = raster.visibleLines();
     work.pixels.assign((size_t)work.width * work.height, 0xff000000u);
@@ -158,7 +161,7 @@ void V9990::advanceTo(long long cpcCycles) {
     if (target <= nowUs) return;
     // Plugged in (or the machine held) for a long while: pick the raster up where it is
     // rather than draw every field that went by.
-    if (target - lineStartUs > 250000.0) { lineStartUs = target; line = 0; hiFiredThisLine = false; }
+    if (target - lineStartUs > 250000.0) { runEngine(target); lineStartUs = target; line = 0; hiFiredThisLine = false; }
     for (;;) {
         // HI (p.82-83): at IX x 64 master clocks from the display start of line IL (lines
         // counted from the display start line), or of every line with IEHM.
@@ -172,12 +175,14 @@ void V9990::advanceTo(long long cpcCycles) {
         }
         const double end = lineStartUs + raster.lineUs();
         if (target < end) break;
+        runEngine(end);                    // the commands' dots up to the line about to be drawn
         lineStartUs = end;
         line += 1;
         hiFiredThisLine = false;
         if (line >= raster.totalLines) endField();
         beginLine();
     }
+    runEngine(target);
     nowUs = target;
 }
 
@@ -185,6 +190,13 @@ void V9990::beginLine() {
     // VI (p.76): "vertical display period completion" -- the first line after it.
     if (line == raster.topBorder + raster.displayLines) pendingIrq |= IRQ_VI;
     if (line < raster.visibleLines()) drawLine(line);
+}
+
+void V9990::latchFieldScroll() {
+    scrollAYHigh = registers[18];
+    scrollBYHigh = registers[22];
+    scrollALineBase = scrollBLineBase = raster.topBorder;
+    fieldDisplayOn = registers[8] & 0x80;
 }
 
 void V9990::endField() {
@@ -202,6 +214,7 @@ void V9990::endField() {
     line = 0;
     const V9990Mode m = mode();
     raster = rasterFor(m, field);
+    latchFieldScroll();
     const int w = raster.visibleDots(), h = raster.visibleLines() * (interlace ? 2 : 1);
     if (w != work.width || h != work.height) {
         work.width = w; work.height = h;
@@ -211,7 +224,7 @@ void V9990::endField() {
     work.mode = m;
 }
 
-int V9990::readStatus() {
+int V9990::readStatus() const {
     const double clocks = (nowUs - lineStartUs) * raster.clockMHz;
     const int start = raster.displayStartClocks();
     const bool hr = !(clocks >= start && clocks < start + raster.display);
@@ -249,19 +262,23 @@ int V9990::readPort(int port, long long cpcCycles) {
     if (!handlesPort(port)) return 0xff;
     advanceTo(cpcCycles);
     const int id = port & 15;
-    if (systemReset && id != 7) return 0xff;
+    // Powergraph notes: with the reset held, status and the flags still read and P#1
+    // reads 0; the rest is the data bus. (P#0 holds /WAIT and hangs the CPC: not modelled.)
+    if (systemReset) return id == 5 ? readStatus() : id == 6 ? pendingIrq & 7 : id == 1 ? 0 : 0xff;
     switch (id) {
         case 0: {                          // 7.2: the byte prepared, then the next prepared
+            // Powergraph notes: a one-byte buffer -- the read returns it and refills it from
+            // the address R#3-5 hold now, so after a write of R#3 or R#4 alone the first
+            // read is still the old address's byte.
             const int value = readBuffer;
-            if (!(registers[5] & 0x80)) {
-                const int next = (vramAddress(3) + 1) & VRAM_MASK;
-                setVramAddress(3, next);
-                readBuffer = vram[mapCpuAddress(next)];
-            }
+            const int address = vramAddress(3);
+            readBuffer = loadVram(mapCpuAddress(address));
+            if (!(registers[5] & 0x80)) setVramAddress(3, address + 1);
             return value;
         }
         case 1: {                          // PLTAIH (R#13 b4) holds the pointer on a read only
-            const int value = palette[registers[14]];
+            // Powergraph notes: with R#14's counter at 3 a read is 0 and a write ignored
+            const int value = (registers[14] & 3) == 3 ? 0 : palette[registers[14]];
             if (!(registers[13] & 0x10)) advancePalettePointer();
             return value;
         }
@@ -288,7 +305,8 @@ bool V9990::writePort(int port, int value, long long cpcCycles) {
         const bool srs = value & 2;
         if (srs && !systemReset) {         // "all ports except this one in power ON reset state"
             registers.fill(0); regSelect = 0; pendingIrq = 0; commandStatus = 0;
-            transfer.reset(); commandReadQueue.clear();
+            engine = Engine{};
+            pointerX = pointerY = 0;
         }
         systemReset = srs;
         return true;
@@ -297,13 +315,13 @@ bool V9990::writePort(int port, int value, long long cpcCycles) {
     switch (id) {
         case 0: {
             const int address = vramAddress(0);
-            vram[mapCpuAddress(address)] = (uint8_t)value;
+            storeVram(mapCpuAddress(address), value);
             if (!(registers[2] & 0x80)) setVramAddress(0, address + 1);
             break;
         }
         case 1: {                          // 7.3 / p.75: R: YS + 5 bits, G and B 5 bits
             const int pointer = registers[14];
-            palette[pointer] = (uint8_t)(value & ((pointer & 3) == 0 ? 0x9f : 0x1f));
+            if ((pointer & 3) != 3) palette[pointer] = (uint8_t)(value & ((pointer & 3) == 0 ? 0x9f : 0x1f));
             advancePalettePointer();       // a write always advances (PLTAIH is for read-out)
             break;
         }
@@ -333,7 +351,13 @@ void V9990::writeRegister(int index, int value) {
     if (index >= 53 || (index >= 29 && index <= 31)) return;
     if (index < 29) value &= REG_MASK[index];
     registers[index] = (uint8_t)value;
-    if (index == 5) readBuffer = vram[mapCpuAddress(vramAddress(3))];   // p.75: prepared on R#5
+    if ((index == 17 || index == 21) && fieldDisplayOn) (index == 17 ? scrollALineBase : scrollBLineBase) = line;
+    if (index == 38 || index == 39) pointerY = destY();
+    if (index == 5) {                      // p.75: prepared on R#5 (and the address moves on)
+        const int address = vramAddress(3);
+        readBuffer = loadVram(mapCpuAddress(address));
+        if (!(registers[5] & 0x80)) setVramAddress(3, address + 1);
+    }
     if (index == 52) startCommand(value);
 }
 
@@ -350,9 +374,9 @@ uint32_t V9990::paletteColour(int index) const {
 }
 
 // ============================================================== image space
+// R#6 CLRM. Powergraph notes: in P1/P2 too the commands plot dots of this depth (the
+// pattern display itself is always 4 bits a dot), on lines laid out for 4 bits a dot.
 int V9990::bitsPerDot() const {
-    const V9990Mode m = mode();
-    if (m == V9990Mode::P1 || m == V9990Mode::P2) return 4;
     static const int bpp[4] = { 2, 4, 8, 16 };
     return bpp[registers[6] & 3];
 }
@@ -362,31 +386,47 @@ int V9990::imageWidth() const {
     if (m == V9990Mode::P2) return 512;    // 10.2.10: 512 dots wide
     return 256 << ((registers[6] >> 2) & 3);
 }
+// Powergraph notes: the VRAM's bytes over a line's -- P1 256 dots and P2 512 at 4 bits a
+// dot whatever R#6 says, the bit-map modes R#6's width and depth.
 int V9990::imageHeight() const {
     const V9990Mode m = mode();
-    if (m == V9990Mode::P1 || m == V9990Mode::P2) return 2048;
-    return (V9990_VRAM_SIZE * 8) / (imageWidth() * bitsPerDot());
+    if (m == V9990Mode::P1) return vramBytes() / 128;
+    if (m == V9990Mode::P2) return vramBytes() / 256;
+    return vramBytes() * 8 / (imageWidth() * bitsPerDot());
 }
 
-int V9990::dotAddress(int x, int y) const {
+int V9990::vramBytes() const {
+    const int vsl = registers[8] & 3;
+    return vsl == 0 ? 0x20000 : vsl == 1 ? 0x40000 : 0x80000;
+}
+
+void V9990::storeVram(int physical, int value) {
+    const int bank = physical & 0x40000, span = vramBytes() / 2;
+    for (int o = physical & (span - 1); o < 0x40000; o += span) vram[(size_t)(bank | o)] = (uint8_t)value;
+}
+
+int V9990::loadVram(int physical) const {
+    return vram[(size_t)((physical & 0x40000) | (physical & (vramBytes() / 2 - 1)))];
+}
+
+// Powergraph notes (PSET, BMLX, LMMC): X and Y are masked by the image space; a line is
+// 128 bytes in P1 and 256 in P2 (so in P1 layer B is Y 2048 on, not DX9 as 11.2 p.51
+// says: X is masked to 255 first), the bit-map modes' R#6's width at its depth. The
+// logical address then goes to the physical as the CPU's does (P1: the same).
+int V9990::dotLogical(int x, int y) const {
     const V9990Mode m = mode();
-    if (m == V9990Mode::P1) {
-        // 11.2 (p.51): "screen A is selected at DX9=0 and screen B at DX9=1"
-        const int screen = (x >> 9) & 1;
-        return (screen << 18) + (y & 0x7ff) * 128 + ((x & 255) >> 1);
-    }
-    if (m == V9990Mode::P2) return mapCpuAddress((y & 0x7ff) * 256 + ((x & 511) >> 1));
-    const int w = imageWidth(), bpp = bitsPerDot();
+    const int bpp = bitsPerDot(), w = imageWidth();
+    const int lineBytes = m == V9990Mode::P1 ? 128 : m == V9990Mode::P2 ? 256 : w * bpp / 8;
     x &= w - 1;
     y &= imageHeight() - 1;
-    const int dot = x + y * w;
-    const int byte = bpp == 16 ? dot * 2 : bpp == 8 ? dot : bpp == 4 ? dot >> 1 : dot >> 2;
-    return v9990TransformBx(byte);
+    return (y * lineBytes + x * bpp / 8) & VRAM_MASK;
 }
+
+int V9990::dotAddress(int x, int y) const { return mapCpuAddress(dotLogical(x, y)); }
 
 int V9990::getDot(int x, int y) const {
     const int a = dotAddress(x, y), bpp = bitsPerDot();
-    if (bpp == 16) return vram[a] | vram[a ^ 0x40000] << 8;   // the odd byte is in VRAM1
+    if (bpp == 16) return vram[a] | vram[mapCpuAddress(dotLogical(x, y) + 1)] << 8;   // bit-map: the odd byte in VRAM1
     const int v = vram[a];
     if (bpp == 8) return v;
     if (bpp == 4) return (x & 1) ? v & 15 : v >> 4;
@@ -402,9 +442,10 @@ void V9990::setDot(int x, int y, int source) {
     const int a = dotAddress(x, y);
     // WM7-0 guard VRAM0 and WM15-8 VRAM1, bit for bit (p.53)
     if (bpp == 16) {
-        vram[a] = (uint8_t)((vram[a] & ~registers[46]) | (result & registers[46]));
-        const int hi = a ^ 0x40000;
-        vram[hi] = (uint8_t)((vram[hi] & ~registers[47]) | ((result >> 8) & registers[47]));
+        const int hi = mapCpuAddress(dotLogical(x, y) + 1);
+        const int wmLo = (a & 0x40000) ? registers[47] : registers[46], wmHi = (hi & 0x40000) ? registers[47] : registers[46];
+        storeVram(a, (vram[a] & ~wmLo) | (result & wmLo));
+        storeVram(hi, (vram[hi] & ~wmHi) | ((result >> 8) & wmHi));
         return;
     }
     const int wm = (a & 0x40000) ? registers[47] : registers[46];
@@ -412,7 +453,7 @@ void V9990::setDot(int x, int y, int source) {
     if (bpp == 4) { shift = (x & 1) ? 0 : 4; dotMask = 15 << shift; }
     else if (bpp == 2) { shift = 6 - 2 * (x & 3); dotMask = 3 << shift; }
     const int mask = dotMask & wm;
-    vram[a] = (uint8_t)((vram[a] & ~mask) | ((result << shift) & mask));
+    storeVram(a, (vram[a] & ~mask) | ((result << shift) & mask));
 }
 
 // FC/BC (p.53): "Correspondence with VRAM bit position is the same as write mask" -- a dot
@@ -466,6 +507,8 @@ void V9990::drawLineColours(int visibleLine, uint32_t* out) {
     const int adjH = registers[16] & 15, adjV = registers[16] >> 4;
     const int shiftH = adjH < 8 ? adjH : adjH - 16, shiftV = adjV < 8 ? adjV : adjV - 16;
     const int displayY = visibleLine - raster.topBorder + shiftV;
+    // each layer's row count (see scrollALineBase): the display line, unless restarted
+    const int rowA = visibleLine - scrollALineBase + shiftV, rowB = visibleLine - scrollBLineBase + shiftV;
     if (displayY < 0 || displayY >= raster.displayLines) return;
     const int shiftDots = 4 * shiftH / raster.clocksPerDot;
     const int dots = raster.dots(), border = raster.borderDots();
@@ -475,13 +518,13 @@ void V9990::drawLineColours(int visibleLine, uint32_t* out) {
         if (sprites) collectSprites(displayY, m == V9990Mode::P2); else lineSprites.clear();
         for (int c = first; c < last; c++) {
             const int x = c - border + shiftDots;
-            out[c] = m == V9990Mode::P1 ? p1Dot(x, displayY, 0) : p2Dot(x, displayY);
+            out[c] = m == V9990Mode::P1 ? p1Dot(x, displayY, rowA, rowB) : p2Dot(x, displayY, rowA);
         }
         return;
     }
     const bool eo = registers[7] & 0x04;
-    const int lineInImage = (interlace && eo) ? displayY * 2 + field : displayY;
-    const int imageY = scrolledY(lineInImage, registers[17] | (registers[18] & 0x1f) << 8, imageHeight());
+    const int lineInImage = (interlace && eo) ? rowA * 2 + field : rowA;
+    const int imageY = scrolledY(lineInImage, registers[17] | (scrollAYHigh & 0x1f) << 8, imageHeight());
     const int scrollX = (registers[19] & 7) | registers[20] << 3;
     const int w = imageWidth();
     const int palettePlan = registers[13] >> 6;         // PLTM
@@ -513,6 +556,14 @@ uint32_t V9990::bitmapDot(int x, int imageY) const {
         case 4: return paletteColour(((r13 & 0x0c) << 2) | v);      // BP4: PLTO5,4 + 4 bits
         default: return paletteColour(((r13 & 0x0f) << 2) | v);     // BP2: PLTO5-2 + 2 bits
     }
+}
+
+uint32_t V9990::imageColour(int x, int y) const {
+    const V9990Mode m = mode();
+    if (m == V9990Mode::P1 || m == V9990Mode::P2) return paletteColour(getDot(x, y) & 15) | 0xff000000u;
+    const int palettePlan = registers[13] >> 6;
+    const bool yjk = bitsPerDot() == 8 && palettePlan >= 2;
+    return (yjk ? yjkDot(x, y, palettePlan == 3) : bitmapDot(x, y)) | 0xff000000u;
 }
 
 // 17 (p.115-116): YJK / YUV share their colour across each group of four dots.
@@ -611,13 +662,13 @@ std::optional<uint32_t> V9990::spriteDot(int displayX, bool frontOpaque, bool p2
     return std::nullopt;
 }
 
-uint32_t V9990::p1Dot(int x, int displayY, int) const {
+uint32_t V9990::p1Dot(int x, int displayY, int rowA, int rowB) const {
     const int scrollAX = (registers[19] & 7) | registers[20] << 3;
-    const int scrollAY = registers[17] | (registers[18] & 0x1f) << 8;
+    const int scrollAY = registers[17] | (scrollAYHigh & 0x1f) << 8;
     const int scrollBX = (registers[23] & 7) | (registers[24] & 0x3f) << 3;
-    const int scrollBY = registers[21] | (registers[22] & 1) << 8;
-    const int ax = (x + scrollAX) & 511, ay = scrolledY(displayY, scrollAY, 512);
-    const int bx = (x + scrollBX) & 511, by = (displayY + scrollBY) & 511;
+    const int scrollBY = registers[21] | (scrollBYHigh & 1) << 8;
+    const int ax = (x + scrollAX) & 511, ay = scrolledY(rowA, scrollAY, 512);
+    const int bx = (x + scrollBX) & 511, by = (rowB + scrollBY) & 511;
     const int a = patternDot(0x7c000, 0x00000, 32, 128, ax, ay, false);
     const int b = patternDot(0x7e000, 0x40000, 32, 128, bx, by, false);
     // R#27 (p.85): B in front right of PRX x 64 dots or below PRY x 64 lines; 0 = never.
@@ -632,10 +683,10 @@ uint32_t V9990::p1Dot(int x, int displayY, int) const {
     return colour;
 }
 
-uint32_t V9990::p2Dot(int x, int displayY) const {
+uint32_t V9990::p2Dot(int x, int displayY, int rowA) const {
     const int scrollAX = (registers[19] & 7) | registers[20] << 3;
-    const int scrollAY = registers[17] | (registers[18] & 0x1f) << 8;
-    const int ix = (x + scrollAX) & 1023, iy = scrolledY(displayY, scrollAY, 512);
+    const int scrollAY = registers[17] | (scrollAYHigh & 0x1f) << 8;
+    const int ix = (x + scrollAX) & 1023, iy = scrolledY(rowA, scrollAY, 512);
     const int v = patternDot(0x7c000, 0x00000, 64, 256, ix, iy, true);
     // 9.1.1: dots 8n+0,1,4,5 take PLTO3,2; 8n+2,3,6,7 take PLTO5,4
     const int plt = (ix & 2) ? ((registers[13] >> 2) & 3) << 4 : (registers[13] & 3) << 4;
@@ -645,6 +696,48 @@ uint32_t V9990::p2Dot(int x, int displayY) const {
 }
 
 // ============================================================== commands (chapter 11)
+// The engine runs in time, a step at a time. Its costs are openMSX's V9990CmdEngine
+// tables (measured on a real V9990; openMSX marks CMMM, LINE and SRCH not yet measured),
+// in its 42.95 MHz clock (12 x 3.579545 MHz): [B0/B2/B4, B1/B3/B7 (and B5, B6, stand-by),
+// P1, P2][sprites on, sprites off, display off][2, 4, 8, 16 bits a dot]. A value is one
+// dot -- one byte for BMXL and BMLL. openMSX gives the CPU-fed commands no time of their
+// own; here LMMC takes LMMV's (a dot written), CMMC and CMMK CMMM's, LMCM BMLX's (a dot
+// read out). POINT, PSET and ADVN take none.
+typedef uint8_t CmdTiming[4][3][4];
+static const CmdTiming LMMV_T = {
+    { { 8, 11, 15, 30 }, { 7, 10, 13, 26 }, { 7, 10, 13, 25 } },
+    { { 5, 7, 9, 18 }, { 5, 6, 8, 17 }, { 5, 6, 8, 17 } },
+    { { 56, 56, 56, 56 }, { 25, 25, 25, 25 }, { 9, 9, 9, 9 } },
+    { { 28, 28, 28, 28 }, { 15, 15, 15, 15 }, { 6, 6, 6, 6 } } };
+static const CmdTiming LMMM_T = {
+    { { 10, 16, 32, 66 }, { 8, 14, 28, 57 }, { 8, 13, 27, 54 } },
+    { { 6, 10, 20, 39 }, { 5, 9, 18, 35 }, { 5, 9, 17, 35 } },
+    { { 115, 115, 115, 115 }, { 52, 52, 52, 52 }, { 18, 18, 18, 18 } },
+    { { 57, 57, 57, 57 }, { 25, 25, 25, 25 }, { 9, 9, 9, 9 } } };
+static const CmdTiming BMXL_T = {
+    { { 38, 33, 32, 33 }, { 33, 28, 28, 28 }, { 33, 27, 27, 27 } },
+    { { 24, 20, 20, 19 }, { 22, 18, 18, 18 }, { 21, 17, 17, 17 } },
+    { { 171, 171, 171, 171 }, { 82, 82, 82, 82 }, { 29, 29, 29, 29 } },
+    { { 114, 114, 114, 114 }, { 50, 50, 50, 50 }, { 18, 18, 18, 18 } } };
+static const CmdTiming BMLX_T = {
+    { { 10, 16, 32, 66 }, { 8, 14, 28, 57 }, { 8, 13, 27, 54 } },
+    { { 6, 10, 20, 39 }, { 5, 9, 18, 35 }, { 5, 9, 17, 35 } },
+    { { 84, 84, 84, 84 }, { 44, 44, 44, 44 }, { 17, 17, 17, 17 } },
+    { { 57, 57, 57, 57 }, { 25, 25, 25, 25 }, { 9, 9, 9, 9 } } };
+static const CmdTiming BMLL_T = {
+    { { 33, 33, 33, 33 }, { 28, 28, 28, 28 }, { 27, 27, 27, 27 } },
+    { { 20, 20, 20, 20 }, { 18, 18, 18, 18 }, { 18, 18, 18, 18 } },
+    { { 118, 118, 118, 118 }, { 52, 52, 52, 52 }, { 18, 18, 18, 18 } },
+    { { 118, 118, 118, 118 }, { 52, 52, 52, 52 }, { 18, 18, 18, 18 } } };
+static const int FLAT_TIMING = 24;               // CMMM, LINE, SRCH: 24 in every case
+static constexpr double ENGINE_CLOCK_MHZ = 3.579545 * 12;
+
+const char* V9990::commandName(int op) {
+    static const char* names[16] = { "STOP", "LMMC", "LMMV", "LMCM", "LMMM", "CMMC", "CMMK", "CMMM",
+                                     "BMXL", "BMLX", "BMLL", "LINE", "SRCH", "POINT", "PSET", "ADVN" };
+    return op >= 0 && op < 16 ? names[op] : "idle";
+}
+
 int V9990::linearSize() const {
     const int v = (registers[40] | (wordAt(42) & 0x7ff) << 8) & VRAM_MASK;
     return v ? v : V9990_VRAM_SIZE;
@@ -656,209 +749,380 @@ void V9990::writeLinear(int address, int value) {
     const int old = vram[a];
     const int result = logicalOp(registers[45] & 15, value, old, 0xff);
     const int wm = (a & 0x40000) ? registers[47] : registers[46];
-    vram[a] = (uint8_t)((old & ~wm) | (result & wm));
+    storeVram(a, (old & ~wm) | (result & wm));
+}
+
+double V9990::stepUs(int op) const {
+    const CmdTiming* t = nullptr;
+    switch (op) {
+        case 1: case 2: t = &LMMV_T; break;
+        case 3: case 9: t = &BMLX_T; break;
+        case 4: t = &LMMM_T; break;
+        case 8: t = &BMXL_T; break;
+        case 10: t = &BMLL_T; break;
+        case 5: case 6: case 7: case 11: case 12: return FLAT_TIMING / ENGINE_CLOCK_MHZ;
+        default: return 0;
+    }
+    const V9990Mode m = mode();
+    const int group = m == V9990Mode::P1 ? 2 : m == V9990Mode::P2 ? 3
+                    : (m == V9990Mode::B0 || m == V9990Mode::B2 || m == V9990Mode::B4) ? 0 : 1;
+    const int display = !(registers[8] & 0x80) ? 2 : (registers[8] & 0x40) ? 1 : 0;   // DISP, SPD
+    const int bpp = bitsPerDot(), depth = bpp == 2 ? 0 : bpp == 4 ? 1 : bpp == 8 ? 2 : 3;
+    return (*t)[group][display][depth] / ENGINE_CLOCK_MHZ;
 }
 
 void V9990::finishCommand() {
-    transfer.reset();
-    commandReadQueue.clear();
+    engine.op = -1;
+    engine.wantsByte = false;
+    engine.out.clear();
+    engine.readAhead.clear();
     commandStatus &= ~(STATUS_CE | STATUS_TR);
     pendingIrq |= IRQ_CE;                                           // 11.1
 }
 
-void V9990::stepTransfer(Transfer& t) {
+// The rectangle's next dot (LMMM's source alongside); false past its last.
+bool V9990::walkNext() {
+    Engine& e = engine;
     const int dx = (registers[44] & ARG_DIX) ? -1 : 1, dy = (registers[44] & ARG_DIY) ? -1 : 1;
-    t.x = (t.x + dx) & 0x7ff;
-    if (--t.remainingX > 0) return;
-    t.remainingX = sizeX();
-    t.x = t.originX;
-    t.y = (t.y + dy) & 0xfff;
-    if (--t.remainingY <= 0) finishCommand();
-}
-
-// The dots of the source rectangle, packed as 11.4 (p.55) lays them out, for the CPU.
-void V9990::queueDots(int x0, int y0) {
-    const int dx = (registers[44] & ARG_DIX) ? -1 : 1, dy = (registers[44] & ARG_DIY) ? -1 : 1;
-    const int bpp = bitsPerDot(), nx = sizeX(), ny = sizeY();
-    int packed = 0, filled = 0;
-    for (int row = 0, y = y0; row < ny; row++, y += dy)
-        for (int col = 0, x = x0; col < nx; col++, x += dx) {
-            const int v = getDot(x, y);
-            if (bpp == 16) { commandReadQueue.push_back(v & 0xff); commandReadQueue.push_back(v >> 8); continue; }
-            packed |= v << (8 - bpp * (filled + 1));
-            if (++filled == 8 / bpp) { commandReadQueue.push_back(packed & 0xff); packed = 0; filled = 0; }
-        }
-    if (filled) commandReadQueue.push_back(packed & 0xff);
+    e.x = (e.x + dx) & 0x7ff;
+    e.sx = (e.sx + dx) & 0x7ff;
+    if (++e.col < e.nx) return true;
+    e.col = 0; e.x = e.x0; e.sx = e.sx0;
+    e.y = (e.y + dy) & 0xfff;
+    e.sy = (e.sy + dy) & 0xfff;
+    return ++e.row < e.ny;
 }
 
 void V9990::startCommand(int opcode) {
-    transfer.reset();
-    commandReadQueue.clear();
-    commandStatus |= STATUS_CE;
-    const int dx = (registers[44] & ARG_DIX) ? -1 : 1, dy = (registers[44] & ARG_DIY) ? -1 : 1;
+    engine = Engine{};
+    Engine& e = engine;
+    commandStatus = (commandStatus & ~STATUS_TR) | STATUS_CE;
+    const int op = opcode >> 4;
     const int bpp = bitsPerDot();
-    switch (opcode >> 4) {                                          // 11.3 (p.54)
+    e.nextUs = nowUs;
+    auto walk = [&](int x, int y) { e.x0 = e.x = x; e.y = y; e.nx = sizeX(); e.ny = sizeY(); };
+    switch (op) {                                                   // 11.3 (p.54)
         case 0: finishCommand(); return;                            // STOP
         case 1: case 5:                                             // LMMC, CMMC: from the CPU
-            transfer = Transfer{ opcode >> 4, destX(), destY(), sizeX(), sizeY(), destX(), -1 };
+            walk(destX(), destY());
+            e.wantsByte = true;
             commandStatus |= STATUS_TR;
-            return;
-        case 2: {                                                   // LMMV
-            const int nx = sizeX(), ny = sizeY();
-            for (int row = 0, y = destY(); row < ny; row++, y += dy)
-                for (int col = 0, x = destX(); col < nx; col++, x += dx) setDot(x, y, fontColourAt(x, y, true));
             break;
-        }
-        case 3: case 13:                                            // LMCM, POINT: to the CPU
-            if ((opcode >> 4) == 3) queueDots(sourceX(), sourceY());
-            else {
-                const int v = getDot(sourceX(), sourceY());          // p.56
-                if (bpp == 16) { commandReadQueue.push_back(v & 0xff); commandReadQueue.push_back(v >> 8); }
-                else commandReadQueue.push_back((v << (8 - bpp)) & 0xff);
-            }
-            commandStatus |= STATUS_TR;
-            return;
-        case 4: {                                                   // LMMM
-            const int nx = sizeX(), ny = sizeY();
-            for (int row = 0, sy = sourceY(), ty = destY(); row < ny; row++, sy += dy, ty += dy)
-                for (int col = 0, sx = sourceX(), tx = destX(); col < nx; col++, sx += dx, tx += dx)
-                    setDot(tx, ty, getDot(sx, sy));
+        case 2:                                                     // LMMV
+            if (mode() != V9990Mode::P1 && mode() != V9990Mode::P2) lmmvHighByte = registers[49];
+            walk(destX(), destY());
             break;
-        }
-        case 6: break;                                              // CMMK: the GFX9000 has no kanji ROM
-        case 7: {                                                   // CMMM: bits from linear SA
-            Transfer t{ 7, destX(), destY(), sizeX(), sizeY(), destX(), -1 };
-            transfer = t;
-            int address = linearSource();
-            while (transfer) {
-                const int bits = readLinear(address++);
-                for (int b = 7; b >= 0 && transfer; b--) {
-                    setDot(transfer->x, transfer->y, fontColourAt(transfer->x, transfer->y, (bits >> b) & 1));
-                    stepTransfer(*transfer);
-                }
-            }
-            return;                                                 // stepTransfer finished it
-        }
-        case 8: {                                                   // BMXL: linear -> rectangle
-            transfer = Transfer{ 8, destX(), destY(), sizeX(), sizeY(), destX(), -1 };
-            int address = linearSource();
-            while (transfer) {
-                const int v = readLinear(address++);
-                if (bpp == 16) {
-                    const int hi = readLinear(address++);
-                    setDot(transfer->x, transfer->y, v | hi << 8);
-                    stepTransfer(*transfer);
-                } else {
-                    for (int i = 0; i < 8 / bpp && transfer; i++) {
-                        setDot(transfer->x, transfer->y, v >> (8 - bpp * (i + 1)));
-                        stepTransfer(*transfer);
-                    }
-                }
-            }
-            return;
-        }
-        case 9: {                                                   // BMLX: rectangle -> linear
-            queueDots(sourceX(), sourceY());
-            int address = linearDest();
-            for (int v : commandReadQueue) writeLinear(address++, v);
-            commandReadQueue.clear();
+        case 3: walk(sourceX(), sourceY()); break;                  // LMCM: to the CPU
+        case 4:                                                     // LMMM
+            walk(destX(), destY());
+            e.sx0 = e.sx = sourceX(); e.sy = sourceY();
             break;
-        }
-        case 10: {                                                  // BMLL: linear -> linear
+        case 6: case 7: case 8:                                     // CMMK, CMMM, BMXL
+            walk(destX(), destY());
+            e.linear = linearSource();
+            break;
+        case 9: walk(sourceX(), sourceY()); e.linear = linearDest(); break;   // BMLX
+        case 10: {                                                  // BMLL
+            // Powergraph notes: overlapping ranges go wrong unless 2 bytes apart -- the
+            // source read two bytes ahead of the writes.
             const int delta = (registers[44] & ARG_DIX) ? -1 : 1;
-            int s = linearSource(), d = linearDest();
-            for (int n = linearSize(); n > 0; n--) {
-                writeLinear(d, readLinear(s));
-                s = (s + delta) & VRAM_MASK; d = (d + delta) & VRAM_MASK;
+            e.linearSrc = linearSource(); e.linear = linearDest();
+            e.remaining = e.readsLeft = linearSize();
+            for (int k = 0; k < 2 && e.readsLeft > 0; k++, e.readsLeft--) {
+                e.readAhead.push_back(readLinear(e.linearSrc));
+                e.linearSrc = (e.linearSrc + delta) & VRAM_MASK;
             }
             break;
         }
-        case 11: commandLine(); break;
-        case 12: commandSearch(); break;
-        case 14: {                                                  // PSET, then move the pointer
-            const int x = destX(), y = destY();
-            setDot(x, y, fontColourAt(x, y, true));
-            movePointer(opcode);
+        case 11:                                                    // LINE (11.5.11 p.69)
+            if ((opcode & 3) == 0) pointerX = destX();              // Powergraph notes: PSET's pointer
+            e.x = pointerX; e.y = pointerY;
+            e.lineMj = wordAt(40) & 0xfff; e.lineMi = wordAt(42) & 0xfff;
+            e.lineErr = e.lineMj / 2;
+            break;
+        case 12: {                                                  // SRCH (11.5.12 p.70)
+            // Powergraph notes: the dots are read at X masked by the image width, but the
+            // search runs on X as given -- forwards to the end of the width it starts in
+            // (finding nothing, it reports that end), backwards to 0 (reporting &7FF).
+            const int w = imageWidth();
+            e.x = sourceX(); e.y = sourceY();
+            e.searchEnd = (registers[44] & ARG_DIX) ? -1 : (e.x / w + 1) * w;
+            commandStatus &= ~STATUS_BD;
             break;
         }
-        case 15: movePointer(opcode); break;                        // ADVN
+        case 13: {                                                  // POINT: to the CPU at once
+            const int v = getDot(sourceX(), sourceY());              // p.56
+            // Powergraph notes: a 2- or 4-bit dot comes in the top bits, the bits below it
+            // being the high byte of the last 16-bit POINT's.
+            if (bpp == 16) { e.out.push_back(v & 0xff); e.out.push_back(v >> 8); pointHighByte = v >> 8; }
+            else if (bpp == 8) e.out.push_back(v & 0xff);
+            else e.out.push_back(((v << (8 - bpp)) | (pointHighByte & ((1 << (8 - bpp)) - 1))) & 0xff);
+            e.walkDone = true;
+            commandStatus |= STATUS_TR;
+            break;
+        }
+        case 14: case 15:                                           // PSET, ADVN: the internal pointer
+            if ((opcode & 3) == 0) pointerX = destX();              // Powergraph notes: DX read only now
+            if (op == 14) setDot(pointerX, pointerY, fontColourAt(pointerX, pointerY, true));
+            movePointer(opcode);
+            finishCommand();
+            return;
         default: break;
     }
-    finishCommand();
+    e.op = op;
+}
+
+// The engine's steps up to `untilUs`. It waits, its clock with it, while a CPU-fed command
+// has no byte (TR) or a byte for the CPU is not taken.
+void V9990::runEngine(double untilUs) {
+    Engine& e = engine;
+    while (e.op >= 0 && !e.wantsByte && e.out.empty() && !e.walkDone) {
+        const double due = e.nextUs + stepUs(e.op);
+        if (due > untilUs) break;
+        e.nextUs = due;
+        engineStep();
+    }
+    if (e.op >= 0 && (e.wantsByte || !e.out.empty()) && e.nextUs < untilUs) e.nextUs = untilUs;
+}
+
+void V9990::engineStep() {
+    Engine& e = engine;
+    const int bpp = bitsPerDot();
+    const int dx = (registers[44] & ARG_DIX) ? -1 : 1, dy = (registers[44] & ARG_DIY) ? -1 : 1;
+    switch (e.op) {
+        case 1: {                                                   // LMMC: a dot of the CPU's byte
+            int v = e.bits;
+            if (bpp != 16) v = e.bits >> (bpp * --e.bitsLeft);      // the top dot first (11.4 p.55)
+            else e.bitsLeft = 0;
+            setDot(e.x, e.y, v);
+            if (!walkNext()) { finishCommand(); return; }
+            if (e.bitsLeft == 0) { e.wantsByte = true; commandStatus |= STATUS_TR; }
+            return;
+        }
+        case 5: {                                                   // CMMC: 1 = FC, 0 = BC, bit 7 first
+            const bool fg = (e.bits >> --e.bitsLeft) & 1;
+            setDot(e.x, e.y, fontColourAt(e.x, e.y, fg));
+            if (!walkNext()) { finishCommand(); return; }
+            if (e.bitsLeft == 0) { e.wantsByte = true; commandStatus |= STATUS_TR; }
+            return;
+        }
+        case 2:                                                     // LMMV
+            setDot(e.x, e.y, lmmvColour(e.col, e.x, e.y));
+            if (!walkNext()) finishCommand();
+            return;
+        case 3: {                                                   // LMCM: a dot read out
+            const int v = getDot(e.x, e.y);
+            if (bpp == 16) { e.out.push_back(v & 0xff); e.out.push_back(v >> 8); }
+            else {
+                e.packed |= v << (8 - bpp * (e.packedDots + 1));
+                if (++e.packedDots == 8 / bpp) { e.out.push_back(e.packed & 0xff); e.packed = e.packedDots = 0; }
+            }
+            if (!walkNext()) {
+                if (e.packedDots) { e.out.push_back(e.packed & 0xff); e.packed = e.packedDots = 0; }
+                e.walkDone = true;
+                if (e.out.empty()) { finishCommand(); return; }
+            }
+            if (!e.out.empty()) commandStatus |= STATUS_TR;
+            return;
+        }
+        case 4:                                                     // LMMM
+            setDot(e.x, e.y, getDot(e.sx, e.sy));
+            if (!walkNext()) finishCommand();
+            return;
+        case 6: case 7: {                                           // CMMK, CMMM: bits from a font
+            if (e.bitsLeft == 0) {
+                // CMMM's font is VRAM at SA. The GFX9000 has no kanji ROM: Powergraph notes --
+                // CMMK still runs, its first two bytes unlike the rest, which follow BC's low
+                // byte. The first two here are the idle bus (&FF), the rest BC's low byte.
+                e.bits = e.op == 7 ? readLinear(e.linear++) : e.fetched++ < 2 ? 0xff : registers[50];
+                e.bitsLeft = 8;
+            }
+            const bool fg = (e.bits >> --e.bitsLeft) & 1;
+            setDot(e.x, e.y, fontColourAt(e.x, e.y, fg));
+            if (!walkNext()) finishCommand();
+            return;
+        }
+        case 8: {                                                   // BMXL: a byte of linear -> rectangle
+            const int v = readLinear(e.linear++);
+            if (bpp == 16) {
+                if (e.lowByte < 0) { e.lowByte = v; return; }
+                setDot(e.x, e.y, e.lowByte | v << 8);
+                e.lowByte = -1;
+                if (!walkNext()) finishCommand();
+                return;
+            }
+            for (int i = 0; i < 8 / bpp; i++) {
+                setDot(e.x, e.y, v >> (8 - bpp * (i + 1)));
+                if (!walkNext()) { finishCommand(); return; }
+            }
+            return;
+        }
+        case 9: {                                                   // BMLX: a dot of rectangle -> linear
+            const int v = getDot(e.x, e.y);
+            if (bpp == 16) { writeLinear(e.linear++, v & 0xff); writeLinear(e.linear++, v >> 8); }
+            else {
+                e.packed |= v << (8 - bpp * (e.packedDots + 1));
+                if (++e.packedDots == 8 / bpp) { writeLinear(e.linear++, e.packed & 0xff); e.packed = e.packedDots = 0; }
+            }
+            if (!walkNext()) {
+                if (e.packedDots) writeLinear(e.linear++, e.packed & 0xff);
+                finishCommand();
+            }
+            return;
+        }
+        case 10: {                                                  // BMLL: a byte
+            // Powergraph notes: DIX=0 counts both addresses up, DIX=1 both down; DIY nothing.
+            writeLinear(e.linear, e.readAhead.front());
+            e.readAhead.pop_front();
+            e.linear = (e.linear + dx) & VRAM_MASK;
+            if (e.readsLeft > 0) {
+                e.readAhead.push_back(readLinear(e.linearSrc));
+                e.linearSrc = (e.linearSrc + dx) & VRAM_MASK;
+                e.readsLeft--;
+            }
+            if (--e.remaining <= 0) finishCommand();
+            return;
+        }
+        case 11: {                                                  // LINE: MJ along the major axis
+            setDot(e.x, e.y, fontColourAt(e.x, e.y, true));
+            const bool yMajor = registers[44] & ARG_MAJ;
+            if (yMajor) e.y = (e.y + dy) & 0xfff; else e.x = (e.x + dx) & 0x7ff;
+            e.lineErr -= e.lineMi;
+            if (e.lineErr < 0) {
+                if (yMajor) e.x = (e.x + dx) & 0x7ff; else e.y = (e.y + dy) & 0xfff;
+                e.lineErr += e.lineMj;
+            }
+            if (++e.lineStep > e.lineMj) finishCommand();
+            return;
+        }
+        case 12: {                                                  // SRCH: towards DIX, FC (or not, NEQ)
+            const bool equal = getDot(e.x, e.y) == fontColourAt(e.x, e.y, true);
+            if (equal != (bool)(registers[44] & ARG_NEQ)) {
+                commandStatus |= STATUS_BD;
+                borderX = e.x & 0x7ff;
+                finishCommand();
+                return;
+            }
+            e.x += dx;
+            if (e.x == e.searchEnd) { borderX = e.x & 0x7ff; finishCommand(); }
+            return;
+        }
+        default: finishCommand(); return;
+    }
 }
 
 void V9990::writeCommandData(int value) {
-    if (!transfer) return;
-    Transfer& t = *transfer;
-    const int bpp = bitsPerDot();
-    if (t.kind == 5) {                                              // CMMC: 1 = FC, 0 = BC
-        for (int b = 7; b >= 0 && transfer; b--) {
-            setDot(transfer->x, transfer->y, fontColourAt(transfer->x, transfer->y, (value >> b) & 1));
-            stepTransfer(*transfer);
-        }
-        return;
+    Engine& e = engine;
+    // Powergraph notes: a command handing data to the CPU (LMCM) takes a write of P#2 as
+    // the byte read; one wanting data (LMMC) takes only a write.
+    if (e.op == 3 || e.op == 13) { readCommandData(); return; }
+    if (e.op != 1 && e.op != 5) return;
+    // /WAIT held the CPU until the engine was ready for this byte (ioWait); catch up
+    // should the access have come early all the same.
+    while (e.op >= 0 && !e.wantsByte) { e.nextUs += stepUs(e.op); engineStep(); }
+    if (e.op < 0) return;
+    if (e.op == 1 && bitsPerDot() == 16) {
+        if (e.lowByte < 0) { e.lowByte = value; return; }           // low, then high (11.4)
+        e.bits = e.lowByte | value << 8;
+        e.lowByte = -1;
+        e.bitsLeft = 1;
+    } else {
+        e.bits = value;
+        e.bitsLeft = e.op == 5 ? 8 : 8 / bitsPerDot();
     }
-    if (bpp == 16) {                                                // LMMC: low, then high
-        if (t.lowByte < 0) { t.lowByte = value; return; }
-        setDot(t.x, t.y, t.lowByte | value << 8);
-        t.lowByte = -1;
-        stepTransfer(t);
-        return;
-    }
-    for (int i = 0; i < 8 / bpp && transfer; i++) {
-        setDot(transfer->x, transfer->y, value >> (8 - bpp * (i + 1)));
-        stepTransfer(*transfer);
-    }
+    e.wantsByte = false;
+    commandStatus &= ~STATUS_TR;
+    if (e.nextUs < nowUs) e.nextUs = nowUs;
 }
 
 int V9990::readCommandData() {
-    if (commandReadQueue.empty()) return 0xff;
-    const int v = commandReadQueue.front();
-    commandReadQueue.pop_front();
-    if (commandReadQueue.empty()) finishCommand();
+    Engine& e = engine;
+    if (e.op != 3 && e.op != 13) return 0xff;
+    // /WAIT held the CPU until a byte was ready (ioWait); catch up should it not be
+    while (e.op >= 0 && e.out.empty() && !e.walkDone) { e.nextUs += stepUs(e.op); engineStep(); }
+    if (e.out.empty()) return 0xff;
+    const int v = e.out.front();
+    e.out.pop_front();
+    if (e.out.empty()) {
+        commandStatus &= ~STATUS_TR;
+        if (e.walkDone) finishCommand();
+        else if (e.nextUs < nowUs) e.nextUs = nowUs;
+    }
     return v;
 }
 
-// 11.5.11 (p.69): MJ along the major axis (X, or Y with MAJ), MI along the other.
-void V9990::commandLine() {
-    int x = destX(), y = destY();
-    const int mj = wordAt(40) & 0xfff, mi = wordAt(42) & 0xfff;
-    const int sx = (registers[44] & ARG_DIX) ? -1 : 1, sy = (registers[44] & ARG_DIY) ? -1 : 1;
-    const bool yMajor = registers[44] & ARG_MAJ;
-    int error = mj / 2;
-    for (int i = 0; i <= mj; i++) {
-        setDot(x, y, fontColourAt(x, y, true));
-        if (yMajor) y = (y + sy) & 0xfff; else x = (x + sx) & 0x7ff;
-        error -= mi;
-        if (error < 0) {
-            if (yMajor) x = (x + sx) & 0x7ff; else y = (y + sy) & 0xfff;
-            error += mj;
+// /WAIT. On a CPC the Z80 is let go only on the Gate Array's microsecond, which the
+// caller rounds to.
+double V9990::ioWait(int port, bool write, long long cpcCycles) {
+    if (!handlesPort(port)) return 0;
+    advanceTo(cpcCycles);
+    const int id = port & 15;
+    if (systemReset || id != 2) return 0;
+    const Engine& e = engine;
+    const bool toVdp = e.op == 1 || e.op == 5, toCpu = e.op == 3 || e.op == 13;
+    if (toVdp)      // a byte while the engine still spends the last one: until it has
+        return write && !e.wantsByte ? std::max(0.0, e.nextUs + e.bitsLeft * stepUs(e.op) - nowUs) : 0;
+    if (toCpu) {    // a read (or the write standing for one) before the next byte is ready
+        if (!e.out.empty() || e.walkDone) return 0;
+        const int bpp = bitsPerDot();
+        const int dots = bpp == 16 ? 1 : 8 / bpp - e.packedDots;
+        const int left = (e.ny - e.row - 1) * e.nx + (e.nx - e.col);
+        return std::max(0.0, e.nextUs + std::min(dots, left) * stepUs(e.op) - nowUs);
+    }
+    // Powergraph notes: reading P#2 when the command does not deal in data asserts /WAIT;
+    // it is let go when the V9990 is done -- the command's end. With none, no wait.
+    return !write && e.op >= 0 ? commandLeftUs() : 0;
+}
+
+// How long the running command has still to go: its steps left, at its step's time.
+// SRCH stops at its first match, found here by looking ahead (the CPU being held, VRAM
+// cannot change meanwhile, and SRCH writes none).
+double V9990::commandLeftUs() const {
+    const Engine& e = engine;
+    if (e.op < 0 || e.wantsByte || !e.out.empty() || e.walkDone) return 0;
+    const int bpp = bitsPerDot();
+    const long long dots = (long long)(e.ny - e.row - 1) * e.nx + (e.nx - e.col);
+    long long steps = dots;
+    switch (e.op) {
+        case 8: steps = bpp == 16 ? dots * 2 - (e.lowByte >= 0 ? 1 : 0) : (dots * bpp + 7) / 8; break;
+        case 10: steps = e.remaining; break;
+        case 11: steps = e.lineMj - e.lineStep + 1; break;
+        case 12: {
+            const int dir = (registers[44] & ARG_DIX) ? -1 : 1;
+            const bool neq = registers[44] & ARG_NEQ;
+            steps = 0;
+            for (int x = e.x; ; x += dir) {
+                steps++;
+                if ((getDot(x, e.y) == fontColourAt(x, e.y, true)) != neq || x + dir == e.searchEnd) break;
+            }
+            break;
         }
+        default: break;
     }
+    return std::max(0.0, e.nextUs + steps * stepUs(e.op) - nowUs);
 }
 
-// 11.5.12 (p.70): from (SX, SY) towards DIX until the FC colour (or, with NEQ, another).
-void V9990::commandSearch() {
-    const int dir = (registers[44] & ARG_DIX) ? -1 : 1;
-    const bool neq = registers[44] & ARG_NEQ;
-    const int w = mode() == V9990Mode::P1 ? 1024 : imageWidth();
-    const int y = sourceY();
-    int x = sourceX();
-    commandStatus &= ~STATUS_BD;
-    for (int n = 0; n < w; n++, x = (x + dir) & 0x7ff) {
-        const bool equal = getDot(x, y) == fontColourAt(x, y, true);
-        if (equal != neq) { commandStatus |= STATUS_BD; break; }
-    }
-    borderX = x & 0x7ff;
-}
-
-// PSET / ADVN (p.54): AXE/AXM and AYE/AYM move DX, DY by one dot.
+// PSET / ADVN (p.54): AXE/AXM and AYE/AYM move the pointer by one dot -- the internal
+// one, wrapping in the image space (Powergraph notes), not DX/DY.
 void V9990::movePointer(int opcode) {
-    int x = destX(), y = destY();
-    if (opcode & 0x01) x = (x + ((opcode & 0x02) ? -1 : 1)) & 0x7ff;
-    if (opcode & 0x04) y = (y + ((opcode & 0x08) ? -1 : 1)) & 0xfff;
-    registers[36] = (uint8_t)x; registers[37] = (uint8_t)(x >> 8);
-    registers[38] = (uint8_t)y; registers[39] = (uint8_t)(y >> 8);
+    if (opcode & 0x01) pointerX = (pointerX + ((opcode & 0x02) ? -1 : 1)) & (imageWidth() - 1);
+    if (opcode & 0x04) pointerY = (pointerY + ((opcode & 0x08) ? -1 : 1)) & (imageHeight() - 1);
+}
+
+// LMMV's colour (Powergraph notes). DIX = 0: FC's low byte, then its high byte, byte by
+// byte from each line's start -- not by the VRAM bank as for the other commands; in
+// P1/P2 only the low byte is read, the high one being what the last bit-map LMMV took.
+// DIX = 1 follows DX in a way not yet pinned down: the bank rule is kept there.
+int V9990::lmmvColour(int column, int x, int y) const {
+    if (registers[44] & ARG_DIX) return fontColourAt(x, y, true);
+    const int bpp = bitsPerDot();
+    const bool pattern = mode() == V9990Mode::P1 || mode() == V9990Mode::P2;
+    const int low = registers[48], high = pattern ? lmmvHighByte : registers[49];
+    if (bpp == 16) return low | high << 8;
+    const int byte = ((column * bpp) / 8) & 1 ? high : low;
+    if (bpp == 8) return byte;
+    if (bpp == 4) return (x & 1) ? byte & 15 : byte >> 4;
+    return byte >> (6 - 2 * (x & 3)) & 3;
 }
 
 } // namespace cpcse

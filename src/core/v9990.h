@@ -2,7 +2,8 @@
 //
 // Built from the V9990 Application Manual (docs/reference/V9990-application-manual.pdf;
 // tools/v9990page.py renders its pages). Chapter and page numbers below are the manual's
-// printed ones.
+// printed ones. Where the manual is silent or wrong, "Powergraph notes" are tests of the
+// V9990 on the CPC Powergraph board (the user's, 2026-10-03): what a real chip does.
 //
 // The chip runs its own raster from its own clocks -- XTAL 21.477 MHz, MCKIN 14.318 MHz,
 // 25.175 MHz for B6 -- free of the CPC's: 13.3.12/13.3.13 give every line and field. Its
@@ -72,11 +73,42 @@ public:
     int pendingIrq = 0;                      // P#6: b2 CE, b1 HI, b0 VI
     int commandStatus = 0;                   // P#5 TR, BD, CE
     int borderX = 0;                         // R#53/54
+    // Vertical scroll, as the V9990 does it (openMSX's V9990, its renderer "verified";
+    // the manual's R#17-24, p.84, says nothing of when a write takes effect). R#18/R#22,
+    // the high bits, are taken at the start of a field. A write of R#17/R#21, the low
+    // byte, while the display is on restarts that layer's vertical count: each line after
+    // the write shows the next row from the scroll value. The line bases are the raster
+    // lines the counts run from -- the top border's end at a field start.
+    int scrollAYHigh = 0, scrollBYHigh = 0;
+    int scrollALineBase = 0, scrollBLineBase = 0;
+    bool fieldDisplayOn = false;             // R#8 DISP as the field started
+    // Powergraph notes: PSET / ADVN / LINE work on an internal X and Y, not on DX/DY.
+    // X is taken from DX only by a command with AXE = AXM = 0; a write of R#38 or R#39
+    // sets Y at once. Both wrap in the image space.
+    int pointerX = 0, pointerY = 0;
+    int pointHighByte = 0;                   // the high byte of the last 16-bit POINT
+    int lmmvHighByte = 0;                    // FC's high byte as the last bit-map LMMV took it
 
     // A command still exchanging data with the CPU (LMMC, CMMC out; LMCM, POINT in).
-    struct Transfer { int kind = 0; int x = 0, y = 0, remainingX = 0, remainingY = 0, originX = 0, lowByte = -1; };
-    std::optional<Transfer> transfer;
-    std::deque<int> commandReadQueue;
+    // The command engine (chapter 11), run in time (v9990.cpp): a step a dot -- a byte for
+    // BMXL and BMLL -- each taking the time openMSX measured for it.
+    struct Engine {
+        int op = -1;                 // R#52's OP of the command running; -1 = none
+        double nextUs = 0;           // when its last step ended (the next starts there)
+        int x0 = 0, x = 0, y = 0, sx0 = 0, sx = 0, sy = 0;   // the rectangle walk (LMMM's source)
+        int col = 0, row = 0, nx = 0, ny = 0;
+        bool walkDone = false;       // every dot done; LMCM / POINT may still hold bytes
+        int linear = 0, linearSrc = 0, remaining = 0, readsLeft = 0;   // BMxx / CMMM addresses
+        int bits = 0, bitsLeft = 0;  // the byte being spent: its value, the dots (bits) left
+        int lowByte = -1;            // 16 bits a dot: the low byte, waiting for the high
+        int packed = 0, packedDots = 0;                       // LMCM / BMLX: dots into a byte
+        int fetched = 0;             // CMMK: font bytes taken
+        int lineStep = 0, lineErr = 0, lineMj = 0, lineMi = 0, searchEnd = 0;
+        bool wantsByte = false;      // LMMC / CMMC: TR, waiting for the CPU's byte
+        std::deque<int> out;         // LMCM / POINT: bytes for the CPU (TR while any)
+        std::deque<int> readAhead;   // BMLL: source bytes read ahead of the writes
+    };
+    Engine engine;
 
     // The raster: where the chip is.
     V9990Raster raster;
@@ -98,13 +130,28 @@ public:
     // The /INT pin: low while an enabled flag is set (R#9 masks P#6). A level, not an
     // edge -- held until the program writes the flag back to P#6.
     bool intAsserted() const { return enabled && (pendingIrq & registers[9] & 7) != 0; }
+    // /WAIT (pin description p.5: "active (Low) while VDP is busy when reading or writing
+    // from CPU is executed"): how long an access at `port` made at cpcCycles is held, in
+    // us -- until the V9990 is done with what it is busy with, never for good.
+    double ioWait(int port, bool write, long long cpcCycles);
+    static const char* commandName(int op);
     const V9990Picture& picture() const { return shown; }
     // Anything on the chip's monitor (not in stand-by, and fitted).
     bool displaying() const { return enabled && !systemReset && mode() != V9990Mode::Standby; }
 
     V9990Mode mode() const;
     V9990Raster rasterFor(V9990Mode m, int fieldIndex) const;
-    int readStatus();
+    int readStatus() const;
+    // R#8 VSL (p.82): 00 128K, 01 256K, 10 512K; 11 acts as 512K (Powergraph notes).
+    int vramBytes() const;
+    // The debugger's views. A dot of the image space coloured as the display would colour
+    // it (9.1: BP2..BD16, YJK/YUV); in P1/P2 the 4-bit dot through palette 0-15. A palette
+    // entry. Both 0xAABBGGRR, opaque.
+    uint32_t imageColour(int x, int y) const;
+    uint32_t paletteEntry(int index) const { return paletteColour(index) | 0xff000000u; }
+    int vramWriteAddress() const { return vramAddress(0); }    // R#0-2
+    int vramReadAddress() const { return vramAddress(3); }     // R#3-5
+    int vramIndex(int cpuAddress) const { return mapCpuAddress(cpuAddress); }   // P#0's address -> vram[]
     int readRegister(int index);
     void writeRegister(int index, int value);
 
@@ -129,13 +176,14 @@ private:
     // raster
     void beginLine();
     void endField();
+    void latchFieldScroll();
     void drawLine(int visibleLine);
     void drawLineColours(int visibleLine, uint32_t* out);
     uint32_t bitmapDot(int x, int imageY) const;
     uint32_t yjkDot(int x, int imageY, bool yuv) const;
     uint32_t cursorOver(uint32_t colour, int displayX, int displayY) const;
-    uint32_t p1Dot(int displayX, int displayY, int spriteLine) const;
-    uint32_t p2Dot(int displayX, int displayY) const;
+    uint32_t p1Dot(int displayX, int displayY, int rowA, int rowB) const;
+    uint32_t p2Dot(int displayX, int displayY, int rowA) const;
     int patternDot(int nameBase, int patternBase, int patternsPerRow, int rowBytes, int x, int y, bool p2) const;
     struct LineSprite { int x; bool behind; int palette; int address; };
     std::vector<LineSprite> lineSprites;
@@ -155,14 +203,21 @@ private:
     int linearSize() const;
     void startCommand(int opcode);
     void finishCommand();
-    void stepTransfer(Transfer& t);
     void writeCommandData(int value);
     int readCommandData();
-    void queueDots(int x0, int y0);
-    void commandLine();
-    void commandSearch();
     void movePointer(int opcode);
+    double stepUs(int op) const;
+    void runEngine(double untilUs);
+    void engineStep();
+    bool walkNext();
+    double commandLeftUs() const;
+    int dotLogical(int x, int y) const;
     int readLinear(int address) const { return vram[v9990TransformBx(address)]; }
+    // A VRAM smaller than 512K (VSL) leaves the upper address lines undriven: a write
+    // lands in every mirror of the byte, a read comes from the first.
+    void storeVram(int physical, int value);
+    int loadVram(int physical) const;
+    int lmmvColour(int column, int x, int y) const;
     void writeLinear(int address, int value);
 };
 
