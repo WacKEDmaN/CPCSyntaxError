@@ -362,7 +362,8 @@ void CpcVideo::plotBeamCharacter() {
     int hsyncFrom = 16, hsyncTo = 16;      // Pixel-M2 half-open range to blacken
     gaHsyncBlackWindow(chip, hsyncNow, hsyncBefore,
                        crtc->r2WrittenThisCharacter, crtc->hsyncEndedJit,
-                       gaModel()->hsyncBlackEndLag(), hsyncFrom, hsyncTo);
+                       gaModel()->hsyncBlackEndLag(), crtc->hsyncCutFirstMicrosecond,
+                       hsyncFrom, hsyncTo);
     int blankFrom = 16, blankTo = 16;      // ACCC §16.2.1's 26 black lines
     if (blankNow && beamBlankLast) { blankFrom = beamBlankCarry; beamBlankCarry = 0; }
     else if (blankNow && !beamBlankLast) {

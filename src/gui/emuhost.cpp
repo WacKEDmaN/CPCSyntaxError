@@ -18,6 +18,9 @@
 #include "core/z80.h"
 #include "core/v9990.h"
 #include "core/opl4.h"
+#include "core/playcity.h"
+#include "core/speech.h"
+#include "core/machine_sounds.h"
 #include "core/m4.h"
 #include "core/symbiface_mouse.h"
 #include "core/sf3.h"
@@ -96,6 +99,9 @@ EmuHost::~EmuHost() {
 
 void EmuHost::applyAudioRate() {
     if (emu && emu->ay) emu->ay->setOutputSampleRate((double)sampleRate);
+    if (emu && emu->playcity) emu->playcity->setOutputSampleRate((double)sampleRate);
+    if (emu && emu->speech) emu->speech->setOutputSampleRate((double)sampleRate);
+    if (emu && emu->dac) emu->dac->setOutputSampleRate((double)sampleRate);
     if (emu && emu->tape) emu->tape->setOutputSampleRate((double)sampleRate);
 }
 
@@ -270,6 +276,8 @@ void EmuHost::applySettings() {
     applyTapeOptions();
     if (emu->v9990) emu->v9990->setEnabled(v9990Enabled);
     applyOpl4();
+    applyPlayCity();
+    applySpeech();
     applyAudioRate();
 }
 
@@ -469,6 +477,38 @@ void EmuHost::lightgunAim(double x, double y, bool trigger) {
 void EmuHost::setOpl4(bool on) {
     opl4Enabled = on;
     applyOpl4();
+}
+void EmuHost::setPlayCity(bool on) {
+    playCityEnabled = on;
+    applyPlayCity();
+}
+void EmuHost::setSpeech(const std::string& kind) {
+    speechKind = kind;
+    applySpeech();
+}
+// The SP0256-AL2's internal ROM is General Instrument's and is not shipped: it is read
+// from the ROM folder (any name with sp0256 and al2 in it), 2 KB.
+void EmuHost::applySpeech() {
+    if (!emu || !emu->speech) return;
+    SpeechSynth& s = *emu->speech;
+    s.setKind(speechKind == "ssa1" ? SpeechSynth::Kind::Ssa1
+              : speechKind == "dktronics" ? SpeechSynth::Kind::DkTronics
+              : speechKind == "lambdaspeak3" ? SpeechSynth::Kind::LambdaSpeak3 : SpeechSynth::Kind::None);
+    s.mp3.card = mp3Card;
+    if (s.kind != SpeechSynth::Kind::None && !s.hasRom) {
+        const std::string path = findRom("sp0256 al2");
+        bool ok = false;
+        Bytes rom;
+        if (!path.empty()) rom = readFile(path, ok);
+        if (ok) s.loadRom(rom);
+    }
+    s.setOutputSampleRate((double)sampleRate);
+}
+void EmuHost::applyPlayCity() {
+    if (!emu || !emu->playcity) return;
+    if (emu->playcity->enabled != playCityEnabled) emu->playcity->reset();
+    emu->playcity->enabled = playCityEnabled;
+    emu->playcity->setOutputSampleRate((double)sampleRate);
 }
 void EmuHost::applyOpl4() {
     if (!emu || !emu->opl4) return;
@@ -813,9 +853,32 @@ void EmuHost::drainAudio() {
     if (opl) { opl->advanceTo(emu->machineCycles); oplPairs = opl->samples.size() / 2; }
     const double oplGain = (double)masterVolume * 0.75;
     audioOut.reserve((size_t)available * 2);
+    // The PlayCity's two YMZ294: the left chip on the left, the right on the right, each
+    // folded to mono, made by the same stretch of CPC time as the AY's samples.
+    PlayCity* pc = emu->playcity && emu->playcity->enabled ? emu->playcity : nullptr;
+    const bool dacOn = emu->dac && (emu->dac->mode == "digiblaster" || emu->dac->mode == "amdrum");
+    // The speech synthesiser, mono, from its own host-rate queue.
+    SpeechSynth* sp = emu->speech && emu->speech->kind != SpeechSynth::Kind::None ? emu->speech : nullptr;
     for (int i = 0; i < available; i++) {
         std::array<double, 2> s = ay->readSample();
         double l = s[0] * gain, r = s[1] * gain;
+        // The printer-port DACs (DigiBlaster, AmDrum): mono, from their own queue. They were
+        // never mixed in -- the DAC filled its queue and nothing read it, so both were silent.
+        if (dacOn) { const double v = emu->dac->readSample() * gain * 1.6; l += v; r += v; }
+        if (sp) {
+            const double v = sp->readSample() * gain * 0.9; l += v; r += v;
+            // LambdaSpeak 3's MP3 module, stereo, at line level next to the AY.
+            if (sp->kind == SpeechSynth::Kind::LambdaSpeak3) {
+                float ml, mr; sp->mp3.readSample(ml, mr);
+                l += ml * masterVolume * 26000.0; r += mr * masterVolume * 26000.0;
+            }
+        }
+        if (pc) {
+            const bool haveL = pc->left.sampleReadIndex < (int)pc->left.sampleQueue.size();
+            const bool haveR = pc->right.sampleReadIndex < (int)pc->right.sampleQueue.size();
+            if (haveL) { auto v = pc->left.readSample(); l += (v[0] + v[1]) * 0.5 * gain; }
+            if (haveR) { auto v = pc->right.readSample(); r += (v[0] + v[1]) * 0.5 * gain; }
+        }
         if (oplPairs) {
             const size_t k = std::min(oplPairs - 1, (size_t)((double)i * oplPairs / available));
             l += opl->samples[k * 2] * oplGain;
@@ -825,6 +888,19 @@ void EmuHost::drainAudio() {
         audioOut.push_back((int16_t)std::clamp((int)r, -32768, 32767));
     }
     if (opl) opl->samples.clear();
+    // The drive and the keys, at the device's rate, one sample per output sample.
+    machineSounds.sampleRate = sampleRate;
+    machineSounds.driveEnabled = driveSounds;
+    machineSounds.keysEnabled = keySounds;
+    if (emu->fdc) machineSounds.motor(emu->fdc->motor);   // follows the line, whenever it was switched
+    if (!machineSounds.silent()) {
+        const double mechGain = (double)masterVolume * mechanicsVolume * 32000.0;   // the recordings are full scale
+        for (size_t i = 0; i + 1 < audioOut.size(); i += 2) {
+            const int m = (int)(machineSounds.next() * mechGain);
+            audioOut[i] = (int16_t)std::clamp((int)audioOut[i] + m, -32768, 32767);
+            audioOut[i + 1] = (int16_t)std::clamp((int)audioOut[i + 1] + m, -32768, 32767);
+        }
+    }
 }
 
 void EmuHost::setKey(SDL_Scancode sc, bool pressed) {
@@ -832,6 +908,15 @@ void EmuHost::setKey(SDL_Scancode sc, bool pressed) {
     std::string code = sdlScancodeToBrowserCode(sc);
     if (code.empty()) return;
     emu->keyboard->setKey(code, pressed, "", sdlKeyLocation(sc));
+    // One click a press and one a release, however long the host's key repeat runs.
+    const int idx = (int)sc;
+    if (idx >= 0 && idx < (int)keyHeld.size() && keyHeld[idx] != pressed) {
+        keyHeld[idx] = pressed;
+        const MachineSounds::Key which = sc == SDL_SCANCODE_SPACE ? MachineSounds::Key::Space
+            : (sc == SDL_SCANCODE_RETURN || sc == SDL_SCANCODE_KP_ENTER) ? MachineSounds::Key::Return
+            : MachineSounds::Key::Normal;
+        machineSounds.key(pressed, which);
+    }
 }
 
 void EmuHost::setMonitorMode(const std::string& mode) {

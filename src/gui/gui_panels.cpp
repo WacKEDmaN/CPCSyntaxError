@@ -4,6 +4,7 @@
 // Each section is drawn both inside the Settings window and as a menu of its own on the
 // menu bar: plain widgets work in either, only the widths differ.
 #include "gui_shell.h"
+#include "core/machine_sounds.h"
 
 #include "imgui.h"
 
@@ -33,6 +34,7 @@
 #include "core/monitor_model.h"
 #include "core/v9990.h"
 #include "core/opl4.h"
+#include "core/speech.h"
 
 namespace cpcse {
 
@@ -140,6 +142,17 @@ void GuiShell::sectionAudio(bool asMenu) {
     float volPct = host.masterVolume * 100.0f;
     ImGui::SetNextItemWidth(itemWidth(asMenu));
     if (ImGui::SliderFloat("##vol", &volPct, 0.0f, 100.0f, "volume %.0f%%")) host.masterVolume = volPct / 100.0f;
+    // The machine's own noises, not its sound chip: synthesised, mixed beside the AY.
+    if (asMenu) ImGui::Separator(); else sectionHeading("Machine noises");
+    ImGui::Checkbox("Disc drive sounds", &host.driveSounds);
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("The 3-inch drive's motor, head steps and a disc going in");
+    ImGui::Checkbox("Keyboard sounds", &host.keySounds);
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("A click for each key pressed and released");
+    if (machineSounds.loadedCount() == 0)
+        ImGui::TextDisabled("(no recordings in the \"sounds\" folder)");
+    float mechPct = host.mechanicsVolume * 100.0f;
+    ImGui::SetNextItemWidth(itemWidth(asMenu));
+    if (ImGui::SliderFloat("##mechvol", &mechPct, 0.0f, 100.0f, "noises %.0f%%")) host.mechanicsVolume = mechPct / 100.0f;
     // The DACs sit on the printer port, so they share its one socket with the printers.
     if (asMenu) ImGui::Separator(); else sectionHeading("Printer-port DAC");
     static const Choice dacs[] = {
@@ -303,6 +316,19 @@ void GuiShell::sectionExpansions(bool asMenu) {
     auto ramLabel = [](int k) { return k >= 1024 ? std::to_string(k / 1024) + " MB" : std::to_string(k) + "K"; };
     if (asMenu) {
         ImGui::Separator();
+        bool pc = host.playCityEnabled;
+        if (ImGui::MenuItem("PlayCity (2 x YMZ294 + CTC)", nullptr, &pc)) host.setPlayCity(pc);
+        if (ImGui::BeginMenu("Speech synthesiser")) {
+            static const std::pair<const char*, const char*> kinds[] = {
+                { "None", "none" }, { "Amstrad SSA-1 (&FBEE)", "ssa1" }, { "dk'tronics (&FBFE)", "dktronics" },
+                { "LambdaSpeak 3 + MP3 module", "lambdaspeak3" } };
+            for (const auto& k : kinds)
+                if (ImGui::MenuItem(k.first, nullptr, host.speechKind == k.second)) {
+                    host.setSpeech(k.second);
+                    if (host.speechKind != "none" && !host.speechHasRom()) romPromptFor = "sp0256";
+                }
+            ImGui::EndMenu();
+        }
         if (ImGui::MenuItem("OPL4 sound card (YMF278B)", nullptr, &opl)) {
             host.setOpl4(opl);
             if (opl && !host.opl4HasRom()) romPromptFor = "opl4";
@@ -314,6 +340,46 @@ void GuiShell::sectionExpansions(bool asMenu) {
         }
     } else {
         sectionHeading("Sound card");
+        bool pc = host.playCityEnabled;
+        if (ImGui::Checkbox("PlayCity (2 x YMZ294 + Z80 CTC, &F880-&F988)", &pc)) host.setPlayCity(pc);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("TotO's PlayCity: six more AY channels in stereo (one YMZ294 a side),\n"
+                              "and a Z80 CTC for raster NMIs and IM2 timer interrupts.");
+        {
+            static const std::pair<const char*, const char*> kinds[] = {
+                { "No speech synthesiser", "none" }, { "Amstrad SSA-1 (&FBEE)", "ssa1" }, { "dk'tronics (&FBFE)", "dktronics" },
+                { "LambdaSpeak 3 + MP3 module", "lambdaspeak3" } };
+            const char* shown = kinds[0].first;
+            for (const auto& k : kinds) if (host.speechKind == k.second) shown = k.first;
+            ImGui::SetNextItemWidth(220);
+            if (ImGui::BeginCombo("speech", shown)) {
+                for (const auto& k : kinds)
+                    if (ImGui::Selectable(k.first, host.speechKind == k.second)) {
+                        host.setSpeech(k.second);
+                        if (host.speechKind != "none" && !host.speechHasRom()) romPromptFor = "sp0256";
+                    }
+                ImGui::EndCombo();
+            }
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("An SP0256-AL2 speech chip: Amstrad's SSA-1 or the dk'tronics synthesiser.");
+            if (host.speechKind == "lambdaspeak3") {
+                if (ImGui::Button("MP3 card folder...")) {
+                    browser.openDir("LambdaSpeak 3 MP3 card", host.mp3Card.empty() ? host.romDir : host.mp3Card,
+                                    [this](const std::string& dir) { host.mp3Card = dir; host.applySpeech(); });
+                }
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("The Catalex MP3 module's micro-SD card: folders 01, 02 ... of files\n"
+                                      "named 001xxx.mp3, 002xxx.mp3 ... (LambdaSpeak 3's MP3.BAS plays them).");
+                ImGui::SameLine();
+                ImGui::TextDisabled("%s", host.mp3Card.empty() ? "(no card)" : host.mp3Card.c_str());
+                if (host.emu && host.emu->speech && host.emu->speech->mp3.playing())
+                    ImGui::TextDisabled("Playing %s", host.emu->speech->mp3.nowPlaying().c_str());
+            }
+            if (host.speechKind != "none" && !host.speechHasRom()) {
+                ImGui::TextDisabled("No sp0256-al2.bin: silent");
+                ImGui::SameLine(); if (ImGui::SmallButton("Get it...##sp")) romPromptFor = "sp0256";
+            }
+        }
         if (ImGui::Checkbox("OPL4 (YMF278B, AMSDAP &FFC4/&FF7E)", &opl)) {
             host.setOpl4(opl);
             if (opl && !host.opl4HasRom()) romPromptFor = "opl4";
@@ -433,32 +499,51 @@ struct GuiShell::RomFetch {
     ~RomFetch() { if (worker.joinable()) worker.join(); }
 };
 
+// The ROMs that are not shipped, and are asked for when a device that needs one is fitted.
+namespace {
+struct RomNeed { const char* key; const char* title; const char* dest; size_t size; const char* blurb; };
+const RomNeed kRomNeeds[] = {
+    { "opl4", "OPL4 sample ROM", "yrw801.rom", 2097152,
+      "The OPL4's General MIDI instruments are in Yamaha's YRW801 sample ROM (2 MB), which is not "
+      "included with CPCSyntaxError. Without it the card still plays FM, and samples programs load into its RAM." },
+    { "m4", "M4 board ROM", "M4ROM.ROM", 16384,
+      "The M4 board needs its own ROM (M4ROM.ROM, 16K, by Duke -- spinpoint.org)." },
+    { "sp0256", "Speech chip ROM", "sp0256-al2.bin", 2048,
+      "The SSA-1 and dk'tronics speech synthesisers use General Instrument's SP0256-AL2, whose "
+      "allophones are in the chip's own 2 KB ROM. It is not included with CPCSyntaxError." },
+};
+const RomNeed* romNeed(const std::string& key) {
+    for (const RomNeed& n : kRomNeeds) if (key == n.key) return &n;
+    return nullptr;
+}
+}
+
+void GuiShell::romInstalled(const std::string& key) {
+    if (key == "opl4") { host.emu->opl4->rom.clear(); host.applyOpl4(); }
+    else if (key == "m4") host.setM4(true, host.m4Folder.empty() ? host.romDir : host.m4Folder);
+    else if (key == "sp0256") { host.emu->speech->hasRom = false; host.applySpeech(); }
+}
+
 void GuiShell::romPrompt() {
     if (romPromptFor.empty()) return;
-    const bool opl = romPromptFor == "opl4";
-    const char* title = opl ? "OPL4 sample ROM" : "M4 board ROM";
-    const std::string dest = opl ? "yrw801.rom" : "M4ROM.ROM";
-    const size_t size = opl ? 2097152 : 16384;
+    const RomNeed* need = romNeed(romPromptFor);
+    if (!need) { romPromptFor.clear(); return; }
+    const char* title = need->title;
+    const std::string dest = need->dest;
+    const size_t size = need->size;
     if (!ImGui::IsPopupOpen(title)) ImGui::OpenPopup(title);
     static std::string status;
     auto installed = [&](const std::string& from) {
         std::string why;
         if (!host.installRom(from, dest, size, why)) { status = "Not fitted: " + why; return; }
         status.clear();
-        if (opl) { host.emu->opl4->rom.clear(); host.applyOpl4(); }
-        else host.setM4(true, host.m4Folder.empty() ? host.romDir : host.m4Folder);
+        romInstalled(romPromptFor);
         romPromptFor.clear();
         ImGui::CloseCurrentPopup();
     };
     ImGui::SetNextWindowSize(ImVec2(560, 0), ImGuiCond_Appearing);
     if (ImGui::BeginPopupModal(title, nullptr, ImGuiWindowFlags_NoSavedSettings)) {
-        if (opl) {
-            ImGui::TextWrapped("The OPL4's General MIDI instruments are in Yamaha's YRW801 sample ROM "
-                               "(2 MB), which is not included with CPCSyntaxError. Without it the card "
-                               "still plays FM, and samples programs load into its RAM.");
-        } else {
-            ImGui::TextWrapped("The M4 board needs its own ROM (M4ROM.ROM, 16K, by Duke -- spinpoint.org).");
-        }
+        ImGui::TextWrapped("%s", need->blurb);
         ImGui::Spacing();
         ImGui::TextWrapped("Download it from a URL, or choose a copy you already have. It is saved to the ROM folder as %s.",
                            dest.c_str());
@@ -497,16 +582,16 @@ void GuiShell::romPrompt() {
             std::filesystem::remove(f->path, ec);   // the download's own temporary file
         }
         if (ImGui::Button("Choose file...")) {
-            browser.open(title, host.romDir, { ".rom", ".bin" }, [this, installed](const std::string& p) mutable {
+            browser.open(title, host.romDir, { ".rom", ".bin" }, [this](const std::string& p) {
+                const RomNeed* n = romNeed(romPromptFor);
+                if (!n) return;
                 std::string why;
-                const bool opl2 = romPromptFor == "opl4";
-                if (!host.installRom(p, opl2 ? "yrw801.rom" : "M4ROM.ROM", opl2 ? 2097152 : 16384, why)) { status = "Not fitted: " + why; return; }
-                status.clear();
-                if (opl2) { host.emu->opl4->rom.clear(); host.applyOpl4(); }
-                else host.setM4(true, host.m4Folder.empty() ? host.romDir : host.m4Folder);
+                if (!host.installRom(p, n->dest, n->size, why)) { romChooseStatus = "Not fitted: " + why; return; }
+                romInstalled(romPromptFor);
                 romPromptFor.clear();
             });
         }
+        if (!romChooseStatus.empty()) { status = romChooseStatus; romChooseStatus.clear(); }
         ImGui::SameLine();
         if (ImGui::Button("Not now")) { romPromptFor.clear(); status.clear(); ImGui::CloseCurrentPopup(); }
         if (!status.empty()) ImGui::TextColored(status.rfind("Not", 0) == 0 ? ImVec4(1, 0.5f, 0.4f, 1) : kAccent, "%s", status.c_str());

@@ -59,6 +59,12 @@ public:
     std::string monitorMode;
     bool paused = false;
     bool audioEnabled = true;
+    // The machine's mechanical noises (core/machine_sounds.h): the disc drive's motor,
+    // head steps and insert, and the keyboard's clicks. Not the CPC's sound chip.
+    bool driveSounds = true;
+    bool keySounds = false;
+    float mechanicsVolume = 0.5f;
+    std::array<bool, 512> keyHeld{};   // SDL scancodes down, so a key repeat does not click
     float masterVolume = 0.6f;
     int sampleRate = 44100;
 
@@ -80,6 +86,9 @@ public:
     // the ROM folder); without it the wavetable plays only what programs load into RAM.
     bool opl4Enabled = false;
     int opl4RamKiB = 2048;
+    bool playCityEnabled = false;      // TotO's PlayCity (two YMZ294 + a Z80 CTC)
+    std::string speechKind = "none";   // "none" / "ssa1" / "dktronics" / "lambdaspeak3" (core/speech.h)
+    std::string mp3Card;               // LambdaSpeak 3's MP3 module: its micro-SD card folder
     bool opl4HasRom() const;
     bool m4HasRom() const { return !findRom("m4rom").empty() || !findRom("m4").empty(); }
     // Copies a ROM file into the ROM folder as destName, after checking its size; the
@@ -224,6 +233,11 @@ public:
     // GFX9000 (V9990).
     void setV9990(bool on);
     void setOpl4(bool on);
+    void setPlayCity(bool on);
+    void setSpeech(const std::string& kind);
+    void applySpeech();
+    bool speechHasRom() const { return !findRom("sp0256 al2").empty(); }
+    void applyPlayCity();
     void applyOpl4();
     // The V9990's own monitor: its last field, or null while it shows nothing (not
     // fitted, in stand-by, or never displayed).

@@ -84,6 +84,10 @@ struct CrtcType1 : CrtcBehaviour {
     // restart, so the GATE ARRAY re-zeroes H06 and emits a SECOND monitor sync.
     bool restartsCHsyncOnOverflow() const override { return true; }
     int hsyncBlackStartPixel() const override { return 5; }   // ACCC §14.7.1 (6th)
+    // ACCC §14.5.4 (p.139): "On a CRTC 1, the HSYNC starts on the 6th pixel-M2 and lasts
+    // 3 pixel-M2's" when an OUT(C),r8 writes R3=0 on its first µsec -- p.141's 40010 row
+    // is black on 5, 6, 7 and the 40007/8 row one pixel more (hsyncBlackEndLag).
+    int r3ZeroFirstMicrosecondBlackEndPixel() const override { return 8; }
     // ACCC §14.4's table (p.134), the R3.NJIT row for this chip: 0.1250 / 1.1250 /
     // 2.1250 / 3.1250 µsec for R3l = 2 / 3 / 4 / 5, against 4.0000 for R3l=6. The
     // fraction is a flat 2/16 µsec, and it is this chip's own -- CRTC 0 and 2 read
@@ -289,30 +293,17 @@ struct CrtcType1 : CrtcBehaviour {
         // value of R5>0 does not trigger this bug."
         if (reg == 5) {
             // §11.6 words the trigger as "R5 is updated with a value different from 0 ON
-            // THE POSITION C0=R0 of some C9s when R5 is equal to 0", and this used to
-            // compare horizontal against R0 directly -- which never fired for real code.
-            // DSC4's CRTC 1 path is Longshot's own, hardware-validated, and triggers its
-            // rupture with exactly §11.6's "OUT R5,1 immediately followed by an OUT R5,0";
-            // its R5 write lands one character before R0. Our write position is pinned
-            // independently by §13.6's chronograms (the R0-deadline suite: an OUT whose
-            // 3rd µsec falls on the C0=R0 character reads horizontal == R0 and is "in
-            // time"), so the two facts together put the RFD trigger one character BEFORE
-            // the R0 comparison -- the write has to arrive before the end-of-line
-            // evaluation it corrupts, not on it. The compendium prints two C0 numberings
-            // a character apart throughout its chronograms ("C0 from Vs" and "C0 from
-            // GA"), which is the likeliest source of the wording difference.
-            // Without this the rupture never happened: C4 ran 1..36 as a normal frame
-            // where the chip keeps it at 0, so the per-line R12/R13 writes were ignored
-            // and the picture came out shredded into bands.
-            // ...and ON C0=R0 as well, exactly as §11.6 words it. SHAKER's own 1-A/1-B
-            // identifier (module B, test O, "CRTC 1 IDENTIFIER") does precisely "OUT R5,#10
-            // immediately followed by OUT R5,0", and its write lands on C0=R0 -- one
-            // character LATER than DSC4's. Accepting only R0-1 meant no RFD ever fired for
-            // it, so our 1-A never repeated its rows and identified itself as a 1-B
-            // ("BUT IF YOU CAN READ THIS, YOUR CRTC 1 IS 1-B !!"), BO/TYPE-1A 38.8 FAIL.
-            // Both programs are Longshot's and hardware-validated; both positions trigger.
+            // THE POSITION C0=R0 of some C9s when R5 is equal to 0", and ON C0=R0 ONLY.
+            // SHAKER's RFD scanner (module B, CTRL: "R5 SHAKER : MAGIC COCKTAIL", screens
+            // BCTRL/A1-A3) sweeps the 0 -> 1 write across every C0 of every C9 and prints
+            // the position: "UPDATE R5 FROM 0 TO 1 ON C0=#3E" (R0-1) leaves the picture
+            // intact on the real CPC and on AmSpiriT, and only C0=#3F (R0) ruptures it.
+            // The SHAKER 1-A/1-B identifier (module B, test O) lands its "OUT R5,#10 +
+            // OUT R5,0" on C0=R0 as well, and so does DSC4's CRTC 1 route (C0=63, traced).
+            // R0-1 was once accepted too, for DSC4 when its write still measured a
+            // character early; it made our 1-A rupture on BCTRL/A1 where the chip does not.
             const int r0 = crtc.registers[0] & 0xff;
-            const bool atR0 = crtc.horizontal == r0 || crtc.horizontal == ((r0 - 1) & 0xff);
+            const bool atR0 = crtc.horizontal == r0;
             if ((crtc.r5Previous & 0x1f) == 0 && (crtc.registers[5] & 0x1f) != 0 && atR0) {
                 crtc.rfdActive = true;
                 // ACCC §11.6/§11.6.2 (p.88, p.90): "The value of R5 is of little

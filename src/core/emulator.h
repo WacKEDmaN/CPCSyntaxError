@@ -10,6 +10,8 @@
 namespace cpcse {
 
 class GXMemory; class PlusAsic; class GateArray; class CpcDos; class M4Board; class V9990; class Opl4Card;
+class PlayCity;
+class SpeechSynth;
 class SymbifaceMouse; class Symbiface2Rtc; class Symbiface3; class CtmMonitor;
 struct MonitorModel;
 class CRTC6845; class KeyboardMatrix; class AY38912; class CpcDac; class CPCTapeDrive;
@@ -25,6 +27,8 @@ public:
     M4Board* m4 = nullptr;
     V9990* v9990 = nullptr;
     Opl4Card* opl4 = nullptr;          // an OPL4 card on the AMSDAP (&FFC4-7, &FF7E-F)
+    PlayCity* playcity = nullptr;      // TotO's PlayCity: two YMZ294 + a Z80 CTC (&F880-&F988)
+    SpeechSynth* speech = nullptr;     // an SP0256-AL2 speech synthesiser (SSA-1 / dk'tronics)
     SymbifaceMouse* symbifaceMouse = nullptr;
     Symbiface2Rtc* sf2Rtc = nullptr;
     Symbiface3* sf3 = nullptr;

@@ -58,6 +58,17 @@ add_library(ymfm STATIC
 target_include_directories(ymfm PUBLIC third_party/ymfm)
 target_compile_options(ymfm PRIVATE -w)
 target_link_libraries(cpcse-core PUBLIC ymfm)
+# The GI SP0256 (MAME's, Joseph Zbiciak and Tim Lindner, BSD-3; third_party/sp0256) -- the
+# SSA-1 / dk'tronics / LambdaSpeak 3 speech chip.
+add_library(sp0256 STATIC third_party/sp0256/sp0256.cpp)
+target_include_directories(sp0256 PUBLIC third_party/sp0256)
+target_compile_options(sp0256 PRIVATE -w)
+target_link_libraries(cpcse-core PUBLIC sp0256)
+# minimp3 (lieff, CC0; third_party/minimp3) -- the LambdaSpeak 3 MP3 module's decoder.
+add_library(minimp3 STATIC third_party/minimp3/minimp3_impl.cpp)
+target_include_directories(minimp3 PUBLIC third_party/minimp3)
+target_compile_options(minimp3 PRIVATE -w)
+target_link_libraries(cpcse-core PUBLIC minimp3)
 
 # --------------------------------------------------------------- SDL2
 set(SDL2_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/third_party/SDL2" CACHE PATH
@@ -154,4 +165,5 @@ endif()
 # beside it is what the emulator boots from.
 add_custom_command(TARGET cpcse POST_BUILD
   COMMAND ${CMAKE_COMMAND} -E copy_if_different ${SDL2_ROOT}/bin/SDL2.dll $<TARGET_FILE_DIR:cpcse>
-  COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_CURRENT_SOURCE_DIR}/roms $<TARGET_FILE_DIR:cpcse>/roms)
+  COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_CURRENT_SOURCE_DIR}/roms $<TARGET_FILE_DIR:cpcse>/roms
+  COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_CURRENT_SOURCE_DIR}/sounds $<TARGET_FILE_DIR:cpcse>/sounds)

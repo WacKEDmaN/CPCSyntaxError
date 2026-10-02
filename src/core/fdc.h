@@ -2,17 +2,10 @@
 #pragma once
 #include "common.h"
 #include "dsk.h"
+#include "machine_sounds.h"   // the drive's motor, head steps and insert
 
 namespace cpcse {
 
-// Floppy sound sample player (headless no-op).
-class FloppySound {
-public:
-    bool enabled = true;
-    void play(const std::string& name, bool loop = false) { (void)name; (void)loop; }
-    void stop(const std::string& name) { (void)name; }
-};
-extern FloppySound floppySound;
 
 struct FdcDrive {
     int head = 0;

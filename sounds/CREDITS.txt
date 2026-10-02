@@ -1,0 +1,25 @@
+Disc drive and keyboard recordings
+==================================
+
+These are real recordings, cut and levelled for CPCSyntaxError. Replace any of them with
+your own WAV files (same names; numbered variants such as drive_step1.wav, drive_step2.wav
+are played in turn). The names the program looks for are listed in machine_sounds.h:
+
+  drive_motor_start.wav, drive_motor.wav (looped), drive_motor_stop.wav,
+  drive_step*.wav, drive_insert*.wav, drive_eject*.wav,
+  key_press*.wav, key_release*.wav, key_space_press*.wav, key_return_press*.wav
+
+drive_*.wav
+  "Amiga 600 floppy drive sounds" by asie
+  https://opengameart.org/content/amiga-600-floppy-drive-sounds
+  Licence: CC0 1.0 (public domain dedication).
+  The motor loop and the single head steps are cut from its "access" recordings.
+
+key_press*.wav
+  "Single Key Press Sounds" by eklee and qubodup
+  https://opengameart.org/node/12831
+  Based on http://freesound.org/people/eklee/sounds/158058/ and .../158057/
+  Copyright 2012 eklee, 2012 qubodup.
+  Licence: Creative Commons Attribution 3.0 Unported
+  https://creativecommons.org/licenses/by/3.0/
+  Changes: trimmed to the key click, faded, levelled.

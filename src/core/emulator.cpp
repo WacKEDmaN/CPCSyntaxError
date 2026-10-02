@@ -16,6 +16,8 @@
 #include "m4.h"
 #include "v9990.h"
 #include "opl4.h"
+#include "playcity.h"
+#include "speech.h"
 #include "symbiface_mouse.h"
 #include "sf2_rtc.h"
 #include "sf3.h"
@@ -39,6 +41,8 @@ GX4000::GX4000() {
     m4 = new M4Board(this);
     v9990 = new V9990();
     opl4 = new Opl4Card();
+    playcity = new PlayCity();
+    speech = new SpeechSynth();
     symbifaceMouse = new SymbifaceMouse();
     sf2Rtc = new Symbiface2Rtc();
     sf3 = new Symbiface3();
@@ -155,6 +159,8 @@ GX4000::GX4000() {
         }
         if (plusHardware != false) asic->onCharacter();
         ay->advanceTStates(4); dac->advanceTStates(4); ppi->advanceTStates(4); fdc->advanceCycles(1); tape->advanceCycles(1);
+        if (playcity->enabled) { playcity->advanceMicrosecond(); playcity->cursorPin(crtc->cursorOutput()); }
+        speech->advanceMicrosecond();
     };
     o.onVsyncStart = [this]() {
         gateArray->onVsyncStart(crtc->hsync,
@@ -305,7 +311,7 @@ GX4000::GX4000() {
 
 GX4000::~GX4000() {
     delete cpu; delete fdc; delete gamepad; delete ppi; delete tape; delete dac; delete ay; delete keyboard;
-    delete crtc; delete monitorRenderer; delete sf3; delete sf2Rtc; delete symbifaceMouse; delete v9990; delete opl4;
+    delete crtc; delete monitorRenderer; delete sf3; delete sf2Rtc; delete symbifaceMouse; delete v9990; delete opl4; delete playcity; delete speech;
     delete m4; delete cpcDos; delete gateArray; delete asic; delete memory;
 }
 
@@ -728,7 +734,7 @@ void GX4000::captureRasterCharacter() {
         gaHsyncBlackWindow(crtc->behaviour, now, before,
                            crtc->r2WrittenThisCharacter, crtc->hsyncEndedJit,
                            (gateArray->model ? gateArray->model : gateArrayModel40010())
-                               ->hsyncBlackEndLag(), from, to);
+                               ->hsyncBlackEndLag(), crtc->hsyncCutFirstMicrosecond, from, to);
         // §15.1's lead: the black belongs on the character before the one the CRTC
         // raised HSYNC on. Stored where it is drawn, so the renderer stays a renderer.
         int at = (character - crtc->behaviour->hsyncBlackCharacterLead()) & 0xff;
@@ -807,6 +813,10 @@ void GX4000::writePort(int port, int value) {
     int high = (unsigned)port >> 8 & 0xff;
     if (v9990->writePort(port, value, machineCycles + hardwareCyclesAdvanced)) return;
     if (opl4->handlesPort(port)) { opl4->writePort(port, value, machineCycles + hardwareCyclesAdvanced); return; }
+    // &F8FF is the expansion bus's peripheral reset: every board on it hears it.
+    if ((port & 0xffff) == 0xf8ff && playcity->enabled) playcity->reset();
+    if (playcity->handlesPort(port)) { playcity->writePort(port, value); return; }
+    if (speech->handlesPort(port)) { speech->writePort(port, value); return; }
     if (symbifaceMouse->handlesWritePort(port)) { symbifaceMouse->writePort(port, value); return; }
     if (sf2Rtc->handlesWritePort(port)) { sf2Rtc->writePort(port, value); return; }
     if (sf3->handlesWritePort(port)) { sf3->writePort(port, value); return; }
@@ -868,6 +878,8 @@ int GX4000::readPort(int port) {
     int high = (unsigned)port >> 8 & 0xff;
     if (v9990->handlesPort(port)) return v9990->readPort(port, machineCycles + hardwareCyclesAdvanced);
     if (opl4->handlesPort(port)) return opl4->readPort(port, machineCycles + hardwareCyclesAdvanced);
+    if (playcity->handlesPort(port)) return playcity->readPort(port);
+    if (speech->handlesPort(port)) return speech->readPort(port);
     if (symbifaceMouse->handlesPort(port)) return symbifaceMouse->readPort(port);
     if (sf2Rtc->handlesPort(port)) return sf2Rtc->readPort(port);
     if (sf3->handlesPort(port)) return sf3->readPort(port);
@@ -1109,6 +1121,15 @@ int GX4000::stepInstruction() {
         opl4->tick(machineCycles);
         if (opl4->intAsserted() && cpu->pendingInterrupt == -1 && interruptHeldOver == -1) cpu->requestInterrupt(0xff);
     }
+    // The PlayCity's CTC: channel 1's ZC/TO is wired to /NMI, and channels 0-3 put
+    // their own IM2 vector on the bus (vector base | channel << 1).
+    if (playcity->enabled) {
+        if (playcity->takeNmi()) cpu->requestNmi();
+        if (cpu->pendingInterrupt == -1 && interruptHeldOver == -1) {
+            const int vector = playcity->takeInterruptVector();
+            if (vector >= 0) cpu->requestInterrupt(vector);
+        }
+    }
     if (watchpointPending.has_value()) {
         std::any hit = watchpointPending;
         watchpointPending.reset();
@@ -1165,7 +1186,7 @@ void GX4000::reset() {
     memory->reset(); asic->reset(); gateArray->reset(); rasterCapture.clear(); rasterFrame.clear(); previousRasterFrame.clear();
     spritePatternSnapshot.clear(); spritePatternRevision = -1; crtc->reset();
     videoFrameRegisters = crtc->registers; videoCaptureRegisters = crtc->registers;
-    keyboard->reset(); ay->reset(); ppi->reset(); fdc->reset(); dac->reset(); tape->reset(); cpcDos->reset(); m4->reset(); v9990->reset(); opl4->reset(); symbifaceMouse->reset(); sf2Rtc->reset(); sf3->reset(); cpu->reset();
+    keyboard->reset(); ay->reset(); ppi->reset(); fdc->reset(); dac->reset(); tape->reset(); cpcDos->reset(); m4->reset(); v9990->reset(); opl4->reset(); playcity->reset(); speech->reset(); symbifaceMouse->reset(); sf2Rtc->reset(); sf3->reset(); cpu->reset();
     cpu->sp = 0xbfff;
 }
 void GX4000::acknowledgeInterrupt() {

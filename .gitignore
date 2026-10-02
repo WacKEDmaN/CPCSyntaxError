@@ -21,6 +21,10 @@ imgui.ini
 # and the Plus system cartridge in /roms/ ARE tracked -- see roms/README.txt.)
 /media/
 
+# ROMs that may NOT be redistributed: the program asks for them (roms/README.txt).
+/roms/yrw801*
+/roms/sp0256*
+
 # Editor / OS noise
 .vscode/
 .idea/

@@ -15,7 +15,6 @@ static int paramCount(int opcode) {
     }
 }
 
-FloppySound floppySound;
 
 static double jsRandom() {
     static std::mt19937 engine(0x1234abcd);
@@ -66,7 +65,7 @@ void UPD765A::reset() {
     std::array<std::shared_ptr<Disk>, 4> mountedDrives = drives;
     phase = IDLE; command = 0; params.clear(); result.clear();
     transfer.clear(); transferIndex = 0; motor = false;
-    floppySound.stop("motor");
+    machineSounds.motor(false);
     transferTargets.clear(); ownedTargets.clear(); formatting = false; activeSector.reset();
     drives = mountedDrives;
     // tracks preserved (this.tracks ? slice : [0,0,0,0]) — already a member.
@@ -96,18 +95,18 @@ std::shared_ptr<Disk> UPD765A::mount(const Bytes& input, int unit) {
     sectorIndex = 0;
     activeDriveIndex = driveIndex;
     interruptState = 0xc0 | driveIndex;
-    floppySound.play("insert");
+    machineSounds.insert();
     return disk0;
 }
 void UPD765A::eject(int unit) {
     int driveIndex = unit & 3;
+    if (drives[driveIndex]) machineSounds.eject();
     drives[driveIndex] = nullptr;
     interruptState = 0xc8 | driveIndex;
 }
 void UPD765A::setMotor(int value) {
     bool nextMotor = !!(value & 1);
-    if (nextMotor && !motor) floppySound.play("motor", true);
-    else if (!nextMotor && motor) floppySound.stop("motor");
+    if (nextMotor != motor) machineSounds.motor(nextMotor);
     motor = nextMotor;
 }
 int UPD765A::status() {
@@ -254,7 +253,7 @@ void UPD765A::execute() {
         tracks[driveIndex] = 0;
         interruptState = 0x20 | (paramOr(0, 0) & 7);
         phase = IDLE;
-        if (oldTrack != 0) floppySound.play(oldTrack == 1 ? "seekback" : "trackback");
+        machineSounds.steps(oldTrack);   // RECALIBRATE steps the head back to track 0
         return;
     }
     if (opcode == 0x0f) {
@@ -266,8 +265,7 @@ void UPD765A::execute() {
         tracks[driveIndex] = newTrack;
         interruptState = (disk0 ? 0x20 : 0x48) | (paramOr(0, 0) & 7);
         phase = IDLE;
-        if (newTrack > oldTrack) { int diff = newTrack - oldTrack; floppySound.play(diff == 1 ? "seek" : "track"); }
-        else if (newTrack < oldTrack) { int diff = oldTrack - newTrack; floppySound.play(diff == 1 ? "seekback" : "trackback"); }
+        machineSounds.steps(std::abs(newTrack - oldTrack));   // one step a track
         return;
     }
     if (opcode == 0x04) {

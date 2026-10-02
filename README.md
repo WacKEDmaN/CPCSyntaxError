@@ -33,9 +33,19 @@ around a cycle-level model of the machine's video chips.
     `&FFC4`/`&FF7E`): 18 FM + 24 wavetable channels, for SymbOS's sound daemon and SymAmp.
     The General MIDI samples need Yamaha's YRW801 ROM (not included): turning the card on
     without it opens a prompt to download it from a URL or choose a copy, saved to `roms/`.
+  - **PlayCity** (TotO's two YMZ294 + Z80 CTC at `&F880`-`&F988`): six more AY channels
+    in stereo, the CTC's programmable clock, raster NMIs and IM2 timer interrupts.
+  - **Speech synthesisers**: the Amstrad **SSA-1** (`&FBEE`) and **dk'tronics** (`&FBFE`),
+    both General Instrument's SP0256-AL2 (MAME's SP0256 core), and **LambdaSpeak 3** with its
+    serial **MP3 module** (a Catalex YX5300): MP3 files from a folder on your PC, laid out
+    as its micro-SD card (`01/001xxx.mp3`...). The SP0256-AL2's own ROM is not included:
+    choosing a speech board without it opens a prompt to download it or choose a copy.
   - Symbiface II/III mouse and clock, lightguns (Trojan Light Phazer, Gunstick,
     West Phaser), a printer or dot-matrix printer on the printer port, DigiBlaster /
     AmDrum, the Plus analogue port.
+- **Disc drive and keyboard sounds** (Audio): the drive's motor, head steps, disc insert and
+  eject, and key clicks, played from real recordings in `sounds/` -- replace them with your
+  own WAV files (`sounds/CREDITS.txt` lists the names).
 - A **debugger**: breakpoints with conditions, memory watchpoints, step
   into / over / out, disassembly with labels, hex editor, and live views of the
   CRTC, Gate Array, monitor, Plus ASIC, PSG, PPI, keyboard matrix, disc
@@ -79,6 +89,7 @@ around a cycle-level model of the machine's video chips.
    | 464 Plus / 6128 Plus / GX4000 | the Plus system cartridge, a `.cpr` whose name contains `burning rubber` |
 | M4 board | `M4ROM` (included) |
 | OPL4 card's GM samples | `yrw801` (not included -- the emulator prompts for it) |
+| SSA-1 / dk'tronics / LambdaSpeak 3 speech | `sp0256-al2.bin`, 2 KB (not included -- the emulator prompts for it) |
 
 3. The first start boots a CPC 6128. Pick another machine from **Machine → Model**, and
    load software from the **File** or **Media** menus, or drop a file onto the window.
@@ -110,7 +121,9 @@ cpcse.exe --shot out.bmp --model cpc6128 --frames 200 [--disk game.dsk] [--type 
           [--cart file.cpr] [--tape file.cdt] [--sna file.sna] [--crtc 0-4]
           [--gate-array 40007|40008|40010] [--beam] [--ram 64-4160]
           [--m4 <folder>] [--gfx9000] [--v9990-shot gfx.bmp] [--video9000-shot mixed.bmp]
-          [--opl4] [--wav out.wav] [--sf2] [--mouse "w120;j5,60;j16,2;tDIR;kEnter;s<file.bmp>"]
+          [--opl4] [--playcity] [--speech ssa1|dktronics|lambdaspeak3] [--mp3card <folder>]
+          [--dac digiblaster|amdrum] [--wav out.wav] [--sf2]
+          [--mouse "w120;j5,60;j16,2;tDIR;kEnter;s<file.bmp>"]
 ```
 
 `--mouse` is a small script run after everything else: `w`ait frames, `m`ove the mouse,
@@ -200,8 +213,13 @@ third_party/   Dear ImGui (docking branch) and RASM, vendored; SDL2 is fetched s
 | M4 board | Working: files and raw SD sectors over a host folder, checked against the M4's own ROM source. Not yet: mounting DSK images through the M4, its ROM board, WiFi/network |
 | GFX9000 (V9990) + Video9000 | Working, from Yamaha's application manual; blitter commands complete at once rather than taking their real time |
 | OPL4 (YMF278B) | Working (ymfm core); needs `yrw801*.rom` for the General MIDI samples |
+| PlayCity | Working: both YMZ294s and the CTC's clock measured; its NMI / IM2 timers follow the Z80 CTC manual but are not yet tested with PlayCity software |
+| SSA-1 / dk'tronics speech | Working (MAME's SP0256 core); needs `sp0256-al2.bin` |
+| LambdaSpeak 3 | Its SSA-1 mode and its serial mode with the Catalex MP3 module. **Not emulated:** the DECtalk / Epson speech modes (the Epson chip's firmware) |
+| Drive / keyboard sounds | Working, from recordings (an Amiga 600 drive and a PC keyboard -- no licence-clear Amstrad recordings were found; drop your own in `sounds/`) |
 | **Symbiface II / III** | **Incomplete** -- mouse and RTC only; the IDE/CF interface is not emulated |
-| **DigiBlaster / AmDrum DACs, lightguns, printers** | Working, lightly tested |
+| DigiBlaster / AmDrum DACs | Working -- they were silent before 0.2.2 (never mixed in); now measured |
+| **Lightguns, printers** | Working, lightly tested |
 
 ## Known issues
 

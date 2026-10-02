@@ -62,7 +62,7 @@ void CRTC6845::reset() {
     adjustLengthLatched = registers[5] & 0x1f;
     r9Previous = registers[9]; r5Previous = registers[5]; r0Previous = registers[0]; r8Previous = registers[8]; lastWriteBlockIo = false;
     hsyncEndedThisCharacter = false; r3WrittenThisCharacter = false; r2WrittenThisCharacter = false; horizontalOverflowed = false; r7WrittenThisCharacter = false;
-    r3JitPending = false; hsyncEndedJit = false;
+    r3JitPending = false; hsyncEndedJit = false; hsyncCutFirstMicrosecond = false;
     adjustFromFrameStart = false; adjustBlocksRegisterReload = false;
     ivmExitDeferred = false; r1ReloadPending = false; rfdActive = false; rfdIgnoresParity = false; rfdParityLocked = false; lastLineEnlarged = false; interlaceLineNow = false; r0EnlargeStepsVertical = false; adjustEngagedWithoutR5 = false; rasterParity = 0; interlaceFourthMicrosecond = -1; borderR6Status = false; ivmTestDeferred = false; parityR6 = 1; midVsyncParity = 0; r1ZeroLate = false;
     verticalMatchForced = false; vsyncGhost = false; lastLineBlocked = false;
@@ -340,6 +340,20 @@ void CRTC6845::writeRegister(int reg, int value) {
             // Dropping the pin alone left its mode countdown running, and SHAKER BI/E
             // switched mode mid-line where the real CPC's text runs on untouched.
             if (lastWriteBlockIo) onHsyncCancelled();
+            // ACCC §14.5.4 (p.139/141): an OUT(C),r8 does not prevent it -- "the first
+            // µsecond of HSYNC is special, because interrupting it with the value 0
+            // interrupts the HSYNC prematurely". It ran for 3 Pixel-M2 of this character
+            // on CRTC 1, so the GATE ARRAY sees it start and end: the black of those three
+            // pixels, and the pending mode update thrown away below the 3rd µsec
+            // (§9.3.4.1, onHsyncStoppedByJit). SHAKER BI/A ("R3JIT. R2=R3=14 / R3=0 ON
+            // C0io=14 ... IO WITH OUTC") draws that thin black column on the real CPC,
+            // where ours had nothing at all.
+            else if (behaviour->r3ZeroFirstMicrosecondBlackEndPixel() >= 0) {
+                hsyncEndedThisCharacter = true;
+                hsyncEndedJit = true; r3JitPending = false;
+                hsyncCutFirstMicrosecond = true;
+                onHsync();
+            }
         }
     }
     if (reg == 7) {
@@ -987,6 +1001,12 @@ bool CRTC6845::updateVerticalType1() {
             // at the end of the R5 count, so §11.9's "it is possible to update R8 on one
             // of the lines displayed via R5" holds on this chip too.
             if (!claimInterlaceAdjustLine()) { adjustStateEngaged = false; newFrame(); return true; }
+            // The same paragraph: "C4 is incremented each time C9=R9", so the interlace
+            // line runs with C4=R4+1 like any additional line (§19.6.1 states it in those
+            // words). With R5=0 C4 did not step on entry above, and R7=R4+1 could never
+            // start a VSYNC on it -- SHAKER's "TEST DELAYED VSYNC CRTC 1" (CO/A) printed
+            // CPU=#0000 WRONG (EXP:#0820) on every R7=R4+1 row.
+            if (!adjustStateEngaged && verticalAdjust == 0) vertical = (vertical + 1) & 0x7f;
         }
         verticalAdjust = (verticalAdjust + 1) & 0x1f;
     }
@@ -1242,8 +1262,15 @@ bool CrtcBehaviour::rasterMatchesMaximum(CRTC6845& crtc) const {
 // Default horizontal-total match on an R0 write: exact. ASIC catches up with >=.
 bool CrtcBehaviour::horizontalCounterAtTotal(CRTC6845& crtc) const { return crtc.horizontal == crtc.registers[0]; }
 void gaHsyncBlackWindow(const CrtcBehaviour* chip, bool now, bool before,
-                        bool r2Jit, bool endJit, int endLag, int& from, int& to) {
+                        bool r2Jit, bool endJit, int endLag, bool cutFirstUs,
+                        int& from, int& to) {
     from = 16; to = 16;
+    // ACCC §14.5.4: the pin rose and fell inside this one character, between samples.
+    if (cutFirstUs && !now && !before && chip->r3ZeroFirstMicrosecondBlackEndPixel() >= 0) {
+        from = chip->hsyncBlackStartPixel();
+        to = std::min(16, chip->r3ZeroFirstMicrosecondBlackEndPixel() + endLag);
+        return;
+    }
     if (now && before) { from = 0; }                                  // wholly inside
     else if (now && !before) from = r2Jit ? chip->hsyncBlackStartPixelJit()
                                           : chip->hsyncBlackStartPixel();
@@ -1520,6 +1547,7 @@ void CRTC6845::tickCharacter() {
     // consumed by checkHsync above; a write landing after this point belongs to the
     // NEXT character, so they are cleared here and not at tickCharacter entry.
     hsyncEndedThisCharacter = false; r3WrittenThisCharacter = false; r2WrittenThisCharacter = false; r7WrittenThisCharacter = false;
+    hsyncCutFirstMicrosecond = false;   // set after the previous tick, read by this one's capture
     onCharacter();
     onLightgunBeam(horizontal, scanlineInFrame);
 }

@@ -35,6 +35,7 @@
 #include <vector>
 
 #include "emuhost.h"
+#include "core/machine_sounds.h"
 #include "gui_shell.h"
 #include "../core/monitor_model.h"
 #include "../core/monitor_renderer.h"
@@ -68,6 +69,14 @@ std::string iniFilePath() {
     std::string p = b ? b : "";
     if (b) SDL_free(b);
     return p + "cpcse.ini";
+}
+
+// The drive's and the keyboard's recordings (core/machine_sounds.h), beside the program.
+void loadMachineSounds() {
+    char* b = SDL_GetBasePath();
+    std::string p = b ? b : "";
+    if (b) SDL_free(b);
+    machineSounds.load(p + "sounds");
 }
 
 std::map<std::string, std::string> parseIni(const std::string& path) {
@@ -168,6 +177,7 @@ int main(int argc, char** argv) {
                 }
             }
             EmuHost host;          // the front end's own machine and renderer, windowless
+            loadMachineSounds();
             CslSettings cs;
             cs.romDir = romDir;
             cs.screenshotDir = outDir;
@@ -193,7 +203,7 @@ int main(int argc, char** argv) {
     // uses, with no window. --shot out.bmp [--model id] [--sna f] [--crtc N] [--gate-array 40007|40008|40010]
     // [--frames N] [--beam] [--gfx9000] [--v9990-shot out.bmp] (the GFX9000's own monitor).
     {
-        std::string shot, modelId, snaPath, saveSnaPath, dumpRamPath, diskPath, cartPath, tapePath, typeStr, keysStr; int wantCrtc = -1, wantGa = 0, frames = 200, f1at = -1, wantRam = -1, seq = 0; bool beam = false, diag = false, gfx9000 = false, opl4 = false; std::string v9990Shot, video9000Shot, m4Folder, mouseScript, wavPath; bool sf2 = false;
+        std::string shot, modelId, snaPath, saveSnaPath, dumpRamPath, diskPath, cartPath, tapePath, typeStr, keysStr; int wantCrtc = -1, wantGa = 0, frames = 200, f1at = -1, wantRam = -1, seq = 0; bool beam = false, diag = false, gfx9000 = false, opl4 = false, playcity = false; std::string v9990Shot, video9000Shot, m4Folder, mouseScript, wavPath, speechKind, mp3Card, dacType; bool sf2 = false;
         for (int i = 1; i < argc; i++) { std::string a = argv[i];
             if (a == "--shot" && i + 1 < argc) shot = argv[++i];
             else if (a == "--ram" && i + 1 < argc) wantRam = std::atoi(argv[++i]);
@@ -215,6 +225,10 @@ int main(int argc, char** argv) {
             else if (a == "--beam") beam = true;
             else if (a == "--gfx9000") gfx9000 = true;
             else if (a == "--opl4") opl4 = true;                              // an OPL4 card on the AMSDAP
+            else if (a == "--playcity") playcity = true;                      // a PlayCity
+            else if (a == "--dac" && i + 1 < argc) dacType = argv[++i];        // digiblaster / amdrum
+            else if (a == "--speech" && i + 1 < argc) speechKind = argv[++i]; // ssa1 / dktronics / lambdaspeak3
+            else if (a == "--mp3card" && i + 1 < argc) mp3Card = argv[++i];   // LambdaSpeak 3's MP3 card folder
             else if (a == "--wav" && i + 1 < argc) wavPath = argv[++i];        // the sound of the whole run
             else if (a == "--m4" && i + 1 < argc) m4Folder = argv[++i];   // an M4 board, this folder its SD card
             else if (a == "--sf2") sf2 = true;                                // a Symbiface II (its PS/2 mouse)
@@ -224,6 +238,7 @@ int main(int argc, char** argv) {
         if (!shot.empty()) {
             attachParentConsole();
             EmuHost host; host.scanModels();
+            loadMachineSounds();
             host.gateArrayPart = wantGa;
             if (!m4Folder.empty()) { host.m4Enabled = true; host.m4Folder = m4Folder; }
             if (sf2) host.symbifaceModule = "sf2";
@@ -234,6 +249,10 @@ int main(int argc, char** argv) {
             host.setBeamRenderer(beam);
             if (gfx9000) host.setV9990(true);
             if (opl4) host.setOpl4(true);
+            if (playcity) host.setPlayCity(true);
+            if (!dacType.empty()) host.setDacType(dacType);
+            if (!mp3Card.empty()) host.mp3Card = mp3Card;
+            if (!speechKind.empty()) host.setSpeech(speechKind);
             KeyboardMatrix* kb = host.emu ? host.emu->keyboard : nullptr;
             std::vector<int16_t> wav;
             auto run = [&](int n) {
@@ -569,6 +588,7 @@ int main(int argc, char** argv) {
     ImGui_ImplOpenGL3_Init("#version 130");
 
     EmuHost host;
+    loadMachineSounds();
     GuiShell shell(host);
     shell.applyStyle();
     shell.loadSettings(ini);
@@ -583,6 +603,9 @@ int main(int argc, char** argv) {
     host.setMonitorSet(gets("monitorset", ""));
     host.audioEnabled   = geti("audio", 1) != 0;
     host.masterVolume   = (float)getf("volume", 0.6);
+    host.driveSounds    = geti("drive_sounds", 1) != 0;
+    host.keySounds      = geti("key_sounds", 0) != 0;
+    host.mechanicsVolume = (float)getf("noises_volume", 0.5);
     host.dacType        = gets("dac", "none");
     host.keyboardRegion = gets("region", "uk");
     host.joystickEnabled = geti("joystick", 1) != 0;
@@ -599,6 +622,9 @@ int main(int argc, char** argv) {
     host.lightgunType   = gets("lightgun", "none");       // these four are applied by applySettings
     host.v9990Enabled   = geti("v9990", 0) != 0;
     host.opl4Enabled    = geti("opl4", 0) != 0;
+    host.playCityEnabled = geti("playcity", 0) != 0;
+    if (ini.count("speech")) host.speechKind = ini.at("speech");
+    if (ini.count("mp3card")) host.mp3Card = ini.at("mp3card");
     host.opl4RamKiB     = geti("opl4ram", 2048);
     // One monitor, switched, unless the ini says otherwise (an older ini's v9990beside kept).
     host.gfx9000Monitor = gets("v9990monitor", ini.count("v9990beside") ? (geti("v9990beside", 1) ? "beside" : "window") : "switch");
@@ -834,6 +860,9 @@ int main(int argc, char** argv) {
             f << "gatearray=" << host.gateArrayPart << "\n";
             f << "audio=" << (host.audioEnabled ? 1 : 0) << "\n";
             f << "volume=" << host.masterVolume << "\n";
+            f << "drive_sounds=" << (host.driveSounds ? 1 : 0) << "\n";
+            f << "key_sounds=" << (host.keySounds ? 1 : 0) << "\n";
+            f << "noises_volume=" << host.mechanicsVolume << "\n";
             f << "dac=" << host.dacType << "\n";
             f << "region=" << host.keyboardRegion << "\n";
             f << "joystick=" << (host.joystickEnabled ? 1 : 0) << "\n";
@@ -850,6 +879,9 @@ int main(int argc, char** argv) {
             f << "lightgun=" << host.lightgunType << "\n";
             f << "v9990=" << (host.v9990Enabled ? 1 : 0) << "\n";
             f << "opl4=" << (host.opl4Enabled ? 1 : 0) << "\n";
+            f << "playcity=" << (host.playCityEnabled ? 1 : 0) << "\n";
+            f << "speech=" << host.speechKind << "\n";
+            f << "mp3card=" << host.mp3Card << "\n";
             f << "opl4ram=" << host.opl4RamKiB << "\n";
             f << "v9990monitor=" << host.gfx9000Monitor << "\n";
             f << "tapemotor=" << (host.tapeFollowsMotor ? 1 : 0) << "\n";

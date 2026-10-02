@@ -138,7 +138,9 @@ private:
     void windowCslScripts();
     // A ROM a device needs and the ROM folder lacks: fetch it (a URL) or choose it.
     void romPrompt();
-    std::string romPromptFor;          // "opl4" / "m4" while the prompt is up
+    std::string romPromptFor;          // "opl4" / "m4" / "sp0256" while the prompt is up
+    std::string romChooseStatus;       // a chosen file that would not fit, for the prompt to show
+    void romInstalled(const std::string& key);
     char romUrl[512] = {};
     struct RomFetch;
     std::shared_ptr<RomFetch> romFetch;

@@ -29,9 +29,13 @@ struct CrtcSplit { int line; int address; };
 //                longer (§9.3.4.4/§14.5.4).
 //   endLag     : the GATE ARRAY model's own addition to the end, in Pixel-M2
 //                (GateArrayModel::hsyncBlackEndLag, §14.5.4 p.139/140).
+//   cutFirstUs : an OUT(C),r8 wrote R3=0 on the HSYNC's first usec, so the pin was up
+//                for part of this character only (§14.5.4, CrtcBehaviour::
+//                r3ZeroFirstMicrosecondBlackEndPixel).
 struct CrtcBehaviour;
 void gaHsyncBlackWindow(const CrtcBehaviour* chip, bool now, bool before,
-                        bool r2Jit, bool endJit, int endLag, int& from, int& to);
+                        bool r2Jit, bool endJit, int endLag, bool cutFirstUs,
+                        int& from, int& to);
 
 // A CRTC silicon-type profile (crtc_type_*). Methods receive the
 // live CRTC so they can consult its registers and counters.
@@ -274,6 +278,13 @@ struct CrtcBehaviour {
     // be used on these CRTC's" is honoured through lastWriteBlockIo, so only an
     // OUT(C),r8 arms it.
     virtual int hsyncBlackEndPixelJit() const { return 7; }
+    // ACCC §14.5.4 (p.139): "On the CRTC's 0 and 1, the first µsecond of HSYNC is
+    // special, because interrupting it with the value 0 interrupts the HSYNC
+    // prematurely", and p.141's chart for CRTC 1 ("3rd µs OUT (C),r8 (I/O R3=0)" on
+    // C0=R2) blackens only Pixel-M2 5 to 7 of that character. The 0-based Pixel-M2 the
+    // picture returns on, or -1 where the chip is not modelled this way (then the write
+    // simply withholds the HSYNC).
+    virtual int r3ZeroFirstMicrosecondBlackEndPixel() const { return -1; }
 
     // ACCC §14.9 (p.144) / §16.2.1 (p.162), the end of the VSYNC black: "When a VSYNC
     // ends (at the end of the 26th HSYNC), the black color stops 1 PixelM2 after the
@@ -738,6 +749,9 @@ public:
     uint8_t r8Previous = 0;
     bool r3JitPending = false;
     bool hsyncEndedJit = false;
+    // ACCC §14.5.4: the HSYNC was cut on its first usec by an OUT(C),r8 R3=0, after its
+    // character had been sampled with the pin still down. Read by the next capture.
+    bool hsyncCutFirstMicrosecond = false;
     // An ordinary end made early by an R3 write, lasting hsyncCounter usec: §14.5.4 Note 2's
     // OUTI on CRTC 0-2, and §14.5.3's R3 = C3 on CRTC 3/4 (the chip's C3 lags ours by one).
     bool hsyncEndedByBlockWrite = false;
