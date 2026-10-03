@@ -88,15 +88,18 @@ void UPD765A::restoreSnapshotState(const SnapshotState& state) {
     setMotor(state.motor ? 1 : 0);
 }
 std::shared_ptr<Disk> UPD765A::mount(const Bytes& input, int unit) {
-    int driveIndex = unit & 3;
     std::shared_ptr<Disk> disk0 = parseDsk(input);
-    drives[driveIndex] = disk0;
+    insert(disk0, unit);
+    return disk0;
+}
+void UPD765A::insert(std::shared_ptr<Disk> disk0, int unit) {
+    int driveIndex = unit & 3;
+    drives[driveIndex] = std::move(disk0);
     tracks[driveIndex] = 0;
     sectorIndex = 0;
     activeDriveIndex = driveIndex;
     interruptState = 0xc0 | driveIndex;
     machineSounds.insert();
-    return disk0;
 }
 void UPD765A::eject(int unit) {
     int driveIndex = unit & 3;

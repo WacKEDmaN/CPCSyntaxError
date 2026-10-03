@@ -1,4 +1,5 @@
-// CPCSyntaxError GUI — the Memory map and GFX9000 internals windows.
+// CPCSyntaxError GUI — the memory map (the Memory window's Map tab) and the GFX9000's
+// internals (the GFX9000 window's tabs).
 //
 // Memory map: one 64K block of RAM at a time (the base 64K, or an expansion bank picked
 // from a list as long as the RAM fitted), as a picture filling the window, one pixel a
@@ -101,14 +102,8 @@ static int cpuAddressOf(const GXMemory& m, int physical) {
 }
 
 // ============================================================== Memory map
-void GuiShell::windowMemoryMap() {
-    if (!panelOpen("Memory map")) return;
-    if (!ImGui::Begin("Memory map", &panelOpen("Memory map"))) { ImGui::End(); return; }
-    if (!host.booted() || !host.emu || !host.emu->memory) {
-        ImGui::TextDisabled("No machine booted.");
-        ImGui::End();
-        return;
-    }
+void GuiShell::memoryMapContent() {
+    if (!host.booted() || !host.emu || !host.emu->memory) { ImGui::TextDisabled("No machine booted."); return; }
     GXMemory& m = *host.emu->memory;
     if (m.accessMap.size() != m.ram.size()) m.accessMap.resize(m.ram.size(), 0);
     const int chunks = std::max(1, (int)(m.ram.size() / MAP_CHUNK));
@@ -239,7 +234,6 @@ void GuiShell::windowMemoryMap() {
     }
     // "Live": what the next refresh shows is what happened after this one.
     if (memMapLive && !host.paused) m.clearAccessMap();
-    ImGui::End();
 }
 
 // ============================================================== GFX9000 internals
@@ -269,20 +263,15 @@ static const char* const V9990_COMMANDS[16] = {
     "BMXL", "BMLX", "BMLL", "LINE", "SRCH", "POINT", "PSET", "ADVN",
 };
 
-void GuiShell::windowGfx9000Internals() {
-    if (!panelOpen("GFX9000 internals")) return;
-    if (!ImGui::Begin("GFX9000 internals", &panelOpen("GFX9000 internals"))) { ImGui::End(); return; }
+// The GFX9000 window's tabs after its picture (inside its tab bar).
+void GuiShell::gfxInternalsTabs() {
     V9990* v = host.emu ? host.emu->v9990 : nullptr;
-    if (!v || !host.v9990Enabled) {
-        ImGui::TextDisabled("The GFX9000 is not fitted (Expansions > GFX9000).");
-        ImGui::End();
-        return;
-    }
+    if (!v || !host.v9990Enabled) return;
     const auto& r = v->registers;
     auto word = [&](int i) { return r[i] | r[i + 1] << 8; };
 
     auto tabFlags = [this](int tab) { return gfxInternalsTab == tab ? ImGuiTabItemFlags_SetSelected : 0; };
-    if (ImGui::BeginTabBar("##v99tabs")) {
+    {
         // ------------------------------------------------------ state
         if (ImGui::BeginTabItem("State", nullptr, tabFlags(0))) {
             const int st = v->readStatus();
@@ -450,10 +439,8 @@ void GuiShell::windowGfx9000Internals() {
             ImGui::EndChild();
             ImGui::EndTabItem();
         }
-        ImGui::EndTabBar();
     }
     gfxInternalsTab = -1;
-    ImGui::End();
 }
 
 } // namespace cpcse

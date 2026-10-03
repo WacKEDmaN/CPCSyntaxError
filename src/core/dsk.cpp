@@ -17,6 +17,7 @@ static Bytes sliceBytes(const Bytes& bytes, int start, int end) {
     if (end < start) end = start;
     return Bytes(bytes.begin() + start, bytes.begin() + end);
 }
+static int nominalSize(int n) { return 128 << std::min(7, n & 7); }
 
 std::shared_ptr<Disk> parseDsk(const Bytes& input) {
     const Bytes& bytes = input;
@@ -24,11 +25,12 @@ std::shared_ptr<Disk> parseDsk(const Bytes& input) {
     bool extended = startsWith(signature, "EXTENDED CPC DSK File") || startsWith(signature, "EXTENDED Disk-File");
     bool standard = startsWith(signature, "MV - CPCEMU") || startsWith(signature, "MV - CPC Disk-File");
     if (!extended && !standard) throw std::runtime_error("Invalid CPC DSK image.");
+    if (bytes.size() < 0x100) throw std::runtime_error("Truncated DSK image.");
     int tracks = bytes[0x30], sides = bytes[0x31];
     if (!tracks || !sides || sides > 2) throw std::runtime_error("Invalid DSK geometry.");
     auto disk = std::make_shared<Disk>();
+    disk->extended = extended;
     disk->creator = text(bytes, 0x22, 14);
-    // .replace(/\0+$/, '').trim()
     while (!disk->creator.empty() && disk->creator.back() == '\0') disk->creator.pop_back();
     { size_t a = 0, b = disk->creator.size();
       while (a < b && std::isspace((unsigned char)disk->creator[a])) a++;
@@ -47,18 +49,22 @@ std::shared_ptr<Disk> parseDsk(const Bytes& input) {
                 throw std::runtime_error("Invalid DSK track " + std::to_string(cylinder) + "/" + std::to_string(side) + ".");
             int sectorCount = bytes[offset + 0x15];
             auto track = std::make_shared<Track>();
-            track->cylinder = bytes[offset + 0x12]; track->side = bytes[offset + 0x13];
+            track->cylinder = bytes[offset + 0x10]; track->side = bytes[offset + 0x11];
+            track->dataRate = bytes[offset + 0x12]; track->recordingMode = bytes[offset + 0x13];
+            track->sizeCode = bytes[offset + 0x14];
+            track->gap3 = bytes[offset + 0x16]; track->filler = bytes[offset + 0x17];
             int dataOffset = offset + (sectorCount > 29 ? 0x200 : 0x100);
             for (int index = 0; index < sectorCount; index += 1) {
                 int info = offset + 0x18 + index * 8;
-                int n = bytes[info + 3] & 0xff, sizeCode = std::min(7, n & 7), nominal = 128 << sizeCode;
+                int n = bytes[info + 3] & 0xff, nominal = nominalSize(n);
                 int stored = extended ? word(bytes, info + 6) : 0;
                 int maxTrackBytes = std::max(0, offset + trackSize - dataOffset);
                 int length = std::min(stored ? stored : nominal, maxTrackBytes);
-                int copies = stored && stored % nominal == 0 ? std::max(1, stored / nominal) : 1;
+                int copies = stored && stored > nominal && stored % nominal == 0 ? stored / nominal : 1;
                 std::vector<Bytes> data;
                 for (int copy = 0; copy < copies; copy += 1)
-                    data.push_back(sliceBytes(bytes, dataOffset + copy * nominal, dataOffset + std::min(length, (copy + 1) * nominal)));
+                    data.push_back(sliceBytes(bytes, dataOffset + copy * (copies > 1 ? nominal : length),
+                                              dataOffset + (copies > 1 ? (copy + 1) * nominal : length)));
                 Sector sector;
                 sector.c = bytes[info]; sector.h = bytes[info + 1]; sector.r = bytes[info + 2]; sector.n = n;
                 sector.st1 = bytes[info + 4]; sector.st2 = bytes[info + 5]; sector.data = data; sector.weakIndex = 0;
@@ -71,53 +77,84 @@ std::shared_ptr<Disk> parseDsk(const Bytes& input) {
     return disk;
 }
 
-Bytes serializeDsk(const Disk& disk) {
-    int tracks = disk.tracks, sides = disk.sides;
-    std::vector<int> trackSizes;
-    for (int cylinder = 0; cylinder < tracks; cylinder += 1) {
-        for (int side = 0; side < sides; side += 1) {
-            std::shared_ptr<Track> track = (cylinder < (int)disk.trackData.size() && side < (int)disk.trackData[cylinder].size()) ? disk.trackData[cylinder][side] : nullptr;
-            if (!track) { trackSizes.push_back(0); continue; }
-            int sectorCount = (int)track->sectors.size();
-            int dataBytes = 0;
-            for (const auto& sector : track->sectors) dataBytes += sector.data.empty() ? 0 : (int)sector.data[0].size();
-            int info = sectorCount > 29 ? 0x200 : 0x100;
-            trackSizes.push_back((int)std::ceil((info + dataBytes) / 256.0) * 256);
+static std::shared_ptr<Track> trackAt(const Disk& disk, int cylinder, int side) {
+    return cylinder < (int)disk.trackData.size() && side < (int)disk.trackData[cylinder].size() ? disk.trackData[cylinder][side] : nullptr;
+}
+// What a sector's data takes in the image: every copy, one after the other.
+static int storedSize(const Sector& s) {
+    int n = 0;
+    for (const Bytes& b : s.data) n += (int)b.size();
+    return n;
+}
+
+bool dskFitsStandard(const Disk& disk, std::string* why) {
+    int size = -1;
+    for (int cylinder = 0; cylinder < disk.tracks; cylinder++)
+        for (int side = 0; side < disk.sides; side++) {
+            auto track = trackAt(disk, cylinder, side);
+            if (!track) { if (why) *why = "track " + std::to_string(cylinder) + " side " + std::to_string(side) + " is unformatted"; return false; }
+            if (track->sectors.size() > 29) { if (why) *why = "a track holds more than 29 sectors"; return false; }
+            int bytes = 0x100;
+            for (const Sector& s : track->sectors) {
+                if (s.data.size() != 1 || (int)s.data[0].size() != nominalSize(s.n)) {
+                    if (why) *why = "a sector is weak or not its full size (cylinder " + std::to_string(cylinder) + ")";
+                    return false;
+                }
+                bytes += nominalSize(s.n);
+            }
+            if (size >= 0 && bytes != size) { if (why) *why = "the tracks are not all one size"; return false; }
+            size = bytes;
         }
-    }
+    return true;
+}
+
+Bytes serializeDsk(const Disk& disk, bool standard) {
+    const int tracks = disk.tracks, sides = disk.sides;
+    if (standard && !dskFitsStandard(disk)) standard = false;
+    std::vector<int> trackSizes;
+    for (int cylinder = 0; cylinder < tracks; cylinder += 1)
+        for (int side = 0; side < sides; side += 1) {
+            auto track = trackAt(disk, cylinder, side);
+            if (!track) { trackSizes.push_back(0); continue; }
+            int dataBytes = 0;
+            for (const auto& sector : track->sectors) dataBytes += storedSize(sector);
+            const int info = track->sectors.size() > 29 ? 0x200 : 0x100;
+            trackSizes.push_back(standard ? info + dataBytes : (info + dataBytes + 255) / 256 * 256);
+        }
     int total = 0x100; for (int x : trackSizes) total += x;
     Bytes out(total, 0);
     auto putText = [&](int offset, const std::string& value) { for (int i = 0; i < (int)value.size(); i += 1) out[offset + i] = (uint8_t)value[i]; };
-    putText(0x00, "EXTENDED CPC DSK File\r\n");
-    std::string creator = (disk.creator.empty() ? std::string("CPCSE") : disk.creator).substr(0, 13);
-    putText(0x22, creator);
+    putText(0x00, standard ? "MV - CPCEMU Disk-File\r\nDisk-Info\r\n" : "EXTENDED CPC DSK File\r\nDisk-Info\r\n");
+    putText(0x22, (disk.creator.empty() ? std::string("CPCSE") : disk.creator).substr(0, 14));
     out[0x30] = (uint8_t)(tracks & 0xff);
     out[0x31] = (uint8_t)(sides & 0xff);
-    for (int i = 0; i < (int)trackSizes.size(); i += 1) out[0x34 + i] = (uint8_t)((trackSizes[i] / 256) & 0xff);
-
+    if (standard) {
+        const int size = trackSizes.empty() ? 0 : trackSizes[0];
+        out[0x32] = (uint8_t)(size & 0xff); out[0x33] = (uint8_t)(size >> 8);
+    } else {
+        for (int i = 0; i < (int)trackSizes.size() && 0x34 + i < 0x100; i += 1) out[0x34 + i] = (uint8_t)((trackSizes[i] / 256) & 0xff);
+    }
     int offset = 0x100;
-    for (int cylinder = 0; cylinder < tracks; cylinder += 1) {
+    for (int cylinder = 0; cylinder < tracks; cylinder += 1)
         for (int side = 0; side < sides; side += 1) {
-            std::shared_ptr<Track> track = (cylinder < (int)disk.trackData.size() && side < (int)disk.trackData[cylinder].size()) ? disk.trackData[cylinder][side] : nullptr;
-            int trackSize = trackSizes[cylinder * sides + side];
+            auto track = trackAt(disk, cylinder, side);
+            const int trackSize = trackSizes[cylinder * sides + side];
             if (!track || !trackSize) continue;
-            int sectorCount = (int)track->sectors.size();
-            int info = sectorCount > 29 ? 0x200 : 0x100;
+            const int sectorCount = (int)track->sectors.size();
+            const int info = sectorCount > 29 ? 0x200 : 0x100;
             putText(offset, "Track-Info\r\n");
-            out[offset + 0x0C] = 0x4a; out[offset + 0x0D] = 0x41; out[offset + 0x0E] = 0x4d; out[offset + 0x0F] = 0x53;
-            out[offset + 0x10] = (uint8_t)(cylinder & 0xff);
-            out[offset + 0x11] = 0;
-            out[offset + 0x12] = (uint8_t)(track->cylinder & 0xff);
-            out[offset + 0x13] = (uint8_t)(track->side & 0xff);
-            out[offset + 0x14] = (uint8_t)((track->sectors.empty() ? 2 : track->sectors[0].n) & 7);
+            out[offset + 0x10] = (uint8_t)(track->cylinder & 0xff);
+            out[offset + 0x11] = (uint8_t)(track->side & 0xff);
+            out[offset + 0x12] = (uint8_t)(track->dataRate & 0xff);
+            out[offset + 0x13] = (uint8_t)(track->recordingMode & 0xff);
+            out[offset + 0x14] = (uint8_t)(track->sizeCode & 0xff);
             out[offset + 0x15] = (uint8_t)(sectorCount & 0xff);
-            out[offset + 0x16] = 0x4e;
-            out[offset + 0x17] = 0xe5;
+            out[offset + 0x16] = (uint8_t)(track->gap3 & 0xff);
+            out[offset + 0x17] = (uint8_t)(track->filler & 0xff);
             for (int index = 0; index < sectorCount; index += 1) {
                 const Sector& sector = track->sectors[index];
-                int infoOffset = offset + 0x18 + index * 8;
-                int nominal = 128 << std::min(7, (sector.n & 7));
-                int stored = sector.data.empty() ? nominal : (int)sector.data[0].size();
+                const int infoOffset = offset + 0x18 + index * 8;
+                const int stored = standard ? 0 : storedSize(sector);
                 out[infoOffset] = (uint8_t)(sector.c & 0xff);
                 out[infoOffset + 1] = (uint8_t)(sector.h & 0xff);
                 out[infoOffset + 2] = (uint8_t)(sector.r & 0xff);
@@ -125,20 +162,18 @@ Bytes serializeDsk(const Disk& disk) {
                 out[infoOffset + 4] = (uint8_t)(sector.st1 & 0xff);
                 out[infoOffset + 5] = (uint8_t)(sector.st2 & 0xff);
                 out[infoOffset + 6] = (uint8_t)(stored & 0xff);
-                out[infoOffset + 7] = (uint8_t)(((unsigned)stored >> 8) & 0xff);
+                out[infoOffset + 7] = (uint8_t)((stored >> 8) & 0xff);
             }
             int dataOffset = offset + info;
-            for (const auto& sector : track->sectors) {
-                const Bytes emptyBuf;
-                const Bytes& data = sector.data.empty() ? emptyBuf : sector.data[0];
-                int copyLen = std::min((int)data.size(), offset + trackSize - dataOffset);
-                for (int k = 0; k < copyLen; k++) out[dataOffset + k] = data[k];
-                dataOffset += (int)data.size();
-            }
-            for (int a = dataOffset; a < offset + trackSize; a++) if (a >= 0 && a < (int)out.size()) out[a] = 0xe5;
+            for (const auto& sector : track->sectors)
+                for (const Bytes& copy : sector.data) {
+                    const int n = std::min((int)copy.size(), offset + trackSize - dataOffset);
+                    for (int k = 0; k < n; k++) out[dataOffset + k] = copy[k];
+                    dataOffset += (int)copy.size();
+                }
+            for (int a = dataOffset; a < offset + trackSize; a++) out[a] = (uint8_t)track->filler;
             offset += trackSize;
         }
-    }
     return out;
 }
 

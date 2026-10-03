@@ -11,6 +11,7 @@ files named here.
 | Dear ImGui (docking branch) | 1.92.9b | Omar Cornut and contributors | MIT | `third_party/imgui/LICENSE.txt` |
 | M4 board ROM (`roms/M4ROM.ROM`, v2.0.6) | as released | Duke (spinpoint.org) | redistributed with the author's permission; his copyright | `roms/README.txt` |
 | SP0256 (GI Narrator speech processor), from MAME | MAME commit 638224548b67, framework removed | Joseph Zbiciak, Tim Lindner | BSD 3-Clause | `third_party/sp0256/LICENSE` |
+| DejaVu Sans Mono (the interface font, embedded) | 2.37 | Bitstream, Inc.; DejaVu changes public domain | Bitstream Vera licence | `third_party/dejavu/LICENSE.txt` |
 | minimp3 (MP3 decoder) | upstream ea99364f61c1 | lieff | CC0 1.0 | `third_party/minimp3/LICENSE` |
 | Disc drive recordings (`sounds/drive_*.wav`), "Amiga 600 floppy drive sounds" | cut and levelled | asie (opengameart.org) | CC0 1.0 | `sounds/CREDITS.txt` |
 | Key press recordings (`sounds/key_press*.wav`), "Single Key Press Sounds" | trimmed and levelled | eklee, qubodup (opengameart.org / freesound.org) | **CC Attribution 3.0** | `sounds/CREDITS.txt` |

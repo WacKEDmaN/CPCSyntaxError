@@ -175,6 +175,7 @@ add_executable(cpcse
   src/gui/gui_debugger.cpp
   src/gui/gui_debug_views.cpp
   src/gui/gui_memory_views.cpp
+  src/gui/gui_dsk_editor.cpp
   src/gui/gui_assembler.cpp
 )
 # A GUI-subsystem executable: no console window. SDL2main provides the WinMain

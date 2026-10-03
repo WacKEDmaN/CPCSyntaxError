@@ -50,6 +50,8 @@ public:
     void setTrack(int val) { tracks[0] = val; }
     void advanceCycles(int cycles) { (void)cycles; }
     std::shared_ptr<Disk> mount(const Bytes& input, int unit = 0);
+    // A disc already in memory (the DSK editor's): the drive and the editor share it.
+    void insert(std::shared_ptr<Disk> disk, int unit = 0);
     void eject(int unit = 0);
     void setMotor(int value);
     int status();

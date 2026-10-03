@@ -11,6 +11,12 @@
 #include <filesystem>
 
 #include "gui_assembler.h"
+#include "gui_dsk_editor.h"
+
+// DejaVu Sans Mono (Bitstream Vera licence: third_party/dejavu/LICENSE.txt)
+#include "font_dejavu_mono.inc"
+// The logo, run-length coded (tools/make_logo.py, tools/embed_image.py)
+#include "logo.inc"
 #include "core/emulator.h"
 #include "core/memory.h"
 #include "core/video.h"
@@ -26,29 +32,28 @@ static const char* CRTC_NAMES[] = { "0  HD6845S / UM6845", "1  UM6845R (1-A)", "
 // Past 576K (64K + a 512K board) each step is one more 512K segment of a 4 MB-style board.
 static const int RAM_SIZES[] = { 64, 128, 256, 320, 512, 576, 1088, 1600, 2112, 2624, 3136, 3648, 4160 };
 // Bump when the set of windows or the default layout changes.
-static const int LAYOUT_VERSION = 4;
+static const int LAYOUT_VERSION = 5;
 
 GuiShell::GuiShell(EmuHost& h) : host(h), debugger(h) {
+    // Minimal by default: the screen, the machine and its media. The rest opens from the
+    // menus and docks with its group (placeNewlyOpened).
     panels = {
-        { "Screen", "win_screen", true },
-        { "Machine", "win_machine", true },
-        { "Media", "win_media", true },
-        { "Settings", "win_settings", true },
-        { "CPU", "win_cpu", true },
-        { "Disassembly", "win_disasm", true },
-        { "Memory", "win_memory", true },
-        { "Breakpoints", "win_breakpoints", true },
-        { "Memory map", "win_memory_map", true },
-        { "Video", "win_video", true },
-        { "Audio & I/O", "win_audio_io", true },
-        { "Assembler", "win_asm", true },
-        { "Printer", "win_printer", true },
-        { "GFX9000", "win_gfx9000", true },
-        { "GFX9000 internals", "win_gfx9000_internals", true },
-        { "CSL scripts", "win_csl", true },
+        { "Screen", "win_screen", true, true },
+        { "Machine", "win_machine", true, true },
+        { "Media", "win_media", true, true },
+        { "Debugger", "win_debugger", false, false },
+        { "Chips", "win_chips", false, false },
+        { "Memory", "win_memory", false, false },
+        { "GFX9000", "win_gfx9000", false, false },
+        { "Assembler", "win_asm", false, false },
+        { "DSK editor", "win_dsk_editor", false, false },
+        { "CSL scripts", "win_csl", false, false },
+        { "Printer", "win_printer", false, false },
+        { "Settings", "win_settings", false, false },
     };
     assembler = std::make_unique<AssemblerWindow>(host, debugger, browser, saver);
     assembler->showInDisassembly = [this](int a) { showInDisassembly(a); };
+    dskEditor = std::make_unique<DskEditorWindow>(host, browser, saver);
 }
 
 GuiShell::~GuiShell() = default;
@@ -70,8 +75,10 @@ void GuiShell::loadSettings(const std::map<std::string, std::string>& ini) {
     auto lv = ini.find("layout_version");
     if (lv == ini.end() || std::atoi(lv->second.c_str()) < LAYOUT_VERSION) {
         resetLayout = true;
-        for (auto& p : panels) p.open = true;
+        for (auto& p : panels) p.open = p.byDefault;
     }
+    auto us = ini.find("ui_scale");
+    if (us != ini.end()) uiScale = std::clamp((float)std::atof(us->second.c_str()), 0.75f, 2.5f);
     auto str = [&](const char* k, std::string& v) { auto i = ini.find(k); if (i != ini.end()) v = i->second; };
     str("csl_script", cslScript); str("csl_out", cslOut); str("csl_diskdir", cslDiskDir);
     auto ci = ini.find("csl_crtc"); if (ci != ini.end()) cslCrtc = std::atoi(ci->second.c_str());
@@ -82,18 +89,40 @@ void GuiShell::saveSettings(std::ostream& out) const {
     out << "layout_version=" << LAYOUT_VERSION << "\n";
     for (const auto& p : panels) out << p.iniKey << "=" << (p.open ? 1 : 0) << "\n";
     out << "statusbar=" << (showStatusBar ? 1 : 0) << "\n";
+    out << "ui_scale=" << uiScale << "\n";
     out << "csl_script=" << cslScript << "\n" << "csl_out=" << cslOut << "\n"
         << "csl_diskdir=" << cslDiskDir << "\n" << "csl_crtc=" << cslCrtc << "\n";
     assembler->saveSettings(out);
 }
 
-// The front end's original look: Dear ImGui's dark theme, square windows, the default font.
+// The front end's look: Dear ImGui's dark theme, square windows, the orange accent --
+// with a smooth monospace font and more room between things than ImGui's defaults.
 void GuiShell::applyStyle() {
+    ImGuiIO& io = ImGui::GetIO();
+    static ImFont* mono = nullptr;
+    if (!mono || io.Fonts->Fonts.empty() || io.Fonts->Fonts[0] != mono) {
+        ImFontConfig cfg;
+        cfg.FontDataOwnedByAtlas = false;    // the embedded array stays ours
+        mono = io.Fonts->AddFontFromMemoryTTF((void*)kDejaVuSansMono, (int)kDejaVuSansMonoSize, 15.0f, &cfg);
+    }
+    io.FontDefault = mono;
     ImGui::StyleColorsDark();
     ImGuiStyle& s = ImGui::GetStyle();
     s.WindowRounding = 0.0f;
     s.Colors[ImGuiCol_WindowBg].w = 1.0f;   // floating OS windows must be opaque
     s.Colors[ImGuiCol_TabSelectedOverline] = kAccent;
+    s.WindowPadding = ImVec2(10, 10);
+    s.FramePadding = ImVec2(7, 4);
+    s.ItemSpacing = ImVec2(9, 6);
+    s.ItemInnerSpacing = ImVec2(6, 4);
+    s.CellPadding = ImVec2(7, 3);
+    s.IndentSpacing = 18;
+    s.ScrollbarSize = 14;
+    s.GrabMinSize = 12;
+    s.TabBarBorderSize = 1;
+    s.SeparatorTextPadding = ImVec2(10, 4);
+    s.ScaleAllSizes(uiScale);
+    s.FontSizeBase = 15.0f * uiScale;
 }
 
 // ============================================================== frame
@@ -131,21 +160,18 @@ void GuiShell::draw(const ShellFrameInfo& info) {
         buildDefaultLayout(dockId);
         resetLayout = false;
     }
+    placeNewlyOpened(dockId);
     ImGui::DockSpaceOverViewport(dockId, vp);
 
     windowScreen(info);
     windowMachine();
     windowMedia();
     windowSettings();
-    windowCpu();
-    windowDisassembly();
+    windowDebugger();
+    windowChips();
+    // The memory map records only while it is shown (and Record is on).
+    if (host.emu && host.emu->memory) host.emu->memory->trackAccess = panelOpen("Memory") && memMapShown && memMapRecord;
     windowMemory();
-    windowBreakpoints();
-    // The memory map records only while its window is open (and Record is on).
-    if (host.emu && host.emu->memory) host.emu->memory->trackAccess = panelOpen("Memory map") && memMapRecord;
-    windowMemoryMap();
-    windowVideo();
-    windowAudioIo();
     if (panelOpen("Assembler")) {
         assembler->draw(&panelOpen("Assembler"));
         if (assembler->focused) toolFocusedNow = true;
@@ -153,8 +179,11 @@ void GuiShell::draw(const ShellFrameInfo& info) {
     windowPrinter();
     romPrompt();
     windowGfx9000();
-    windowGfx9000Internals();
     windowCslScripts();
+    if (panelOpen("DSK editor")) {
+        dskEditor->draw(&panelOpen("DSK editor"));
+        if (dskEditor->focused) toolFocusedNow = true;
+    }
     windowAbout();
     if (showImGuiDemo) ImGui::ShowDemoWindow(&showImGuiDemo);
 
@@ -163,28 +192,60 @@ void GuiShell::draw(const ShellFrameInfo& info) {
     toolFocused = toolFocusedNow;
 }
 
+// The screen with the machine and its media to its left; nothing else until it is asked for.
 void GuiShell::buildDefaultLayout(unsigned id) {
     ImGuiViewport* vp = ImGui::GetMainViewport();
     ImGui::DockBuilderRemoveNode(id);
     ImGui::DockBuilderAddNode(id, ImGuiDockNodeFlags_DockSpace);
     ImGui::DockBuilderSetNodeSize(id, vp->WorkSize);
     ImGuiID center = id;
-    ImGuiID left = ImGui::DockBuilderSplitNode(center, ImGuiDir_Left, 0.20f, nullptr, &center);
-    ImGuiID right = ImGui::DockBuilderSplitNode(center, ImGuiDir_Right, 0.30f, nullptr, &center);
-    ImGuiID bottom = ImGui::DockBuilderSplitNode(center, ImGuiDir_Down, 0.34f, nullptr, &center);
-    ImGuiID leftBottom = ImGui::DockBuilderSplitNode(left, ImGuiDir_Down, 0.50f, nullptr, &left);
-    ImGuiID rightBottom = ImGui::DockBuilderSplitNode(right, ImGuiDir_Down, 0.62f, nullptr, &right);
+    ImGuiID left = ImGui::DockBuilderSplitNode(center, ImGuiDir_Left, 0.22f, nullptr, &center);
+    ImGuiID leftBottom = ImGui::DockBuilderSplitNode(left, ImGuiDir_Down, 0.45f, nullptr, &left);
     ImGui::DockBuilderDockWindow("Screen", center);
     ImGui::DockBuilderDockWindow("Machine", left);
     ImGui::DockBuilderDockWindow("Media", leftBottom);
-    ImGui::DockBuilderDockWindow("Settings", leftBottom);
-    ImGui::DockBuilderDockWindow("CPU", right);
-    ImGui::DockBuilderDockWindow("Breakpoints", right);
-    ImGui::DockBuilderDockWindow("Disassembly", rightBottom);
-    for (const char* w : { "Assembler", "Memory", "Memory map", "Video", "Audio & I/O", "Printer", "GFX9000",
-                           "GFX9000 internals", "CSL scripts" })
-        ImGui::DockBuilderDockWindow(w, bottom);
     ImGui::DockBuilderFinish(id);
+    // what was placed before goes back to its group when next opened
+    placedThisSession.clear();
+    groupNode[0] = groupNode[1] = 0;
+    for (const auto& p : panels)
+        if (!p.byDefault) ImGui::ClearWindowSettings(p.title);
+}
+
+void GuiShell::placeNewlyOpened(unsigned dockspaceId) {
+    struct Group { std::vector<const char*> titles; ImGuiDir dir; float ratio; };
+    static const Group groups[] = {
+        { { "Debugger", "Chips", "Memory", "GFX9000" }, ImGuiDir_Right, 0.42f },
+        { { "Assembler", "DSK editor", "CSL scripts", "Printer", "Settings" }, ImGuiDir_Down, 0.42f },
+    };
+    auto placed = [&](const char* t) { return std::find(placedThisSession.begin(), placedThisSession.end(), t) != placedThisSession.end(); };
+    bool changed = false;
+    for (int gi = 0; gi < 2; gi++) {
+        const Group& g = groups[gi];
+        for (const char* t : g.titles) {
+            if (!panelOpen(t)) { placedThisSession.erase(std::remove(placedThisSession.begin(), placedThisSession.end(), t), placedThisSession.end()); continue; }
+            if (placed(t)) continue;
+            placedThisSession.push_back(t);
+            // a window the saved layout places already (docked, or floated by hand) stays put
+            if (ImGui::FindWindowSettingsByID(ImHashStr(t)) || ImGui::FindWindowByName(t)) continue;
+            ImGuiID target = groupNode[gi] && ImGui::DockBuilderGetNode(groupNode[gi]) ? groupNode[gi] : 0;
+            for (const char* other : g.titles) {
+                if (target) break;
+                ImGuiWindow* w = ImGui::FindWindowByName(other);
+                if (other != t && w && w->DockNode && panelOpen(other)) { target = w->DockNode->ID; break; }
+            }
+            if (!target) {
+                ImGuiDockNode* central = ImGui::DockBuilderGetCentralNode(dockspaceId);
+                if (!central) continue;
+                ImGuiID rest = 0;
+                target = ImGui::DockBuilderSplitNode(central->ID, g.dir, g.ratio, nullptr, &rest);
+            }
+            groupNode[gi] = target;
+            ImGui::DockBuilderDockWindow(t, target);
+            changed = true;
+        }
+    }
+    if (changed) ImGui::DockBuilderFinish(dockspaceId);
 }
 
 // ============================================================== screen
@@ -499,6 +560,10 @@ void GuiShell::menuMedia() {
             ImGui::TextDisabled("%s", host.diskName[d].empty() ? "(empty)" : host.diskName[d].c_str());
             if (ImGui::MenuItem("Insert...")) browser.open(std::string("Insert disk ") + char('A' + d), host.romDir, { ".dsk", ".edsk" }, [this, d](const std::string& p) { host.loadDiskFile(p, d); });
             if (ImGui::MenuItem("Eject", nullptr, false, !host.diskName[d].empty())) host.ejectDisk(d);
+            if (ImGui::MenuItem("Open in the DSK editor", nullptr, false, !host.diskName[d].empty())) {
+                dskEditor->takeFromDrive(d);
+                panelOpen("DSK editor") = true;
+            }
             ImGui::EndMenu();
         }
     }
@@ -532,9 +597,10 @@ void GuiShell::menuSection(const char* title, void (GuiShell::*section)(bool)) {
 
 void GuiShell::menuTools() {
     if (!ImGui::BeginMenu("Tools")) return;
+    ImGui::MenuItem("DSK editor", nullptr, &panelOpen("DSK editor"));
     ImGui::MenuItem("CSL scripts", nullptr, &panelOpen("CSL scripts"));
     ImGui::MenuItem("Printer output", nullptr, &panelOpen("Printer"));
-    ImGui::MenuItem("GFX9000 output", nullptr, &panelOpen("GFX9000"));
+    ImGui::MenuItem("GFX9000", nullptr, &panelOpen("GFX9000"));
     ImGui::Separator();
     ImGui::MenuItem("Assembler", nullptr, &panelOpen("Assembler"));
     if (ImGui::MenuItem("Assemble", "F9")) { panelOpen("Assembler") = true; assembler->assemble(false); }
@@ -556,8 +622,7 @@ void GuiShell::menuDebug() {
     }
     if (ImGui::MenuItem("Remove all watchpoints", nullptr, false, !debugger.watchpoints.empty())) debugger.watchpoints.clear();
     ImGui::Separator();
-    for (const char* w : { "CPU", "Disassembly", "Memory", "Memory map", "Breakpoints", "Video", "Audio & I/O",
-                           "GFX9000 internals", "Assembler" })
+    for (const char* w : { "Debugger", "Chips", "Memory", "GFX9000", "Assembler" })
         ImGui::MenuItem(w, nullptr, &panelOpen(w));
     ImGui::Separator();
     if (ImGui::MenuItem("Assemble", "F9")) { panelOpen("Assembler") = true; assembler->assemble(false); }
@@ -571,15 +636,20 @@ void GuiShell::menuWindow() {
     ImGui::Separator();
     for (const char* w : { "Machine", "Media", "Settings" }) ImGui::MenuItem(w, nullptr, &panelOpen(w));
     ImGui::Separator();
-    for (const char* w : { "CSL scripts", "Printer", "GFX9000", "Assembler" }) ImGui::MenuItem(w, nullptr, &panelOpen(w));
+    for (const char* w : { "Debugger", "Chips", "Memory", "GFX9000" }) ImGui::MenuItem(w, nullptr, &panelOpen(w));
     ImGui::Separator();
-    for (const char* w : { "CPU", "Disassembly", "Memory", "Memory map", "Breakpoints", "Video", "Audio & I/O",
-                           "GFX9000 internals" })
-        ImGui::MenuItem(w, nullptr, &panelOpen(w));
+    for (const char* w : { "Assembler", "DSK editor", "CSL scripts", "Printer" }) ImGui::MenuItem(w, nullptr, &panelOpen(w));
     ImGui::Separator();
+    if (ImGui::BeginMenu("Interface size")) {
+        for (int pct : { 90, 100, 110, 125, 150, 175, 200 }) {
+            char label[16]; std::snprintf(label, sizeof label, "%d%%", pct);
+            if (ImGui::MenuItem(label, nullptr, std::fabs(uiScale * 100 - pct) < 1)) { uiScale = pct / 100.0f; applyStyle(); }
+        }
+        ImGui::EndMenu();
+    }
     ImGui::MenuItem("Status bar", nullptr, &showStatusBar);
     if (ImGui::MenuItem("Reset layout")) {
-        for (auto& p : panels) p.open = true;
+        for (auto& p : panels) p.open = p.byDefault;
         resetLayout = true;
     }
     ImGui::EndMenu();
@@ -612,15 +682,35 @@ void GuiShell::menuHelp() {
     ImGui::EndMenu();
 }
 
+// The logo across the top of the Machine window: its natural size times the interface size,
+// never wider than the window. (Without a renderer to upload it to, the name in text.)
+void GuiShell::drawLogo() {
+    if (!logoTexture && uploadTexture) {
+        std::vector<uint32_t> px((size_t)kLogoWidth * kLogoHeight);
+        size_t at = 0;
+        for (size_t i = 0; i + 4 < sizeof kLogoRuns && at < px.size(); i += 5)
+            for (int n = 0; n < kLogoRuns[i] && at < px.size(); n++)
+                px[at++] = (uint32_t)kLogoRuns[i + 1] | (uint32_t)kLogoRuns[i + 2] << 8 |
+                           (uint32_t)kLogoRuns[i + 3] << 16 | (uint32_t)kLogoRuns[i + 4] << 24;
+        logoTexture = uploadTexture(9, px.data(), kLogoWidth, kLogoHeight);
+    }
+    if (!logoTexture) {
+        ImGui::PushFont(nullptr, ImGui::GetStyle().FontSizeBase * 2.4f);
+        ImGui::TextColored(kAccent, "CPCSyntaxError");
+        ImGui::PopFont();
+        return;
+    }
+    const float w = std::min(ImGui::GetContentRegionAvail().x, kLogoWidth * 0.5f * uiScale);
+    ImGui::Image((ImTextureID)(intptr_t)logoTexture, ImVec2(w, w * kLogoHeight / kLogoWidth));
+}
+
 // ============================================================== settings windows
 void GuiShell::windowMachine() {
     if (!panelOpen("Machine")) return;
     if (ImGui::Begin("Machine", &panelOpen("Machine"))) {
-        ImGui::PushFont(nullptr, ImGui::GetStyle().FontSizeBase * 2.4f);
-        ImGui::TextColored(kAccent, "CPCSyntaxError");
-        ImGui::PopFont();
-        ImGui::TextDisabled("Amstrad CPC emulator");
+        drawLogo();
 
+        const float labelW = ImGui::GetFontSize() * 4.8f;   // the labels' column
         int cur = host.currentModel;
         if (ImGui::CollapsingHeader("Machine", ImGuiTreeNodeFlags_DefaultOpen)) {
             std::string curLabel = cur >= 0 ? host.models[cur].label
@@ -633,11 +723,11 @@ void GuiShell::windowMachine() {
                                     m.plus ? ", boots its system cartridge" : "");
             }
             ImGui::BeginDisabled(cur < 0);
-            ImGui::TextUnformatted("RAM"); ImGui::SameLine(60); ImGui::SetNextItemWidth(-1);
+            ImGui::TextUnformatted("RAM"); ImGui::SameLine(labelW); ImGui::SetNextItemWidth(-1);
             if (ImGui::BeginCombo("##ram", (std::to_string(host.ramKiB) + " KB").c_str())) { ramItems(false); ImGui::EndCombo(); }
-            ImGui::TextUnformatted("CRTC"); ImGui::SameLine(60); ImGui::SetNextItemWidth(-1);
+            ImGui::TextUnformatted("CRTC"); ImGui::SameLine(labelW); ImGui::SetNextItemWidth(-1);
             if (ImGui::BeginCombo("##crtc", CRTC_NAMES[host.crtcType % 6])) { crtcItems(false); ImGui::EndCombo(); }
-            ImGui::TextUnformatted("GA"); ImGui::SameLine(60); ImGui::SetNextItemWidth(-1);
+            ImGui::TextUnformatted("GA"); ImGui::SameLine(labelW); ImGui::SetNextItemWidth(-1);
             {
                 const bool asic = host.crtcType == 3 || host.crtcType == 4;
                 const char* gaLabel = host.crtcType == 4 ? "40226 ASIC (is the CRTC 4)"
@@ -646,7 +736,7 @@ void GuiShell::windowMachine() {
                 for (const auto& g : GA_PARTS) if (!asic && g.part == fitted) gaLabel = g.label;
                 if (ImGui::BeginCombo("##gatearray", gaLabel)) { gateArrayItems(false); ImGui::EndCombo(); }
             }
-            ImGui::TextUnformatted("Monitor"); ImGui::SameLine(60); ImGui::SetNextItemWidth(-1);
+            ImGui::TextUnformatted("Monitor"); ImGui::SameLine(labelW); ImGui::SetNextItemWidth(-1);
             {
                 const MonitorModel* set = host.monitorSetId.empty() ? nullptr : monitorModelFor(host.monitorSetId);
                 if (ImGui::BeginCombo("##machinemonitor", set ? set->name : "As shipped with the machine")) { monitorSetItems(false); ImGui::EndCombo(); }
@@ -672,19 +762,24 @@ void GuiShell::windowMedia() {
     if (!panelOpen("Media")) return;
     if (ImGui::Begin("Media", &panelOpen("Media"))) {
         if (ImGui::CollapsingHeader("Disk", ImGuiTreeNodeFlags_DefaultOpen)) {
+            // a drive a line: its letter, its buttons, the disc in it
             for (int d = 0; d < 2; d++) {
                 ImGui::PushID(d);
-                ImGui::Text("Drive %c", 'A' + d);
+                ImGui::AlignTextToFramePadding();
+                ImGui::Text("%c:", 'A' + d);
                 ImGui::SameLine();
                 if (ImGui::SmallButton("Insert..."))
                     browser.open(std::string("Insert disk ") + char('A' + d), host.romDir, { ".dsk", ".edsk" }, [this, d](const std::string& p) { host.loadDiskFile(p, d); });
-                if (!host.diskName[d].empty()) {
-                    ImGui::SameLine();
-                    if (ImGui::SmallButton("Eject")) host.ejectDisk(d);
-                    ImGui::TextWrapped("%s", host.diskName[d].c_str());
-                } else {
-                    ImGui::TextDisabled("(empty)");
-                }
+                ImGui::BeginDisabled(host.diskName[d].empty());
+                ImGui::SameLine();
+                if (ImGui::SmallButton("Eject")) host.ejectDisk(d);
+                ImGui::SameLine();
+                if (ImGui::SmallButton("Edit")) { dskEditor->takeFromDrive(d); panelOpen("DSK editor") = true; }
+                if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip("Open the disc in the DSK editor");
+                ImGui::EndDisabled();
+                ImGui::SameLine();
+                if (host.diskName[d].empty()) ImGui::TextDisabled("(empty)");
+                else ImGui::TextUnformatted(host.diskName[d].c_str());
                 ImGui::PopID();
             }
             ImGui::TextDisabled("Drop a .DSK or .EDSK onto the window");

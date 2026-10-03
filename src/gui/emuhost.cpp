@@ -700,14 +700,30 @@ bool EmuHost::loadDiskFile(const std::string& path, int unit) {
     if (!disk) { status = "Not a valid .DSK/.EDSK image."; return false; }
     emu->hasFdc = true;
     diskName[unit] = std::filesystem::path(path).filename().string();
+    diskPath[unit] = path;
     status = "Inserted " + diskName[unit] + " into drive " + std::string(unit == 0 ? "A" : "B");
     return true;
+}
+
+bool EmuHost::insertDisk(std::shared_ptr<Disk> disk, int unit, const std::string& name) {
+    if (unit < 0 || unit > 1 || !emu || !emu->fdc || !disk) return false;
+    emu->fdc->insert(disk, unit);
+    emu->hasFdc = true;
+    diskName[unit] = name;
+    status = "Inserted " + name + " into drive " + std::string(unit == 0 ? "A" : "B");
+    return true;
+}
+
+std::shared_ptr<Disk> EmuHost::driveDisk(int unit) const {
+    if (unit < 0 || unit > 1 || !emu || !emu->fdc) return nullptr;
+    return emu->fdc->drives[(size_t)unit];
 }
 
 void EmuHost::ejectDisk(int unit) {
     if (unit < 0 || unit > 1 || !emu->fdc) return;
     emu->fdc->eject(unit);
     diskName[unit].clear();
+    diskPath[unit].clear();
     status = "Ejected drive " + std::string(unit == 0 ? "A" : "B");
 }
 

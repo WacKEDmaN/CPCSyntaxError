@@ -36,6 +36,7 @@
 namespace cpcse {
 
 class AssemblerWindow;
+class DskEditorWindow;
 
 // What the main loop hands the shell each frame.
 struct ShellFrameInfo {
@@ -52,7 +53,10 @@ public:
     explicit GuiShell(EmuHost& host);
     ~GuiShell();
 
+    // The look: Dear ImGui's dark theme, square windows, the orange accent; DejaVu Sans
+    // Mono (embedded) at 15 px times uiScale, and room between things.
     void applyStyle();
+    float uiScale = 1.0f;
     void loadSettings(const std::map<std::string, std::string>& ini);
     void saveSettings(std::ostream& out) const;
 
@@ -76,6 +80,7 @@ private:
     SaveDialog saver;
     Debugger debugger;
     std::unique_ptr<AssemblerWindow> assembler;
+    std::unique_ptr<DskEditorWindow> dskEditor;
     bool resetLayout = false;
     bool showStatusBar = true;
     bool showAbout = false;
@@ -83,7 +88,7 @@ private:
     bool toolFocused = false, toolFocusedNow = false;
 
     // Every window the shell can show, by its title (which is also its dock identity).
-    struct Panel { const char* title; const char* iniKey; bool open; };
+    struct Panel { const char* title; const char* iniKey; bool open; bool byDefault; };
     std::vector<Panel> panels;
     bool& panelOpen(const char* title);
     bool beginTool(const char* title, ImGuiWindowFlags flags = 0);   // Begin() for a debugger window
@@ -105,6 +110,11 @@ private:
     void drawMenuBar();
     void drawStatusBar(const ShellFrameInfo& info);
     void buildDefaultLayout(unsigned dockspaceId);
+    // A window opened for the first time joins its group: the debugging windows to the
+    // right of the screen, the tools below it.
+    void placeNewlyOpened(unsigned dockspaceId);
+    std::vector<std::string> placedThisSession;
+    unsigned groupNode[2] = { 0, 0 };   // the dock node each group opened into
     void handleShortcuts();
 
     // menus
@@ -149,6 +159,8 @@ private:
 
     // printer / GFX9000 textures
     unsigned printerTexture = 0, gfxTexture = 0;
+    unsigned logoTexture = 0;        // the logo (tools/make_logo.py, style A), uploaded once
+    void drawLogo();
     long long gfxTextureFields = -1;
     unsigned video9000Texture = 0;
     std::vector<uint32_t> video9000Pixels;
@@ -167,16 +179,22 @@ private:
     std::shared_ptr<CslRun> cslRun;
 
     // debugger windows (gui_debug_views.cpp)
-    void windowCpu();
-    void windowDisassembly();
-    void windowMemory();
-    void windowBreakpoints();
-    void windowVideo();
-    void windowAudioIo();
+    void windowDebugger();          // toolbar, registers, disassembly, breakpoints
+    void windowChips();             // CRTC, Gate Array, monitor, ASIC, PSG, PPI, keyboard, disc, tape
+    void windowMemory();            // hex editor, memory map
+    void cpuContent();
+    void disassemblyContent();
+    void breakpointsContent();
+    void memoryHexContent();
+    void chipTabsVideo();
+    void chipTabsIo();
+    float debuggerTopH = -1;
+    int memTabRequest = -1;         // 0 Hex, 1 Map: brought to the front, then -1
+    bool memMapShown = false;       // the Map tab was drawn (it records only then)
     void debugToolbar();
     // Memory map + GFX9000 internals (gui_memory_views.cpp)
-    void windowMemoryMap();
-    void windowGfx9000Internals();
+    void memoryMapContent();
+    void gfxInternalsTabs();
     int memMapChunk = 0;
     bool memMapRecord = true, memMapLive = false, memMapWrittenCode = false;
     std::vector<uint32_t> memMapPixels;

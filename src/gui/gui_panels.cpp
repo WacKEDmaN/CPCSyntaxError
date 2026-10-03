@@ -672,16 +672,23 @@ void GuiShell::drawGfxMonitor(ImDrawList* dl, float x, float y, float w, float h
     }
 }
 
+// Everything of the GFX9000's in one window: fitted or not, where its picture goes, the
+// picture, and the V9990's state, registers, palette and VRAM.
 void GuiShell::windowGfx9000() {
-    bool& open = panelOpen("GFX9000");
-    if (!open) return;
-    if (ImGui::Begin("GFX9000", &open)) {
+    if (!panelOpen("GFX9000")) return;
+    if (beginTool("GFX9000")) {
         bool gfx = host.v9990Enabled;
-        if (ImGui::Checkbox("GFX9000 fitted", &gfx)) host.setV9990(gfx);
-        ImGui::SameLine();
-        bool beside = host.gfx9000Monitor == "beside";
-        if (ImGui::Checkbox("Beside the CPC screen", &beside)) host.gfx9000Monitor = beside ? "beside" : "window";
-        if (host.v9990Enabled) {
+        if (ImGui::Checkbox("Fitted", &gfx)) host.setV9990(gfx);
+        ImGui::SameLine(0, 20);
+        static const char* places[] = { "beside", "window", "switch", "video9000" };
+        static const char* placeNames[] = { "beside the CPC's screen", "in this window", "one monitor, switched", "one monitor, via a Video9000" };
+        int place = 0;
+        for (int i = 0; i < 4; i++) if (host.gfx9000Monitor == places[i]) place = i;
+        ImGui::SetNextItemWidth(ImGui::GetFontSize() * 18);
+        if (ImGui::Combo("picture", &place, placeNames, 4)) host.gfx9000Monitor = places[place];
+        if (!host.v9990Enabled) ImGui::TextDisabled("Not fitted.");
+        else if (ImGui::BeginTabBar("##gfxtabs")) {
+          if (ImGui::BeginTabItem("Picture")) {
             const ImVec2 avail = ImGui::GetContentRegionAvail();
             const float h = std::max(1.0f, std::min(avail.y, avail.x * 0.75f)), w = h * 4.0f / 3.0f;
             const ImVec2 at = ImGui::GetCursorScreenPos();
@@ -691,8 +698,10 @@ void GuiShell::windowGfx9000() {
                 mouseCaptureRequested = true;      // its picture grabs the mouse too
             if (const V9990Picture* pic = host.v9990Picture())
                 ImGui::TextDisabled("%s, %d x %d, field %lld", v9990ModeName(pic->mode), pic->width, pic->height, pic->fields);
-        } else {
-            ImGui::TextDisabled("Not fitted (Expansions).");
+            ImGui::EndTabItem();
+          }
+          gfxInternalsTabs();
+          ImGui::EndTabBar();
         }
     }
     ImGui::End();

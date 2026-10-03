@@ -16,6 +16,7 @@
 namespace cpcse {
 
 class GX4000;
+struct Disk;
 class CpcVideo;
 class MatrixPrinter;
 struct V9990Picture;
@@ -170,6 +171,12 @@ public:
     bool loadCartridgeFile(const std::string& path);
     bool loadDiskFile(const std::string& path, int unit);
     void ejectDisk(int unit);
+    // The DSK editor's disc into drive A (0) or B (1), shared: what the CPC writes, the
+    // editor sees, and the other way round.
+    bool insertDisk(std::shared_ptr<Disk> disk, int unit, const std::string& name);
+    std::shared_ptr<Disk> driveDisk(int unit) const;
+    // Where the disc in a drive came from (empty for one made in the editor).
+    std::string diskPath[2];
     bool loadTapeFile(const std::string& path);
     void tapePlayToggle();
     void tapeRewind();

@@ -1,7 +1,9 @@
+<p align="center"><img src="images/logo.png" alt="CPCSyntaxError" width="600"></p>
+
 # CPCSyntaxError
 
-An Amstrad **CPC 464 / 6128, CPC Plus and GX4000** emulator for Windows, built
-around a cycle-level model of the machine's video chips.
+An Amstrad **CPC 464 / 6128, CPC Plus and GX4000** emulator for Windows and Linux,
+built around a cycle-level model of the machine's video chips.
 
 > **Work in progress.** The CRTC, Gate Array and monitor emulation is the mature part
 > of the project. The user interface and most expansion hardware are still being
@@ -48,13 +50,24 @@ around a cycle-level model of the machine's video chips.
 - **Disc drive and keyboard sounds** (Audio): the drive's motor, head steps, disc insert and
   eject, and key clicks, played from real recordings in `sounds/` -- replace them with your
   own WAV files (`sounds/CREDITS.txt` lists the names).
-- A **debugger**: breakpoints with conditions, memory watchpoints, step
-  into / over / out, disassembly with labels, hex editor, and live views of the
-  CRTC, Gate Array, monitor, Plus ASIC, PSG, PPI, keyboard matrix, disc
-  controller and tape. A **memory map** shows any 64K of RAM (the base 64K or an
-  expansion bank) a pixel a byte, coloured by what the Z80 did there -- opcode fetch,
-  operand, read, write -- and **GFX9000 internals** shows the V9990's registers, ports,
-  palette, command engine and VRAM.
+- A **debugger** (Debug menu), in a few windows grouped by purpose:
+  - **Debugger**: run / step into / over / out, the Z80's registers, flags and stack
+    beside the disassembly (with labels), breakpoints with conditions and memory
+    watchpoints below.
+  - **Chips**: live views of the CRTC, Gate Array, monitor, Plus ASIC, PSG, PPI,
+    keyboard matrix, disc controller and tape, a tab each.
+  - **Memory**: a hex editor, and a **memory map** of any 64K of RAM (the base 64K or an
+    expansion bank), a pixel a byte, coloured by what the Z80 did there -- opcode fetch,
+    operand, read, write.
+  - **GFX9000**: its picture, and the V9990's state, registers, palette, command
+    engine and VRAM.
+- A **DSK editor** (Tools, or Media > Drive > Edit): make new discs in any CPC format
+  (DATA, SYSTEM, IBM, 42/80-track, ParaDOS, ROMDOS, Vortex, Dobbertin or a geometry of
+  your own), open standard and extended images, or work on the disc in a drive while
+  the CPC uses it. Files: import (with an AMSDOS header if wanted), export, delete,
+  rename, user, read-only / system flags, and a look as hex, BASIC listing, text or Z80.
+  Tracks and sectors: every sector's ID, status bytes, weak copies and bytes (hex
+  editor), sectors added and removed, tracks formatted. A map of who owns each block.
 - **CSL scripts and SSM screenshots** (Longshot's CPC Script Language 1.5 and ScreenShot
   Management 1.1): `cpcse.exe --csl <script>` plays a script with no window and saves the
   screenshots the running program asks for -- which is how SHAKER's own scripts drive
@@ -63,7 +76,9 @@ around a cycle-level model of the machine's video chips.
   linked in. Assemble straight into the running machine's memory (F9) and run it
   (Ctrl+F9).
 - Dockable, resizable windows (Dear ImGui docking branch); any window can be pulled
-  out of the main window into its own.
+  out of the main window into its own. Only the screen, the machine and its media are
+  open at first; the rest opens from the menus and docks with its group. Window >
+  Interface size makes everything larger (90-200%).
 
 ## Screenshots
 
@@ -224,7 +239,8 @@ are matched case-insensitively.
 src/core/      the emulation core (static library, no host dependencies)
 src/gui/       the desktop front end: SDL2 + OpenGL + Dear ImGui, debugger, assembler
 roms/          Amstrad firmware and the Plus system cartridge (see roms/README.txt)
-third_party/   Dear ImGui (docking branch) and RASM, vendored; SDL2 is fetched separately
+third_party/   Dear ImGui (docking branch), RASM, ymfm, the SP0256 core, minimp3 and the
+               DejaVu Sans Mono font, vendored; SDL2 is fetched separately
 ```
 
 ## Project status
@@ -235,7 +251,8 @@ third_party/   Dear ImGui (docking branch) and RASM, vendored; SDL2 is fetched s
 | Z80, PSG, PPI, disc controller, tape | Working; not yet audited to the same depth as the video chips |
 | CPC Plus ASIC | Working; its picture goes through the same monitor model as a CPC's |
 | CSL / SSM | Complete (CSL 1.5, SSM 1.1) |
-| User interface | Every option exposed, grouped by Machine / Media / Video / Audio / Input / Expansions / Tools; still being refined |
+| User interface | Every option exposed, grouped by Machine / Media / Video / Audio / Input / Expansions / Tools / Debug; still being refined |
+| DSK editor | Working: new discs, files and sectors of standard and extended images; its filesystem checked against AMSDOS itself (LOAD, SAVE, ERA, read-only) |
 | M4 board | Working: files and raw SD sectors over a host folder, checked against the M4's own ROM source. Not yet: mounting DSK images through the M4, its ROM board, WiFi/network |
 | GFX9000 (V9990) + Video9000 | Working, from Yamaha's application manual and tests of a real V9990 on a CPC; the blitter at openMSX's measured speeds (LMMC, LMCM and CMMC estimated), /WAIT on the bus |
 | OPL4 (YMF278B) | Working (ymfm core); needs `yrw801*.rom` for the General MIDI samples |
@@ -253,9 +270,11 @@ third_party/   Dear ImGui (docking branch) and RASM, vendored; SDL2 is fetched s
   a fraction of a microsecond longer than the Compendium's table (§14.4, p.134). The
   documented width is not used yet because the monitor's recovery after a short sync
   is not modelled, and without that model it makes some pictures worse.
-- **SymAmp under SymbOS**: some SA2 songs (those written for 60/70 Hz) play too slowly on
-  the OPL4, and MP3 playback is not available (it needs an MSX MP3 cartridge, which is not
-  emulated).
+- **SymAmp under SymbOS**: SA2 songs written for 60/70 Hz that set their speed in the
+  pattern play about 1.4x too slowly. This is SymAmp's own player, not the emulation: it
+  ticks at 50 Hz and converts a song's BPM into its speed, but takes a speed set later in
+  the pattern as it stands -- a real CPC plays them the same. MP3 playback is not
+  available (it needs an MSX MP3 cartridge, which is not emulated).
 - **GFX9000**: the chip's intermittent command faults that real-hardware tests report (a
   command reusing DY or NX/NY may go astray or hang) are not reproduced; LMMV's colour
   order with DIX=1 is approximate.

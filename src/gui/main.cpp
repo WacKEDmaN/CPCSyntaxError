@@ -593,8 +593,8 @@ int main(int argc, char** argv) {
     EmuHost host;
     loadMachineSounds();
     GuiShell shell(host);
-    shell.applyStyle();
     shell.loadSettings(ini);
+    shell.applyStyle();                         // after the settings: the saved interface size
 
     // Apply persisted settings (before any boot, so applySettings picks them up).
     if (ini.count("romdir")) host.setRomDir(ini["romdir"]);

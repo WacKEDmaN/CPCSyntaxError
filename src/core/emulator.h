@@ -164,6 +164,7 @@ public:
     void setDacType(const std::string& type = "none");
     void writePort(int port, int value);
     int readPort(int port);
+    int readPortUntraced(int port);
     int cpcIoEffectOffset(int offset, const std::string& kind = "generic", int port = 0);
     void advanceHardwareToInstructionOffset(int offset = 0);
     int cpcInstructionCycles(int z80Cycles, bool ioAccessed);

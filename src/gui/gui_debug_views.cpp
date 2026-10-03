@@ -1,7 +1,11 @@
-// CPCSyntaxError GUI — the debugger and internals windows: CPU, Disassembly, Memory,
-// Breakpoints, Video (CRTC / Gate Array / monitor / Plus ASIC) and Audio & I/O (PSG /
-// PPI + keyboard matrix / disc controller / tape). They read the chips' own state; the
-// only things they change are what a debugger is for -- registers, memory, the PC.
+// CPCSyntaxError GUI — the debugging windows, grouped:
+//   Debugger  the run / step toolbar, the Z80's registers, flags and stack beside the
+//             disassembly, breakpoints and watchpoints below
+//   Chips     a tab each: CRTC, Gate Array, monitor, Plus ASIC, PSG, PPI, keyboard
+//             matrix, disc controller, tape
+//   Memory    the hex editor and the memory map (gui_memory_views.cpp)
+// They read the chips' own state; the only things they change are what a debugger is
+// for -- registers, memory, the PC.
 #include "gui_shell.h"
 
 #include "imgui.h"
@@ -45,6 +49,7 @@ void GuiShell::debugToolbar() {
     if (ImGui::Button("Over (F8)")) debugger.stepOver();
     ImGui::SameLine();
     if (ImGui::Button("Out (Sh+F8)")) debugger.stepOut();
+    ImGui::SameLine(0, 18);
     if (host.paused) {
         ImGui::TextColored(kAccent, "%s", host.breakReason.empty() ? "Paused" : host.breakReason.c_str());
     } else {
@@ -53,12 +58,10 @@ void GuiShell::debugToolbar() {
 }
 
 // ============================================================== CPU
-void GuiShell::windowCpu() {
-    if (!panelOpen("CPU")) return;
-    if (beginTool("CPU") && machineReady(host)) {
+void GuiShell::cpuContent() {
+    {
         GX4000* e = host.emu;
         Z80* c = e->cpu;
-        debugToolbar();
         const bool edit = host.paused;
         sectionHeading(edit ? "REGISTERS (editable while paused)" : "REGISTERS");
 
@@ -136,7 +139,7 @@ void GuiShell::windowCpu() {
             auto lbl = debugger.labelAt.find(w);
             ImGui::PushID(i);
             char line[96];
-            std::snprintf(line, sizeof(line), "SP+%-2d %04X  %04X  %s", i * 2, a, w, lbl != debugger.labelAt.end() ? lbl->second.c_str() : "");
+            std::snprintf(line, sizeof(line), "+%-2d %04X  %s", i * 2, w, lbl != debugger.labelAt.end() ? lbl->second.c_str() : "");
             if (ImGui::Selectable(line)) showInDisassembly(w);
             if (ImGui::IsItemHovered()) ImGui::SetTooltip("Click: show &%04X in the disassembly", w);
             ImGui::PopID();
@@ -147,7 +150,6 @@ void GuiShell::windowCpu() {
         ImGui::Text("picture    %d   beam %d,%d", e->classicMonitorFrame,
                     e->classicMonitorCharacter, e->classicMonitorLine);
     }
-    ImGui::End();
 }
 
 // ============================================================== Disassembly
@@ -172,10 +174,10 @@ int GuiShell::disasmPrevious(int address) {
 }
 
 void GuiShell::showInDisassembly(int address) {
-    panelOpen("Disassembly") = true;
+    panelOpen("Debugger") = true;
     disasmFollow = false;
     disasmTop = address & 0xffff;
-    ImGui::SetWindowFocus("Disassembly");
+    ImGui::SetWindowFocus("Debugger");
 }
 
 void GuiShell::showInMemory(int address) {
@@ -185,6 +187,7 @@ void GuiShell::showInMemory(int address) {
     memSelected = address & 0xffff;
     memTop = address & 0xfff0;
     memScrollTo = true;
+    memTabRequest = 0;
     ImGui::SetWindowFocus("Memory");
 }
 
@@ -207,9 +210,8 @@ static std::string withLabels(const std::string& mnem, const std::unordered_map<
     return out;
 }
 
-void GuiShell::windowDisassembly() {
-    if (!panelOpen("Disassembly")) return;
-    if (beginTool("Disassembly", ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse) && machineReady(host)) {
+void GuiShell::disassemblyContent() {
+    {
         GX4000* e = host.emu;
         const int pc = e->cpu->pc & 0xffff;
         auto read = [e](int a) { return e->memory->readMapped(a & 0xffff); };
@@ -298,13 +300,11 @@ void GuiShell::windowDisassembly() {
         }
         ImGui::EndChild();
     }
-    ImGui::End();
 }
 
 // ============================================================== Memory
-void GuiShell::windowMemory() {
-    if (!panelOpen("Memory")) return;
-    if (beginTool("Memory") && machineReady(host)) {
+void GuiShell::memoryHexContent() {
+    {
         GX4000* e = host.emu;
         GXMemory* m = e->memory;
         static const char* views[] = { "CPU view (64K as the Z80 sees it)", "Physical RAM", "ASIC RAM (Plus)" };
@@ -403,13 +403,11 @@ void GuiShell::windowMemory() {
         }
         ImGui::EndChild();
     }
-    ImGui::End();
 }
 
 // ============================================================== Breakpoints
-void GuiShell::windowBreakpoints() {
-    if (!panelOpen("Breakpoints")) return;
-    if (beginTool("Breakpoints") && machineReady(host)) {
+void GuiShell::breakpointsContent() {
+    {
         sectionHeading("BREAKPOINTS");
         ImGui::SetNextItemWidth(110);
         bool add = ImGui::InputTextWithHint("##bpaddr", "address/label", bpAddress, sizeof(bpAddress), ImGuiInputTextFlags_EnterReturnsTrue);
@@ -515,7 +513,6 @@ void GuiShell::windowBreakpoints() {
         }
         ImGui::TextDisabled("A watchpoint stops the machine after the instruction that made the access.");
     }
-    ImGui::End();
 }
 
 // ============================================================== Video
@@ -525,11 +522,10 @@ static const char* CRTC_REGISTER_NAMES[18] = {
     "Interlace & skew", "Max raster address", "Cursor start", "Cursor end",
     "Start address H", "Start address L", "Cursor H", "Cursor L", "Light pen H", "Light pen L" };
 
-void GuiShell::windowVideo() {
-    if (!panelOpen("Video")) return;
-    if (beginTool("Video") && machineReady(host)) {
+void GuiShell::chipTabsVideo() {
+    {
         GX4000* e = host.emu;
-        if (ImGui::BeginTabBar("##videotabs")) {
+        {
             CRTC6845* cr = e->crtc;
             if (cr && ImGui::BeginTabItem("CRTC")) {
                 ImGui::BeginChild("##crtc");
@@ -708,10 +704,8 @@ void GuiShell::windowVideo() {
                 ImGui::EndChild();
                 ImGui::EndTabItem();
             }
-            ImGui::EndTabBar();
         }
     }
-    ImGui::End();
 }
 
 // ============================================================== Audio & I/O
@@ -754,14 +748,14 @@ static const char* fdcCommandName(int command) {
     }
 }
 
-void GuiShell::windowAudioIo() {
-    if (!panelOpen("Audio & I/O")) return;
-    if (beginTool("Audio & I/O") && machineReady(host)) {
+void GuiShell::chipTabsIo() {
+    {
         GX4000* e = host.emu;
-        if (ImGui::BeginTabBar("##iotabs")) {
+        {
             AY38912* ay = e->ay;
-            if (ay && ImGui::BeginTabItem("PSG (AY-3-8912)")) {
+            if (ay && ImGui::BeginTabItem("PSG")) {
                 ImGui::BeginChild("##psg");
+                ImGui::TextDisabled("AY-3-8912, 1 MHz");
                 const auto& r = ay->registers;
                 const char* ch = "ABC";
                 if (ImGui::BeginTable("##chans", 6, ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingFixedFit)) {
@@ -798,13 +792,14 @@ void GuiShell::windowAudioIo() {
                     }
                     ImGui::EndTable();
                 }
-                ImGui::TextDisabled("PSG clock 1 MHz; the selected register is highlighted.");
+                ImGui::TextDisabled("The selected register is highlighted.");
                 ImGui::EndChild();
                 ImGui::EndTabItem();
             }
             PPI8255* ppi = e->ppi;
-            if (ppi && ImGui::BeginTabItem("PPI (8255)")) {
+            if (ppi && ImGui::BeginTabItem("PPI")) {
                 ImGui::BeginChild("##ppi");
+                ImGui::TextDisabled("8255 PPI");
                 int portB = ppi->read(0xf500);
                 if (beginFacts("##ppif", 150)) {
                     fact("control", "&%02X", ppi->control & 0xff);
@@ -852,8 +847,9 @@ void GuiShell::windowAudioIo() {
                 ImGui::EndChild();
                 ImGui::EndTabItem();
             }
-            if (ImGui::BeginTabItem("Disc (uPD765A)")) {
+            if (ImGui::BeginTabItem("Disc")) {
                 ImGui::BeginChild("##fdc");
+                ImGui::TextDisabled("uPD765A disc controller");
                 if (e->hasFdc && e->fdc) {
                     UPD765A* fd = e->fdc;
                     static const char* phases[] = { "command", "execution", "result" };
@@ -909,8 +905,61 @@ void GuiShell::windowAudioIo() {
                 ImGui::EndChild();
                 ImGui::EndTabItem();
             }
+        }
+    }
+}
+
+// ============================================================== the grouped windows
+// Debugger: the toolbar; the registers beside the disassembly; breakpoints and
+// watchpoints below them (their height the user's: drag the line between).
+void GuiShell::windowDebugger() {
+    if (!panelOpen("Debugger")) return;
+    if (beginTool("Debugger", ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse) && machineReady(host)) {
+        debugToolbar();
+        const float avail = ImGui::GetContentRegionAvail().y;
+        if (debuggerTopH <= 0) debuggerTopH = avail * 0.68f;
+        debuggerTopH = std::clamp(debuggerTopH, 120.0f, std::max(120.0f, avail - 60.0f));
+        ImGui::BeginChild("##dbgtop", ImVec2(0, debuggerTopH), ImGuiChildFlags_ResizeY, ImGuiWindowFlags_NoScrollbar);
+        ImGui::BeginChild("##dbgregs", ImVec2(ImGui::GetFontSize() * 18.0f, 0), ImGuiChildFlags_Borders | ImGuiChildFlags_ResizeX);
+        cpuContent();
+        ImGui::EndChild();
+        ImGui::SameLine();
+        ImGui::BeginChild("##dbgcode", ImVec2(0, 0), ImGuiChildFlags_None, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+        disassemblyContent();
+        ImGui::EndChild();
+        debuggerTopH = ImGui::GetWindowHeight();
+        ImGui::EndChild();
+        ImGui::BeginChild("##dbgbps", ImVec2(0, 0), ImGuiChildFlags_Borders);
+        breakpointsContent();
+        ImGui::EndChild();
+    }
+    ImGui::End();
+}
+
+// Chips: one tab a chip.
+void GuiShell::windowChips() {
+    if (!panelOpen("Chips")) return;
+    if (beginTool("Chips") && machineReady(host)) {
+        if (ImGui::BeginTabBar("##chips", ImGuiTabBarFlags_FittingPolicyScroll)) {
+            chipTabsVideo();
+            chipTabsIo();
             ImGui::EndTabBar();
         }
+    }
+    ImGui::End();
+}
+
+// Memory: the hex editor and the map.
+void GuiShell::windowMemory() {
+    memMapShown = false;
+    if (!panelOpen("Memory")) return;
+    if (beginTool("Memory") && machineReady(host)) {
+        if (ImGui::BeginTabBar("##memtabs")) {
+            if (ImGui::BeginTabItem("Hex", nullptr, memTabRequest == 0 ? ImGuiTabItemFlags_SetSelected : 0)) { memoryHexContent(); ImGui::EndTabItem(); }
+            if (ImGui::BeginTabItem("Map", nullptr, memTabRequest == 1 ? ImGuiTabItemFlags_SetSelected : 0)) { memMapShown = true; memoryMapContent(); ImGui::EndTabItem(); }
+            ImGui::EndTabBar();
+        }
+        memTabRequest = -1;
     }
     ImGui::End();
 }

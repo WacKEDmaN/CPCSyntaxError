@@ -817,7 +817,26 @@ void GX4000::loadClassicFirmware(const LoadClassicOptions& options) {
     memory->useCartridgeUpper = false; memory->setUpperRomSelect(0);
 }
 void GX4000::setDacType(const std::string& type) { dac->setMode(type); }
+// CPCSE_TRACE_IO=<n>: the first n I/O accesses away from the CPC's own chips (Gate Array,
+// CRTC, PPI, FDC: what a program does with the expansions), from CPCSE_TRACE_IO_FROM
+// T-states on. To stderr: "IO OUT ffc4 <- 05 @t" / "IO IN  fbee -> 80 @t".
+static bool traceIoPort(int port) {
+    static const long limit = std::getenv("CPCSE_TRACE_IO") ? std::atol(std::getenv("CPCSE_TRACE_IO")) : 0;
+    static long count = 0;
+    if (count >= limit) return false;
+    const int high = (unsigned)port >> 8 & 0xff;
+    if (high == 0x7f || (high >= 0xbc && high <= 0xbf) || (high >= 0xf4 && high <= 0xf7) || (port & 0xffff) == 0xfb7e || (port & 0xffff) == 0xfb7f) return false;
+    count++;
+    return true;
+}
+static long long traceIoFrom() {
+    static const long long from = std::getenv("CPCSE_TRACE_IO_FROM") ? std::atoll(std::getenv("CPCSE_TRACE_IO_FROM")) : 0;
+    return from;
+}
+
 void GX4000::writePort(int port, int value) {
+    if (machineCycles >= traceIoFrom() && traceIoPort(port))
+        std::fprintf(stderr, "IO OUT %04x <- %02x @%lld pc %04x\n", port & 0xffff, value & 0xff, machineCycles + hardwareCyclesAdvanced, cpu->instructionStartPc & 0xffff);
     int high = (unsigned)port >> 8 & 0xff;
     if (v9990->writePort(port, value, machineCycles + hardwareCyclesAdvanced)) return;
     if (opl4->handlesPort(port)) { opl4->writePort(port, value, machineCycles + hardwareCyclesAdvanced); return; }
@@ -882,6 +901,15 @@ void GX4000::writePort(int port, int value) {
     dac->writePort(port, value);
 }
 int GX4000::readPort(int port) {
+    if (machineCycles >= traceIoFrom() && traceIoPort(port)) {
+        const int v = readPortUntraced(port);
+        std::fprintf(stderr, "IO IN  %04x -> %02x @%lld pc %04x\n", port & 0xffff, v & 0xff, machineCycles + hardwareCyclesAdvanced, cpu->instructionStartPc & 0xffff);
+        return v;
+    }
+    return readPortUntraced(port);
+}
+
+int GX4000::readPortUntraced(int port) {
     int value = 0xff;
     int high = (unsigned)port >> 8 & 0xff;
     if (v9990->handlesPort(port)) return v9990->readPort(port, machineCycles + hardwareCyclesAdvanced);
@@ -1132,7 +1160,10 @@ int GX4000::stepInstruction() {
     // The PlayCity's CTC: channel 1's ZC/TO is wired to /NMI, and channels 0-3 put
     // their own IM2 vector on the bus (vector base | channel << 1).
     if (playcity->enabled) {
-        if (playcity->takeNmi()) cpu->requestNmi();
+        if (playcity->takeNmi()) {
+            cpu->requestNmi();
+            if (machineCycles >= traceIoFrom() && traceIoPort(0x0066)) std::fprintf(stderr, "IO NMI (PlayCity CTC 1) @%lld\n", machineCycles);
+        }
         if (cpu->pendingInterrupt == -1 && interruptHeldOver == -1) {
             const int vector = playcity->takeInterruptVector();
             if (vector >= 0) cpu->requestInterrupt(vector);
