@@ -43,18 +43,13 @@ static bool machineReady(EmuHost& host) {
 void GuiShell::debugToolbar() {
     bool running = !host.paused;
     if (ImGui::Button(running ? "Pause (F5)" : "Run (F5)")) { if (running) debugger.pause(); else debugger.run(); }
-    ImGui::SameLine();
-    if (ImGui::Button("Into (F7)")) debugger.stepInto();
-    ImGui::SameLine();
-    if (ImGui::Button("Over (F8)")) debugger.stepOver();
-    ImGui::SameLine();
-    if (ImGui::Button("Out (Sh+F8)")) debugger.stepOut();
-    ImGui::SameLine(0, 18);
-    if (host.paused) {
-        ImGui::TextColored(kAccent, "%s", host.breakReason.empty() ? "Paused" : host.breakReason.c_str());
-    } else {
-        ImGui::TextDisabled("Running");
-    }
+    if (after().button("Into (F7)")) debugger.stepInto();
+    if (after().button("Over (F8)")) debugger.stepOver();
+    if (after().button("Out (Sh+F8)")) debugger.stepOut();
+    FlowRow state = after();
+    state.spacing = 18.0f;
+    if (host.paused) state.textColored(kAccent, host.breakReason.empty() ? "Paused" : host.breakReason.c_str());
+    else state.textDisabled("Running");
 }
 
 // ============================================================== CPU
@@ -128,8 +123,7 @@ void GuiShell::cpuContent() {
         }
         ImGui::Text("IM %d   IFF1 %d  IFF2 %d  %s", c->im, c->iff1 ? 1 : 0, c->iff2 ? 1 : 0, c->halted ? "HALT" : "");
         if (edit) {
-            ImGui::SameLine();
-            if (ImGui::SmallButton(c->iff1 ? "DI" : "EI")) { c->iff1 = c->iff2 = !c->iff1; }
+            if (after().smallButton(c->iff1 ? "DI" : "EI")) { c->iff1 = c->iff2 = !c->iff1; }
         }
 
         sectionHeading("STACK");
@@ -217,14 +211,12 @@ void GuiShell::disassemblyContent() {
         auto read = [e](int a) { return e->memory->readMapped(a & 0xffff); };
 
         ImGui::Checkbox("Follow PC", &disasmFollow);
-        ImGui::SameLine();
-        ImGui::SetNextItemWidth(120);
+        after().field(120, "##goto");
         if (ImGui::InputTextWithHint("##goto", "address / label", disasmGoto, sizeof(disasmGoto), ImGuiInputTextFlags_EnterReturnsTrue)) {
             int a = debugger.parseAddress(disasmGoto);
             if (a >= 0) { disasmTop = a; disasmFollow = false; }
         }
-        ImGui::SameLine();
-        if (ImGui::SmallButton("PC")) { disasmFollow = true; disasmLastPc = -1; }
+        if (after().smallButton("PC")) { disasmFollow = true; disasmLastPc = -1; }
 
         const float lineH = ImGui::GetTextLineHeightWithSpacing();
         ImGui::BeginChild("##dis", ImVec2(0, 0), ImGuiChildFlags_Borders, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
@@ -310,14 +302,12 @@ void GuiShell::memoryHexContent() {
         static const char* views[] = { "CPU view (64K as the Z80 sees it)", "Physical RAM", "ASIC RAM (Plus)" };
         ImGui::SetNextItemWidth(230);
         if (ImGui::Combo("##view", &memView, views, IM_ARRAYSIZE(views))) { memSelected = -1; memEditing = -1; memTop = 0; memScrollTo = true; }
-        ImGui::SameLine();
-        ImGui::SetNextItemWidth(120);
+        after().field(120, "##goto");
         if (ImGui::InputTextWithHint("##goto", "address / label", memGoto, sizeof(memGoto), ImGuiInputTextFlags_EnterReturnsTrue)) {
             int a = debugger.parseAddress(memGoto);
             if (a >= 0) { memSelected = a; memTop = a & ~15; memScrollTo = true; memFollow = false; }
         }
-        ImGui::SameLine();
-        if (ImGui::Checkbox("Follow PC", &memFollow) && memFollow) memView = 0;
+        if (after().checkbox("Follow PC", &memFollow) && memFollow) memView = 0;
         if (memFollow) {
             int pc = e->cpu->pc & 0xffff;
             if (pc != memSelected) { memSelected = pc; memTop = pc & ~15; memScrollTo = true; }
@@ -409,13 +399,20 @@ void GuiShell::memoryHexContent() {
 void GuiShell::breakpointsContent() {
     {
         sectionHeading("BREAKPOINTS");
-        ImGui::SetNextItemWidth(110);
+        FlowRow bp;
+        bp.field(110, "##bpaddr");
         bool add = ImGui::InputTextWithHint("##bpaddr", "address/label", bpAddress, sizeof(bpAddress), ImGuiInputTextFlags_EnterReturnsTrue);
-        ImGui::SameLine();
-        ImGui::SetNextItemWidth(std::max(80.0f, ImGui::GetContentRegionAvail().x - 60));
+        // the condition takes what the line has left, but never less than 140 (then it wraps)
+        {
+            const float addW = ImGui::CalcTextSize("Add").x + ImGui::GetStyle().FramePadding.x * 2 + ImGui::GetStyle().ItemSpacing.x;
+            ImGui::SameLine();
+            const float left = ImGui::GetContentRegionAvail().x - addW;
+            if (left < 140.0f) ImGui::NewLine();
+            ImGui::SetNextItemWidth(std::max(140.0f, ImGui::GetContentRegionAvail().x - addW));
+        }
         add |= ImGui::InputTextWithHint("##bpcond", "condition (optional)", bpCondition, sizeof(bpCondition), ImGuiInputTextFlags_EnterReturnsTrue);
-        ImGui::SameLine();
-        add |= ImGui::Button("Add##bp");
+        bp.first = false;
+        add |= bp.button("Add##bp");
         if (add) {
             int a = debugger.parseAddress(bpAddress);
             if (a >= 0) { debugger.addBreakpoint(a, bpCondition); bpAddress[0] = 0; bpCondition[0] = 0; }
@@ -468,15 +465,14 @@ void GuiShell::breakpointsContent() {
         }
 
         sectionHeading("WATCHPOINTS (memory)");
-        ImGui::SetNextItemWidth(100);
+        FlowRow wp;
+        wp.field(100, "##wps");
         ImGui::InputTextWithHint("##wps", "from", wpStart, sizeof(wpStart));
-        ImGui::SameLine();
-        ImGui::SetNextItemWidth(100);
+        wp.field(100, "##wpe");
         ImGui::InputTextWithHint("##wpe", "to (optional)", wpEnd, sizeof(wpEnd));
-        ImGui::SameLine(); ImGui::Checkbox("read", &wpRead);
-        ImGui::SameLine(); ImGui::Checkbox("write", &wpWrite);
-        ImGui::SameLine();
-        if (ImGui::Button("Add##wp")) {
+        after().checkbox("read", &wpRead);
+        after().checkbox("write", &wpWrite);
+        if (after().button("Add##wp")) {
             int s = debugger.parseAddress(wpStart), t = wpEnd[0] ? debugger.parseAddress(wpEnd) : s;
             if (s >= 0 && t >= 0 && (wpRead || wpWrite)) {
                 GuiWatchpoint w; w.start = std::min(s, t); w.end = std::max(s, t); w.onRead = wpRead; w.onWrite = wpWrite;
@@ -545,12 +541,12 @@ void GuiShell::chipTabsVideo() {
                     endFacts();
                 }
                 sectionHeading("STATE");
-                led(cr->hDisplay, "HDISP"); ImGui::SameLine(110); led(cr->vDisplay, "VDISP");
-                led(cr->lastFrameLine, "last line"); ImGui::SameLine(110); led(cr->vsyncGhost, "ghost VSYNC");
-                led(cr->verticalAdjustState, "adjust"); ImGui::SameLine(110); led(cr->r9Match, "C9=R9");
+                ledGrid({ { cr->hDisplay, "HDISP" }, { cr->vDisplay, "VDISP" } }, 110.0f);
+                ledGrid({ { cr->lastFrameLine, "last line" }, { cr->vsyncGhost, "ghost VSYNC" } }, 110.0f);
+                ledGrid({ { cr->verticalAdjustState, "adjust" }, { cr->r9Match, "C9=R9" } }, 110.0f);
                 sectionHeading("OUTPUT PINS");
-                led(cr->displayOutputEnabled(), "DISPEN"); ImGui::SameLine(110); led(cr->cursorOutput(), "CURSOR");
-                led(cr->hsync, "HSYNC"); ImGui::SameLine(110); led(cr->vsync, "VSYNC");
+                ledGrid({ { cr->displayOutputEnabled(), "DISPEN" }, { cr->cursorOutput(), "CURSOR" } }, 110.0f);
+                ledGrid({ { cr->hsync, "HSYNC" }, { cr->vsync, "VSYNC" } }, 110.0f);
                 ImGui::TextUnformatted("MA"); ImGui::SameLine(40);
                 for (int b = 13; b >= 0; b--) { led((cr->memoryAddress() >> b) & 1); ImGui::SameLine(0, 1); }
                 ImGui::NewLine();
@@ -788,7 +784,7 @@ void GuiShell::chipTabsIo() {
                         ImGui::TableNextColumn();
                         if (i == ay->selected) ImGui::TextColored(kAccent, "R%-2d", i); else ImGui::Text("R%-2d", i);
                         ImGui::SameLine(); ImGui::Text("&%02X", r[i]);
-                        ImGui::SameLine(); ImGui::TextDisabled("%s", AY_REGISTER_NAMES[i]);
+                        after().textDisabled(AY_REGISTER_NAMES[i]);
                     }
                     ImGui::EndTable();
                 }
@@ -809,15 +805,15 @@ void GuiShell::chipTabsIo() {
                     endFacts();
                 }
                 sectionHeading("PORT B (reads)");
-                led(portB & 1, "VSYNC"); ImGui::SameLine(160); led(portB & 0x80, "cassette in");
-                led(portB & 0x40, "printer busy"); ImGui::SameLine(160); led(portB & 0x20, "/EXP");
-                led(portB & 0x10, "50 Hz (LK4)"); ImGui::SameLine(160);
+                ledGrid({ { portB & 1, "VSYNC" }, { portB & 0x80, "cassette in" } }, 160.0f);
+                ledGrid({ { portB & 0x40, "printer busy" }, { portB & 0x20, "/EXP" } }, 160.0f);
+                led(portB & 0x10, "50 Hz (LK4)");
                 static const char* makers[8] = { "Isp", "Triumph", "Saisho", "Solavox", "Awa", "Schneider", "Orion", "Amstrad" };
-                ImGui::Text("maker (LK1-3): %s", makers[(portB >> 1) & 7]);
+                { char m[48]; std::snprintf(m, sizeof m, "maker (LK1-3): %s", makers[(portB >> 1) & 7]); after().text(m); }
                 sectionHeading("PORT C (writes)");
                 static const char* psgFunction[4] = { "inactive", "read", "write", "select register" };
                 ImGui::Text("keyboard row %d", ppi->portC & 15);
-                led(ppi->portC & 0x10, "cassette motor"); ImGui::SameLine(160); led(ppi->portC & 0x20, "cassette out");
+                ledGrid({ { ppi->portC & 0x10, "cassette motor" }, { ppi->portC & 0x20, "cassette out" } }, 160.0f);
                 ImGui::Text("PSG bus: %s", psgFunction[(ppi->portC >> 6) & 3]);
                 ImGui::EndChild();
                 ImGui::EndTabItem();
@@ -890,18 +886,14 @@ void GuiShell::chipTabsIo() {
                     if (tape->loaded) {
                         fact("format", "%s", tape->format.c_str());
                         fact("block", "%d of %d%s", tape->currentBlock + 1, (int)tape->blocks.size(), tape->tapeEnded ? "  (end)" : "");
-                        fact("counter", "%03d", tape->tapeCounter % 1000);
+                        fact("counter", "%03d", tape->counter());
                     }
-                    fact("deck", "%s", tape->playing ? "PLAY" : "stopped");
+                    fact("deck", "%s", tape->playing ? (tape->paused ? "PAUSE" : "PLAY") : "stopped");
                     fact("motor relay", "%s", tape->motorOn ? "on" : "off");
                     fact("signal", "%s", tape->getPortBBit() ? "high" : "low");
                     endFacts();
                 }
-                ImGui::BeginDisabled(host.tapeName.empty());
-                if (ImGui::Button(host.tapePlaying ? "Stop" : "Play", ImVec2(70, 0))) host.tapePlayToggle();
-                ImGui::SameLine();
-                if (ImGui::Button("Rewind", ImVec2(70, 0))) host.tapeRewind();
-                ImGui::EndDisabled();
+                tapeDeckControls(false);   // the same deck as the Media window's
                 ImGui::EndChild();
                 ImGui::EndTabItem();
             }
@@ -915,6 +907,7 @@ void GuiShell::chipTabsIo() {
 void GuiShell::windowDebugger() {
     if (!panelOpen("Debugger")) return;
     if (beginTool("Debugger", ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse) && machineReady(host)) {
+        WrapText wrapText;                     // text wraps at the window's edge
         debugToolbar();
         const float avail = ImGui::GetContentRegionAvail().y;
         if (debuggerTopH <= 0) debuggerTopH = avail * 0.68f;
@@ -940,6 +933,7 @@ void GuiShell::windowDebugger() {
 void GuiShell::windowChips() {
     if (!panelOpen("Chips")) return;
     if (beginTool("Chips") && machineReady(host)) {
+        WrapText wrapText;                     // text wraps at the window's edge
         if (ImGui::BeginTabBar("##chips", ImGuiTabBarFlags_FittingPolicyScroll)) {
             chipTabsVideo();
             chipTabsIo();
@@ -954,6 +948,7 @@ void GuiShell::windowMemory() {
     memMapShown = false;
     if (!panelOpen("Memory")) return;
     if (beginTool("Memory") && machineReady(host)) {
+        WrapText wrapText;                     // text wraps at the window's edge
         if (ImGui::BeginTabBar("##memtabs")) {
             if (ImGui::BeginTabItem("Hex", nullptr, memTabRequest == 0 ? ImGuiTabItemFlags_SetSelected : 0)) { memoryHexContent(); ImGui::EndTabItem(); }
             if (ImGui::BeginTabItem("Map", nullptr, memTabRequest == 1 ? ImGuiTabItemFlags_SetSelected : 0)) { memMapShown = true; memoryMapContent(); ImGui::EndTabItem(); }

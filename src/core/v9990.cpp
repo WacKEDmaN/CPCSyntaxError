@@ -566,12 +566,53 @@ uint32_t V9990::bitmapDot(int x, int imageY) const {
     }
 }
 
-uint32_t V9990::imageColour(int x, int y) const {
+int V9990::imageViewWidth() const { return mode() == V9990Mode::P1 ? 512 : std::min(imageWidth(), 2048); }
+int V9990::imageViewHeight() const { return mode() == V9990Mode::P1 ? 2048 : imageHeight(); }
+// P1's layer B is image X 512 up (dotLogical's bit 9)
+int V9990::imageViewX(int column) const { return mode() == V9990Mode::P1 && column >= 256 ? column + 256 : column; }
+
+void V9990::imageViewLine(int y, uint32_t* out) const {
     const V9990Mode m = mode();
-    if (m == V9990Mode::P1 || m == V9990Mode::P2) return paletteColour(getDot(x, y) & 15) | 0xff000000u;
-    const int palettePlan = registers[13] >> 6;
-    const bool yjk = bitsPerDot() == 8 && palettePlan >= 2;
-    return (yjk ? yjkDot(x, y, palettePlan == 3) : bitmapDot(x, y)) | 0xff000000u;
+    const int w = imageViewWidth();
+    if (m != V9990Mode::P1 && m != V9990Mode::P2) {
+        const int palettePlan = registers[13] >> 6;
+        const bool yjk = bitsPerDot() == 8 && palettePlan >= 2;
+        for (int x = 0; x < w; x++) out[x] = (yjk ? yjkDot(x, y, palettePlan == 3) : bitmapDot(x, y)) | 0xff000000u;
+        return;
+    }
+    // the pattern modes colour as p1Dot/p2Dot do: 9.1.1's PLTO per layer (P2: per dot
+    // pair), a transparent dot shows the back drop
+    const bool p2 = m == V9990Mode::P2;
+    const int paletteA = (registers[13] & 3) << 4, paletteB = ((registers[13] >> 2) & 3) << 4;
+    const uint32_t backdrop = paletteColour(registers[15]) | 0xff000000u;
+    // the sprite patterns (collectSprites' layout, layer A's side in P1): 256 of them, 16
+    // lines each, from R#25's base; one takes the palette of the first displayed sprite
+    // in the SPAT that shows it, else the layer's
+    const int lineBytes = p2 ? 256 : 128, perRow = p2 ? 32 : 16;
+    const int spriteBase = p2 ? (registers[25] & 0x0f) << 15 : (registers[25] & 0x0e) << 14;
+    const int spriteLine = y - spriteBase / lineBytes;
+    const bool spriteRows = !(registers[8] & 0x40) && spriteLine >= 0 && spriteLine < 256 / perRow * 16;   // SPD: none
+    int spritePalette[256];
+    if (spriteRows) {
+        std::fill(spritePalette, spritePalette + 256, -1);
+        const int table = p2 ? 0x7be00 : 0x3fe00;
+        auto spat = [&](int a) { return p2 ? vram[mapCpuAddress(a)] : vram[a & VRAM_MASK]; };
+        for (int s = 124; s >= 0; s--) {                            // the first one wins
+            const int attr = spat(table + s * 4 + 3);
+            if (!(attr & 0x10)) spritePalette[spat(table + s * 4 + 1)] = (attr >> 2) & 0x30;   // PR0: not shown
+        }
+    }
+    for (int c = 0; c < w; c++) {
+        const int x = imageViewX(c);
+        const int dot = getDot(x, y);
+        if (!dot) { out[c] = backdrop; continue; }
+        int palette = p2 ? ((x & 2) ? paletteB : paletteA) : (c >= 256 ? paletteB : paletteA);
+        if (spriteRows && c < 256 * (p2 ? 2 : 1)) {
+            const int s = spritePalette[(spriteLine / 16) * perRow + x / 16];
+            if (s >= 0) palette = s;
+        }
+        out[c] = paletteColour(palette | dot) | 0xff000000u;
+    }
 }
 
 // 17 (p.115-116): YJK / YUV share their colour across each group of four dots.

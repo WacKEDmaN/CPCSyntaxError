@@ -47,6 +47,99 @@ void led(bool on, const char* label) {
 }
 
 // ============================================================== file dialogs
+// ---- FlowRow: items on one line while they fit, the rest on the next
+void FlowRow::place(float width) {
+    if (!first) {
+        ImGui::SameLine(0.0f, spacing);
+        // what is left of the line, from where the item would go
+        if (ImGui::GetContentRegionAvail().x + 0.5f < width) ImGui::NewLine();
+    }
+    first = false;
+}
+
+static float labelWidth(const char* label) { return ImGui::CalcTextSize(label, nullptr, true).x; }
+
+bool FlowRow::button(const char* label, float width) {
+    const float w = width > 0.0f ? width : labelWidth(label) + ImGui::GetStyle().FramePadding.x * 2.0f;
+    place(w);
+    return ImGui::Button(label, ImVec2(width, 0.0f));
+}
+
+bool FlowRow::smallButton(const char* label) {
+    place(labelWidth(label) + ImGui::GetStyle().FramePadding.x * 2.0f);
+    return ImGui::SmallButton(label);
+}
+
+bool FlowRow::checkbox(const char* label, bool* v) {
+    const ImGuiStyle& s = ImGui::GetStyle();
+    const float text = labelWidth(label);
+    place(ImGui::GetFrameHeight() + (text > 0.0f ? s.ItemInnerSpacing.x + text : 0.0f));
+    return ImGui::Checkbox(label, v);
+}
+
+bool FlowRow::radio(const char* label, bool active) {
+    const ImGuiStyle& s = ImGui::GetStyle();
+    const float text = labelWidth(label);
+    place(ImGui::GetFrameHeight() + (text > 0.0f ? s.ItemInnerSpacing.x + text : 0.0f));
+    return ImGui::RadioButton(label, active);
+}
+
+// Text in a row: on the line when it fits, else on the next -- and wrapped there at the
+// window's edge if even a whole line is too short (a long path).
+void FlowRow::text(const char* t) { textColored(ImGui::GetStyleColorVec4(ImGuiCol_Text), t); }
+void FlowRow::textDisabled(const char* t) { textColored(ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled), t); }
+
+void FlowRow::textColored(const ImVec4& colour, const char* t) {
+    place(ImGui::CalcTextSize(t).x);
+    ImGui::PushStyleColor(ImGuiCol_Text, colour);
+    ImGui::PushTextWrapPos(0.0f);
+    ImGui::TextUnformatted(t);
+    ImGui::PopTextWrapPos();
+    ImGui::PopStyleColor();
+}
+
+void ledGrid(std::initializer_list<LedItem> items, float column) {
+    const float startX = ImGui::GetCursorPosX();
+    int col = 0;
+    bool firstItem = true;
+    for (const LedItem& it : items) {
+        const float w = ImGui::GetTextLineHeight() + ImGui::GetStyle().ItemInnerSpacing.x + ImGui::CalcTextSize(it.label).x;
+        if (!firstItem) {
+            ImGui::SameLine(startX + column * (float)col);
+            if (ImGui::GetContentRegionAvail().x < w) { ImGui::NewLine(); col = 0; }
+        }
+        firstItem = false;
+        led(it.on, it.label);
+        col += 1;
+    }
+}
+
+void textWrappedDisabled(const char* fmt, ...) {
+    char buf[1024];
+    va_list ap;
+    va_start(ap, fmt);
+    std::vsnprintf(buf, sizeof buf, fmt, ap);
+    va_end(ap);
+    ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
+    ImGui::PushTextWrapPos(0.0f);
+    ImGui::TextUnformatted(buf);
+    ImGui::PopTextWrapPos();
+    ImGui::PopStyleColor();
+}
+
+void textWrappedColored(const ImVec4& colour, const char* fmt, ...) {
+    char buf[1024];
+    va_list ap;
+    va_start(ap, fmt);
+    std::vsnprintf(buf, sizeof buf, fmt, ap);
+    va_end(ap);
+    ImGui::PushStyleColor(ImGuiCol_Text, colour);
+    ImGui::PushTextWrapPos(0.0f);
+    ImGui::TextUnformatted(buf);
+    ImGui::PopTextWrapPos();
+    ImGui::PopStyleColor();
+}
+
 static std::string lowerCase(std::string s) { for (char& c : s) if (c >= 'A' && c <= 'Z') c += 32; return s; }
 
 void FileBrowser::open(const std::string& t, const std::string& startDir,

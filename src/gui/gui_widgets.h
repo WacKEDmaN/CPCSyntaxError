@@ -1,6 +1,7 @@
 // CPCSyntaxError GUI — small pieces shared by the shell's windows.
 #pragma once
 #include <functional>
+#include <initializer_list>
 #include <string>
 #include <vector>
 
@@ -21,6 +22,55 @@ void fact(const char* name, const char* fmt, ...);
 void endFacts();
 // A small LED, lit or not, followed by its label on the same line.
 void led(bool on, const char* label = nullptr);
+
+// A ROW THAT WRAPS: each item goes on the line of the one before when it fits in the
+// window's width, else on the next -- so toolbars and button rows stay whole in a narrow
+// window instead of running off its edge. Each call places one item; `place(w)` places
+// anything else of width w (call it just before drawing that item).
+struct FlowRow {
+    bool first = true;
+    float spacing = -1.0f;                     // between items; -1 = the style's
+    void place(float width);
+    bool button(const char* label, float width = 0.0f);   // width 0: the label's own
+    bool smallButton(const char* label);
+    bool checkbox(const char* label, bool* v);
+    bool radio(const char* label, bool active);
+    void text(const char* text);               // one piece of text, kept whole
+    void textDisabled(const char* text);
+    void textColored(const ImVec4& colour, const char* text);
+    // An item whose width is set with SetNextItemWidth: place it, then draw it.
+    void item(float width) { place(width); ImGui::SetNextItemWidth(width); }
+    // An input, combo or slider `fieldWidth` wide with its label after it: placed, its
+    // width set; the caller draws it next.
+    void field(float fieldWidth, const char* label) {
+        const float text = ImGui::CalcTextSize(label, nullptr, true).x;
+        place(fieldWidth + (text > 0.0f ? ImGui::GetStyle().ItemInnerSpacing.x + text : 0.0f));
+        ImGui::SetNextItemWidth(fieldWidth);
+    }
+    void newRow() { first = true; }
+};
+// A row that goes on from the item just drawn: `if (after().smallButton("Get it..."))`
+// is SameLine-and-button that moves to the next line when the button would not fit.
+inline FlowRow after() { FlowRow r; r.first = false; return r; }
+// Text in this window wraps at its edge (Text, TextDisabled, TextColored...), from here
+// to the end of the scope -- which must close before the window's End(). Child windows
+// (lists, hex views, editors) keep their own unwrapped lines.
+struct WrapText {
+    WrapText() { ImGui::PushTextWrapPos(0.0f); }
+    ~WrapText() { ImGui::PopTextWrapPos(); }
+    WrapText(const WrapText&) = delete;
+    WrapText& operator=(const WrapText&) = delete;
+};
+
+// LEDs in columns `column` wide, as many to a row as the window has room for.
+struct LedItem {
+    bool on; const char* label;
+    LedItem(long long v, const char* l) : on(v != 0), label(l) {}
+};
+void ledGrid(std::initializer_list<LedItem> items, float column);
+// Text that wraps at the window's edge (Text/TextDisabled/TextColored do not by default).
+void textWrappedDisabled(const char* fmt, ...);
+void textWrappedColored(const ImVec4& colour, const char* fmt, ...);
 
 // A modal file picker (no OS dialog dependency).
 struct FileBrowser {

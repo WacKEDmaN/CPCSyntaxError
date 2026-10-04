@@ -28,6 +28,10 @@ struct GuiBreakpoint {
     std::function<bool(const BreakpointContext&)> compiled;
     int hits = 0;
     bool fromAssembler = false;            // a RASM BRK label; replaced on every assembly
+    // Set by an external debugger (devserver.h): its id (0 = the UI's own), and whether
+    // it is one of the GDB client's temporary stepping breakpoints (Z1).
+    int remoteId = 0;
+    bool remoteTemp = false;
 };
 
 struct GuiWatchpoint {
@@ -35,6 +39,7 @@ struct GuiWatchpoint {
     bool onRead = false, onWrite = true;
     bool enabled = true;
     int hits = 0;
+    bool remote = false;                   // set by an external debugger
 };
 
 class Debugger {
@@ -43,6 +48,10 @@ public:
 
     std::vector<GuiBreakpoint> breakpoints;
     std::vector<GuiWatchpoint> watchpoints;
+    // The access that last stopped the machine on a watchpoint (-1: none since the last
+    // resume), for an external debugger's stop report.
+    int lastWatchAddress = -1;
+    bool lastWatchWrite = false;
 
     // Called once per UI frame: hands the enabled breakpoints and watchpoints to the core.
     void attach();

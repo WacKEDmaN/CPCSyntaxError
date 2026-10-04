@@ -61,6 +61,8 @@ void Debugger::attach() {
             std::snprintf(b, sizeof(b), "Watchpoint: %s &%04X %s &%02X (instruction at &%04X)",
                           write ? "write" : "read", address, write ? "<-" : "->", value & 0xff, at);
             host.breakReason = b;
+            lastWatchAddress = address & 0xffff;
+            lastWatchWrite = write;
             e->watchpointPending = std::string(b);
             return;
         }
@@ -116,6 +118,7 @@ void Debugger::resumeFrom() {
     // The breakpoint under the PC has already stopped us once; let it go this time.
     host.emu->breakpointSkipOnce = host.emu->cpu->pc & 0xffff;
     host.breakReason.clear();
+    lastWatchAddress = -1;
     host.paused = false;
     host.status = "Running";
 }
@@ -140,6 +143,7 @@ void Debugger::stepInto() {
     if (!host.booted()) return;
     host.paused = true;
     host.breakReason.clear();
+    lastWatchAddress = -1;
     host.stepInstruction();
     char b[64]; std::snprintf(b, sizeof(b), "Stepped to &%04X", host.emu->cpu->pc & 0xffff);
     host.status = host.breakReason.empty() ? std::string(b) : host.breakReason;

@@ -74,6 +74,7 @@ static Bytes unrle(const Bytes& data, int size) {
     Bytes out(size, 0); int p = 0;
     for (int i = 0; i < (int)data.size() && p < size;) {
         if (data[i] == 0xe5 && (i + 1 < (int)data.size() ? data[i + 1] : 0) != 0) {
+            if (i + 2 >= (int)data.size()) break;   // a run cut off at the end
             int n = data[i + 1], v = data[i + 2];
             for (int k = p; k < std::min(size, p + n); k++) out[k] = (uint8_t)v;
             p += n; i += 3;
@@ -87,8 +88,10 @@ static Bytes unrle(const Bytes& data, int size) {
 static void scanSnaChunks(const Bytes& bytes, int pos, const std::function<void(const std::string&, const Bytes&, int)>& onChunk) {
     while (pos + 8 <= (int)bytes.size()) {
         std::string id = ascii(bytes, pos, 4);
-        int size = (int)read32(bytes, pos + 4);
-        if (size > (int)bytes.size() - pos - 8) break;
+        const unsigned raw = read32(bytes, pos + 4);
+        // Unsigned: a size of 2 GB or more must not turn negative and walk backwards.
+        if (raw > (unsigned)((int)bytes.size() - pos - 8)) break;
+        const int size = (int)raw;
         Bytes payload = sliceB(bytes, pos + 8, pos + 8 + size);
         onChunk(id, payload, size);
         pos += 8 + size;
@@ -154,7 +157,8 @@ Snapshot parseSna(const Bytes& bytes) {
     Bytes plus; bool hasPlus = false;
     DebugMetadata debugMetadata = makeDebugMetadata();
     auto handleChunk = [&](const std::string& id, const Bytes& payload, int) {
-        if (id == "CPC+" && payload.size() > 0 && payload.size() < 0x1000) { plus = payload; hasPlus = true; }
+        // The chunk is 0x8f8 bytes; a shorter one is not one (applySna reads up to 0x8f7).
+        if (id == "CPC+" && payload.size() >= 0x8f8 && payload.size() < 0x1000) { plus = payload; hasPlus = true; }
         collectDebugChunk(debugMetadata, id, payload);
     };
     if (declaredKiB) {

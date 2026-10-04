@@ -144,10 +144,15 @@ public:
     int readStatus() const;
     // R#8 VSL (p.82): 00 128K, 01 256K, 10 512K; 11 acts as 512K (Powergraph notes).
     int vramBytes() const;
-    // The debugger's views. A dot of the image space coloured as the display would colour
-    // it (9.1: BP2..BD16, YJK/YUV); in P1/P2 the 4-bit dot through palette 0-15. A palette
+    // The debugger's views. The image space a line at a time, coloured as the display
+    // colours it (9.1: BP2..BD16, YJK/YUV; P1/P2 through each layer's PLTO, sprite patterns
+    // through the palette of a sprite that shows them, dot 0 the back drop). P1 lays its
+    // layers side by side: view columns 0-255 are layer A, 256-511 layer B. A palette
     // entry. Both 0xAABBGGRR, opaque.
-    uint32_t imageColour(int x, int y) const;
+    int imageViewWidth() const;
+    int imageViewHeight() const;
+    int imageViewX(int column) const;        // the image X (for getDot/dotAddress) a column shows
+    void imageViewLine(int y, uint32_t* out) const;   // imageViewWidth() dots
     uint32_t paletteEntry(int index) const { return paletteColour(index) | 0xff000000u; }
     int vramWriteAddress() const { return vramAddress(0); }    // R#0-2
     int vramReadAddress() const { return vramAddress(3); }     // R#3-5

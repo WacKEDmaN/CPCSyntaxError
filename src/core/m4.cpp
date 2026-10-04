@@ -277,6 +277,11 @@ bool M4Board::ack(Z80* cpu) {
             if (!validFd(fd) || p.size() < 5) { resp8(M4_FR_INVALID_OBJECT); break; }
             Fd& f = fds[fd];
             size_t to = (size_t)((uint32_t)p[1] | (uint32_t)p[2] << 8 | (uint32_t)p[3] << 16 | (uint32_t)p[4] << 24);
+            // A seek may grow a file, but not without bound: any program could otherwise
+            // make the emulator allocate up to 4 GB with one command. 256 MB is far beyond
+            // what a CPC can fill.
+            static const size_t MAX_GROW = 256u << 20;
+            if (to > f.data.size() && f.canWrite && to > MAX_GROW) { resp8(M4_FR_DENIED); break; }
             if (to > f.data.size()) {
                 if (f.canWrite) { f.data.resize(to); f.dirty = true; }   // FatFs expands a file open for writing
                 else to = f.data.size();

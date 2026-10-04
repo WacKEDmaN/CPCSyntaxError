@@ -12,6 +12,7 @@
 
 #include "gui_assembler.h"
 #include "gui_dsk_editor.h"
+#include "devserver.h"
 
 // DejaVu Sans Mono (Bitstream Vera licence: third_party/dejavu/LICENSE.txt)
 #include "font_dejavu_mono.inc"
@@ -54,6 +55,8 @@ GuiShell::GuiShell(EmuHost& h) : host(h), debugger(h) {
     assembler = std::make_unique<AssemblerWindow>(host, debugger, browser, saver);
     assembler->showInDisassembly = [this](int a) { showInDisassembly(a); };
     dskEditor = std::make_unique<DskEditorWindow>(host, browser, saver);
+    dev = std::make_unique<DevServer>(host, debugger);
+    dev->onQuit = [this]() { quitRequested = true; };
 }
 
 GuiShell::~GuiShell() = default;
@@ -83,6 +86,7 @@ void GuiShell::loadSettings(const std::map<std::string, std::string>& ini) {
     str("csl_script", cslScript); str("csl_out", cslOut); str("csl_diskdir", cslDiskDir);
     auto ci = ini.find("csl_crtc"); if (ci != ini.end()) cslCrtc = std::atoi(ci->second.c_str());
     assembler->loadSettings(ini);
+    dev->loadSettings(ini);
 }
 
 void GuiShell::saveSettings(std::ostream& out) const {
@@ -93,6 +97,7 @@ void GuiShell::saveSettings(std::ostream& out) const {
     out << "csl_script=" << cslScript << "\n" << "csl_out=" << cslOut << "\n"
         << "csl_diskdir=" << cslDiskDir << "\n" << "csl_crtc=" << cslCrtc << "\n";
     assembler->saveSettings(out);
+    dev->saveSettings(out);
 }
 
 // The front end's look: Dear ImGui's dark theme, square windows, the orange accent --
@@ -343,11 +348,10 @@ void GuiShell::drawStatusBar(const ShellFrameInfo& info) {
     if (open) {
         ImGui::PushStyleColor(ImGuiCol_Text, kAccent);
         ImGui::TextUnformatted(host.paused ? "PAUSED" : (host.turbo ? "TURBO" : "RUNNING"));
-        if (host.mouseCaptured) { ImGui::SameLine(); ImGui::TextUnformatted("  MOUSE CAPTURED (F12 or middle button releases)"); }
-        else if (host.symbifaceMouseActive()) { ImGui::SameLine(); ImGui::TextDisabled("  click the picture to use the mouse"); }
+        if (host.mouseCaptured) { after().text("  MOUSE CAPTURED (F12 or middle button releases)"); }
+        else if (host.symbifaceMouseActive()) { after().textDisabled("  click the picture to use the mouse"); }
         ImGui::PopStyleColor();
-        ImGui::SameLine(); ImGui::TextDisabled("|"); ImGui::SameLine();
-        ImGui::TextUnformatted(host.status.c_str());
+        after().textDisabled("|"); after().text(host.status.c_str());
         char snd[32];
         if (!host.audioEnabled || !info.soundOpen) std::snprintf(snd, sizeof(snd), "SND off");
         else std::snprintf(snd, sizeof(snd), "SND %3.0f ms", info.soundQueuedMs);
@@ -450,12 +454,10 @@ void GuiShell::sectionRoms(bool asMenu) {
         auto romRow = [&](const char* label, int which, const std::string& name) {
             ImGui::PushID(which);
             ImGui::TextUnformatted(label);
-            ImGui::SameLine();
-            if (ImGui::SmallButton("Replace"))
+            if (after().smallButton("Replace"))
                 browser.open(std::string("Replace ") + label, host.romDir, { ".rom", ".bin" },
                              [this, which](const std::string& p) { host.setFirmwareRom(which, p); });
-            ImGui::SameLine();
-            if (ImGui::SmallButton("Default")) host.clearFirmwareRom(which);
+            if (after().smallButton("Default")) host.clearFirmwareRom(which);
             ImGui::TextDisabled("  %s", name.empty() ? "(none)" : name.c_str());
             ImGui::PopID();
         };
@@ -475,11 +477,14 @@ void GuiShell::sectionRoms(bool asMenu) {
         ImGui::Text("%2d", slot);
         ImGui::SameLine(36);
         ImGui::TextUnformatted(nm.empty() ? "(empty)" : nm.c_str());
-        ImGui::SameLine(asMenu ? 200.0f : 150.0f);
-        if (ImGui::SmallButton("Fit"))
+        // a menu sizes itself: a column there; in a window the buttons follow and wrap
+        bool fit;
+        if (asMenu) { ImGui::SameLine(200.0f); fit = ImGui::SmallButton("Fit"); }
+        else fit = after().smallButton("Fit");
+        if (fit)
             browser.open("Fit ROM slot " + std::to_string(slot), host.romDir, { ".rom", ".bin" },
                          [this, slot](const std::string& p) { host.fitExpansionRom(slot, p); });
-        if (!nm.empty()) { ImGui::SameLine(); if (ImGui::SmallButton("Clr")) host.clearExpansionRom(slot); }
+        if (!nm.empty()) { if (after().smallButton("Clr")) host.clearExpansionRom(slot); }
         ImGui::PopID();
     }
 }
@@ -570,8 +575,7 @@ void GuiShell::menuMedia() {
     if (ImGui::BeginMenu("Tape")) {
         ImGui::TextDisabled("%s", host.tapeName.empty() ? "(no tape)" : host.tapeName.c_str());
         if (ImGui::MenuItem("Insert...")) browser.open("Insert tape", host.romDir, { ".cdt", ".tzx", ".tap", ".wav" }, [this](const std::string& p) { host.loadTapeFile(p); });
-        if (ImGui::MenuItem(host.tapePlaying ? "Stop" : "Play", nullptr, false, !host.tapeName.empty())) host.tapePlayToggle();
-        if (ImGui::MenuItem("Rewind", nullptr, false, !host.tapeName.empty())) host.tapeRewind();
+        tapeDeckControls(true);
         ImGui::Separator();
         sectionTape(true);
         ImGui::EndMenu();
@@ -579,11 +583,14 @@ void GuiShell::menuMedia() {
     if (ImGui::BeginMenu("Cartridge")) {
         if (!host.cartName.empty()) ImGui::TextDisabled("%s", host.cartName.c_str());
         if (ImGui::MenuItem("Load cartridge (.cpr)...")) browser.open("Load cartridge", host.romDir, { ".cpr", ".bin" }, [this](const std::string& p) { host.loadCartridgeFile(p); });
+        if (ImGui::MenuItem("Eject", nullptr, false, !host.cartName.empty())) host.ejectCartridge();
         ImGui::EndMenu();
     }
     if (ImGui::BeginMenu("Snapshot")) {
+        if (!host.snapshotName.empty()) ImGui::TextDisabled("%s", host.snapshotName.c_str());
         if (ImGui::MenuItem("Load .SNA...")) browser.open("Load snapshot", host.romDir, { ".sna" }, [this](const std::string& p) { host.loadSnapshot(p); });
         if (ImGui::MenuItem("Save .SNA...", nullptr, false, host.booted())) saver.open("Save snapshot", host.romDir, "snapshot.sna", [this](const std::string& p) { host.saveSnapshot(p); });
+        if (ImGui::MenuItem("Eject", nullptr, false, !host.snapshotName.empty())) host.ejectSnapshot();
         ImGui::EndMenu();
     }
     ImGui::EndMenu();
@@ -627,6 +634,8 @@ void GuiShell::menuDebug() {
     ImGui::Separator();
     if (ImGui::MenuItem("Assemble", "F9")) { panelOpen("Assembler") = true; assembler->assemble(false); }
     if (ImGui::MenuItem("Assemble and run", "Ctrl+F9")) { panelOpen("Assembler") = true; assembler->assemble(true); }
+    ImGui::Separator();
+    if (ImGui::BeginMenu("External debugging")) { sectionDevelopment(true); ImGui::EndMenu(); }
     ImGui::EndMenu();
 }
 
@@ -708,6 +717,7 @@ void GuiShell::drawLogo() {
 void GuiShell::windowMachine() {
     if (!panelOpen("Machine")) return;
     if (ImGui::Begin("Machine", &panelOpen("Machine"))) {
+        WrapText wrapText;                     // text wraps at the window's edge
         drawLogo();
 
         const float labelW = ImGui::GetFontSize() * 4.8f;   // the labels' column
@@ -747,8 +757,7 @@ void GuiShell::windowMachine() {
             if (ImGui::Button("Reset machine", ImVec2(-1, 0))) host.reset();
             bool paused = host.paused;
             if (ImGui::Checkbox("Paused", &paused)) { if (paused) debugger.pause(); else debugger.run(); }
-            ImGui::SameLine();
-            ImGui::Checkbox("Unlimited speed", &host.turbo);
+            after().checkbox("Unlimited speed", &host.turbo);
             float pct = host.speed * 100.0f;
             ImGui::SetNextItemWidth(-1);
             if (ImGui::SliderFloat("##speed", &pct, 25.0f, 400.0f, "speed %.0f%%", ImGuiSliderFlags_Logarithmic)) host.speed = pct / 100.0f;
@@ -761,53 +770,62 @@ void GuiShell::windowMachine() {
 void GuiShell::windowMedia() {
     if (!panelOpen("Media")) return;
     if (ImGui::Begin("Media", &panelOpen("Media"))) {
+        WrapText wrapText;                     // text wraps at the window's edge
+        // Every slot the same way: what is in it (wrapping), then its buttons (a row that
+        // wraps), Eject among them.
+        auto loaded = [](const std::string& name, const char* none) {
+            if (name.empty()) textWrappedDisabled("%s", none);
+            else { ImGui::PushTextWrapPos(0.0f); ImGui::TextUnformatted(name.c_str()); ImGui::PopTextWrapPos(); }
+        };
         if (ImGui::CollapsingHeader("Disk", ImGuiTreeNodeFlags_DefaultOpen)) {
-            // a drive a line: its letter, its buttons, the disc in it
             for (int d = 0; d < 2; d++) {
                 ImGui::PushID(d);
                 ImGui::AlignTextToFramePadding();
-                ImGui::Text("%c:", 'A' + d);
+                ImGui::TextColored(kAccent, "%c:", 'A' + d);
                 ImGui::SameLine();
-                if (ImGui::SmallButton("Insert..."))
+                loaded(host.diskName[d], "(empty)");
+                FlowRow row;
+                if (row.smallButton("Insert..."))
                     browser.open(std::string("Insert disk ") + char('A' + d), host.romDir, { ".dsk", ".edsk" }, [this, d](const std::string& p) { host.loadDiskFile(p, d); });
                 ImGui::BeginDisabled(host.diskName[d].empty());
-                ImGui::SameLine();
-                if (ImGui::SmallButton("Eject")) host.ejectDisk(d);
-                ImGui::SameLine();
-                if (ImGui::SmallButton("Edit")) { dskEditor->takeFromDrive(d); panelOpen("DSK editor") = true; }
+                if (row.smallButton("Eject")) host.ejectDisk(d);
+                if (row.smallButton("Edit")) { dskEditor->takeFromDrive(d); panelOpen("DSK editor") = true; }
                 if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip("Open the disc in the DSK editor");
                 ImGui::EndDisabled();
-                ImGui::SameLine();
-                if (host.diskName[d].empty()) ImGui::TextDisabled("(empty)");
-                else ImGui::TextUnformatted(host.diskName[d].c_str());
                 ImGui::PopID();
             }
-            ImGui::TextDisabled("Drop a .DSK or .EDSK onto the window");
+            textWrappedDisabled("Drop a .DSK or .EDSK onto the window");
         }
         if (ImGui::CollapsingHeader("Tape", ImGuiTreeNodeFlags_DefaultOpen)) {
-            if (!host.tapeName.empty()) {
-                ImGui::TextWrapped("%s", host.tapeName.c_str());
-                if (ImGui::Button(host.tapePlaying ? "Stop" : "Play", ImVec2(70, 0))) host.tapePlayToggle();
-                ImGui::SameLine();
-                if (ImGui::Button("Rewind", ImVec2(70, 0))) host.tapeRewind();
-                ImGui::SameLine();
-            } else {
-                ImGui::TextDisabled("(no tape)");
-            }
-            if (ImGui::Button("Insert tape...")) browser.open("Insert tape", host.romDir, { ".cdt", ".tzx", ".tap", ".wav" }, [this](const std::string& p) { host.loadTapeFile(p); });
+            loaded(host.tapeName, "(no tape)");
+            if (ImGui::SmallButton("Insert tape...")) browser.open("Insert tape", host.romDir, { ".cdt", ".tzx", ".tap", ".wav" }, [this](const std::string& p) { host.loadTapeFile(p); });
+            tapeDeckControls(false);
             ImGui::PushID("tapeopts"); sectionTape(false); ImGui::PopID();
         }
         if (ImGui::CollapsingHeader("Cartridge")) {
-            if (!host.cartName.empty()) ImGui::TextWrapped("%s", host.cartName.c_str());
-            if (ImGui::Button("Load cartridge (.cpr)...", ImVec2(-1, 0))) browser.open("Load cartridge", host.romDir, { ".cpr", ".bin" }, [this](const std::string& p) { host.loadCartridgeFile(p); });
+            loaded(host.cartName, "(no cartridge)");
+            FlowRow row;
+            if (row.smallButton("Load .CPR..."))
+                browser.open("Load cartridge", host.romDir, { ".cpr", ".bin" }, [this](const std::string& p) { host.loadCartridgeFile(p); });
+            ImGui::BeginDisabled(host.cartName.empty());
+            if (row.smallButton("Eject")) host.ejectCartridge();
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+                ImGui::SetTooltip("Out of the slot: the machine boots without it (a Plus on its system cartridge)");
+            ImGui::EndDisabled();
         }
         if (ImGui::CollapsingHeader("Snapshot")) {
+            loaded(host.snapshotName, "(no snapshot loaded)");
+            FlowRow row;
+            if (row.smallButton("Load .SNA...")) browser.open("Load snapshot", host.romDir, { ".sna" }, [this](const std::string& p) { host.loadSnapshot(p); });
             ImGui::BeginDisabled(!host.booted());
-            if (ImGui::Button("Save .SNA...", ImVec2(-1, 0))) saver.open("Save snapshot", host.romDir, "snapshot.sna", [this](const std::string& p) { host.saveSnapshot(p); });
+            if (row.smallButton("Save .SNA...")) saver.open("Save snapshot", host.romDir, "snapshot.sna", [this](const std::string& p) { host.saveSnapshot(p); });
             ImGui::EndDisabled();
-            if (ImGui::Button("Load .SNA...", ImVec2(-1, 0))) browser.open("Load snapshot", host.romDir, { ".sna" }, [this](const std::string& p) { host.loadSnapshot(p); });
+            ImGui::BeginDisabled(host.snapshotName.empty());
+            if (row.smallButton("Eject")) host.ejectSnapshot();
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip("Let the snapshot go: the machine boots afresh");
+            ImGui::EndDisabled();
             ImGui::BeginDisabled(!host.booted());
-            if (ImGui::Button("Screenshot .bmp...", ImVec2(-1, 0))) saver.open("Save screenshot", host.romDir, "screenshot.bmp", [this](const std::string& p) { host.saveScreenshotBmp(p); });
+            if (row.smallButton("Screenshot .bmp...")) saver.open("Save screenshot", host.romDir, "screenshot.bmp", [this](const std::string& p) { host.saveScreenshotBmp(p); });
             ImGui::EndDisabled();
         }
     }
@@ -817,10 +835,12 @@ void GuiShell::windowMedia() {
 void GuiShell::windowSettings() {
     if (!panelOpen("Settings")) return;
     if (ImGui::Begin("Settings", &panelOpen("Settings"))) {
+        WrapText wrapText;                     // text wraps at the window's edge
         if (ImGui::CollapsingHeader("Video", ImGuiTreeNodeFlags_DefaultOpen)) { ImGui::PushID("video"); sectionVideo(false); ImGui::PopID(); }
         if (ImGui::CollapsingHeader("Audio")) { ImGui::PushID("audio"); sectionAudio(false); ImGui::PopID(); }
         if (ImGui::CollapsingHeader("Input")) { ImGui::PushID("input"); sectionInput(false); ImGui::PopID(); }
         if (ImGui::CollapsingHeader("Expansions")) { ImGui::PushID("exp"); sectionExpansions(false); ImGui::PopID(); }
+        if (ImGui::CollapsingHeader("External debugging")) { ImGui::PushID("dev"); sectionDevelopment(false); ImGui::PopID(); }
     }
     ImGui::End();
 }
@@ -829,6 +849,7 @@ void GuiShell::windowAbout() {
     if (!showAbout) return;
     ImGui::SetNextWindowSize(ImVec2(520, 0), ImGuiCond_FirstUseEver);
     if (ImGui::Begin("About CPCSyntaxError", &showAbout, ImGuiWindowFlags_NoDocking)) {
+        WrapText wrapText;                     // text wraps at the window's edge
         ImGui::TextColored(kAccent, "CPCSyntaxError");
         ImGui::TextDisabled("Amstrad CPC / Plus / GX4000 emulator");
         ImGui::Separator();

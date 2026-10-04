@@ -10,6 +10,8 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
+#include <cstdint>
 #include <cstdio>
 #include <filesystem>
 #include <mutex>
@@ -32,6 +34,7 @@
 #include <unistd.h>
 #endif
 
+#include "devserver.h"
 #include "emuhost.h"
 #include "gui_widgets.h"
 #include "core/emulator.h"
@@ -40,6 +43,7 @@
 #include "core/v9990.h"
 #include "core/opl4.h"
 #include "core/speech.h"
+#include "core/tape.h"
 
 #ifndef _WIN32
 namespace {
@@ -81,13 +85,13 @@ struct Choice { const char* label; const char* value; const char* tip; };
 template <size_t N>
 static void choiceRow(bool asMenu, const Choice (&items)[N], const std::string& current,
                       const std::function<void(const char*)>& pick) {
+    FlowRow row;                               // the radio buttons wrap in a narrow window
     for (size_t i = 0; i < N; i++) {
         bool chosen;
         if (asMenu) {
             chosen = ImGui::MenuItem(items[i].label, nullptr, current == items[i].value);
         } else {
-            if (i) ImGui::SameLine();
-            chosen = ImGui::RadioButton(items[i].label, current == items[i].value);
+            chosen = row.radio(items[i].label, current == items[i].value);
         }
         if (items[i].tip && ImGui::IsItemHovered()) ImGui::SetTooltip("%s", items[i].tip);
         if (chosen) pick(items[i].value);
@@ -207,16 +211,7 @@ void GuiShell::lightgunItems(bool asMenu) {
         { "Trojan Light Phazer", "trojan", "On the CRTC's light pen input (R16/R17)" },
         { "Gunstick", "gunstick", "Loriciel Gunstick: reads the brightness at the aim point" },
         { "West Phaser", "westphaser", "Loriciel West Phaser" } };
-    if (!asMenu) {
-        // four choices do not fit on one line in a docked window
-        for (size_t i = 0; i < 4; i++) {
-            if (i & 1) ImGui::SameLine(160.0f);
-            if (ImGui::RadioButton(guns[i].label, host.lightgunType == guns[i].value)) host.setLightgun(guns[i].value);
-            if (guns[i].tip && ImGui::IsItemHovered()) ImGui::SetTooltip("%s", guns[i].tip);
-        }
-    } else {
-        choiceRow(true, guns, host.lightgunType, [this](const char* v) { host.setLightgun(v); });
-    }
+    choiceRow(asMenu, guns, host.lightgunType, [this](const char* v) { host.setLightgun(v); });
     if (host.lightgunActive()) ImGui::TextDisabled("Aim with the mouse over the Screen; left button fires.");
 }
 
@@ -306,11 +301,10 @@ void GuiShell::sectionExpansions(bool asMenu) {
                             [this](const std::string& dir) { host.m4Folder = dir; if (host.m4Enabled) host.setM4(true, dir); });
         if (ImGui::MenuItem("Rescan M4 folder", nullptr, false, host.m4Enabled)) host.rescanM4();
     } else {
-        ImGui::SameLine();
-        if (ImGui::SmallButton("Folder..."))
+        if (after().smallButton("Folder..."))
             browser.openDir("M4 files folder", host.m4Folder.empty() ? host.romDir : host.m4Folder,
                             [this](const std::string& dir) { host.m4Folder = dir; if (host.m4Enabled) host.setM4(true, dir); });
-        if (host.m4Enabled) { ImGui::SameLine(); if (ImGui::SmallButton("Rescan")) host.rescanM4(); }
+        if (host.m4Enabled) { if (after().smallButton("Rescan")) host.rescanM4(); }
         if (!host.m4Folder.empty()) ImGui::TextDisabled("  %s", host.m4Folder.c_str());
     }
 
@@ -343,7 +337,7 @@ void GuiShell::sectionExpansions(bool asMenu) {
     } else {
         sectionHeading("Graphics cartridge");
         if (ImGui::Checkbox("GFX9000 (Yamaha V9990 at &FF60)", &gfx)) host.setV9990(gfx);
-        if (host.v9990Enabled) { ImGui::SameLine(); if (ImGui::SmallButton("Monitor")) panelOpen("GFX9000") = true; }
+        if (host.v9990Enabled) { if (after().smallButton("Monitor")) panelOpen("GFX9000") = true; }
     }
 
     // THE OPL4: a MoonSound-style card on the AMSDAP
@@ -406,14 +400,13 @@ void GuiShell::sectionExpansions(bool asMenu) {
                 if (ImGui::IsItemHovered())
                     ImGui::SetTooltip("The Catalex MP3 module's micro-SD card: folders 01, 02 ... of files\n"
                                       "named 001xxx.mp3, 002xxx.mp3 ... (LambdaSpeak 3's MP3.BAS plays them).");
-                ImGui::SameLine();
-                ImGui::TextDisabled("%s", host.mp3Card.empty() ? "(no card)" : host.mp3Card.c_str());
+                after().textDisabled(host.mp3Card.empty() ? "(no card)" : host.mp3Card.c_str());
                 if (host.emu && host.emu->speech && host.emu->speech->mp3.playing())
                     ImGui::TextDisabled("Playing %s", host.emu->speech->mp3.nowPlaying().c_str());
             }
             if (host.speechKind != "none" && !host.speechHasRom()) {
                 ImGui::TextDisabled("No sp0256-al2.bin: silent");
-                ImGui::SameLine(); if (ImGui::SmallButton("Get it...##sp")) romPromptFor = "sp0256";
+                if (after().smallButton("Get it...##sp")) romPromptFor = "sp0256";
             }
         }
         if (ImGui::Checkbox("OPL4 (YMF278B, AMSDAP &FFC4/&FF7E)", &opl)) {
@@ -433,7 +426,7 @@ void GuiShell::sectionExpansions(bool asMenu) {
         ImGui::EndDisabled();
         if (host.opl4Enabled) {
             ImGui::TextDisabled(host.opl4HasRom() ? "YRW801 sample ROM fitted" : "No yrw801*.rom: GM instruments silent");
-            if (!host.opl4HasRom()) { ImGui::SameLine(); if (ImGui::SmallButton("Get it...")) romPromptFor = "opl4"; }
+            if (!host.opl4HasRom()) { if (after().smallButton("Get it...")) romPromptFor = "opl4"; }
         }
     }
 }
@@ -448,13 +441,107 @@ void GuiShell::sectionTape(bool asMenu) {
     } else {
         changed = ImGui::Checkbox("Follow the motor relay", &motor);
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("The tape only plays while the PPI switches the cassette motor on,\nas on a real CPC.");
-        ImGui::SameLine();
         ImGui::BeginDisabled(!motor);
-        changed |= ImGui::Checkbox("Relay delay", &relay);
+        changed |= after().checkbox("Relay delay", &relay);
         ImGui::EndDisabled();
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("The relay and the motor take a moment to come up to speed.");
     }
     if (changed) { host.tapeFollowsMotor = motor; host.tapeRelayDelay = relay; host.applyTapeOptions(); }
+}
+
+// ============================================================== the tape deck
+// The deck's face: its counter (000-999, a second a count, with its reset), where the tape
+// is of how long, which block is under the head, the motor lamp, and the buttons -- start,
+// back a block, PLAY, PAUSE, STOP, on a block, EJECT -- plus any block to go to.
+void GuiShell::tapeDeckControls(bool asMenu) {
+    CPCTapeDrive* deck = host.tapeDeck();
+    const bool in = deck != nullptr;
+    const int blocks = in ? (int)deck->blocks.size() : 0;
+    const int block = in ? deck->blockAtPosition() : -1;
+    auto clock = [](double s) {
+        const int t = (int)s;
+        char b[16];
+        std::snprintf(b, sizeof b, "%d:%02d", t / 60, t % 60);
+        return std::string(b);
+    };
+    if (asMenu) {
+        if (in) ImGui::TextDisabled("%03d   %s / %s   block [%d] of %d", deck->counter(), clock(deck->positionSeconds()).c_str(),
+                                    clock(deck->lengthSeconds()).c_str(), std::max(0, block), blocks);
+        if (ImGui::MenuItem("Play", nullptr, host.tapePlaying(), in)) host.tapePlay();
+        if (ImGui::MenuItem("Pause", nullptr, host.tapePaused(), in && deck->playing)) host.tapePause();
+        if (ImGui::MenuItem("Stop", nullptr, false, in && deck->playing)) host.tapeStop();
+        if (ImGui::MenuItem("Fast forward (next block)", nullptr, false, in)) host.tapeFastForward();
+        if (ImGui::MenuItem("Rewind (a block)", nullptr, false, in)) host.tapeRewindBlock();
+        if (ImGui::MenuItem("Rewind to the start", nullptr, false, in)) host.tapeRewind();
+        if (ImGui::MenuItem("Reset the counter", nullptr, false, in)) host.tapeResetCounter();
+        if (ImGui::MenuItem("Eject", nullptr, false, in)) host.tapeEject();
+        return;
+    }
+    // the counter, the time, the block, the motor
+    ImGui::BeginDisabled(!in);
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextColored(in ? kAccent : ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled), "%03d", in ? deck->counter() : 0);
+    if (after().smallButton("0")) host.tapeResetCounter();
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip("Set the counter to 000");
+    const bool motor = in && deck->motorOn;
+    {
+        FlowRow lamp = after();
+        lamp.spacing = 14.0f;
+        lamp.textColored(motor ? ImVec4(0.45f, 0.9f, 0.45f, 1.0f) : ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled), motor ? "MOTOR" : "motor");
+    }
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("The cassette motor, as the CPC's relay switches it");
+    // where the tape is, of how long; the block numbered as the list below numbers them
+    if (in) ImGui::TextDisabled("%s / %s   block [%d] of %d", clock(deck->positionSeconds()).c_str(), clock(deck->lengthSeconds()).c_str(),
+                                std::max(0, block), blocks);
+    else ImGui::TextDisabled("0:00 / 0:00");
+    // the buttons, on as many rows as the window's width needs
+    const ImGuiStyle& style = ImGui::GetStyle();
+    const float right = ImGui::GetCursorScreenPos().x + ImGui::GetContentRegionAvail().x;
+    // all seven across when they fit; never narrower than the longest label
+    const float widest = ImGui::CalcTextSize("Pause").x + style.FramePadding.x * 2;
+    const float w = std::max(widest, (ImGui::GetContentRegionAvail().x - style.ItemSpacing.x * 6) / 7);
+    bool first = true;
+    auto button = [&](const char* label, const char* tip, bool lit, bool enabled) {
+        if (!first) {
+            ImGui::SameLine();
+            if (ImGui::GetCursorScreenPos().x + w > right + 1) ImGui::NewLine();
+        }
+        first = false;
+        if (lit) ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
+        ImGui::BeginDisabled(!enabled);
+        const bool pressed = ImGui::Button(label, ImVec2(w, 0));
+        ImGui::EndDisabled();
+        if (lit) ImGui::PopStyleColor();
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip("%s", tip);
+        return pressed;
+    };
+    const bool playing = in && deck->playing;
+    if (button("|<", "Rewind to the start", false, in)) host.tapeRewind();
+    if (button("<<", "Rewind: to this block's start, or the one before", false, in)) host.tapeRewindBlock();
+    if (button("Play", "PLAY", playing && !deck->paused, in && !deck->tapeEnded)) host.tapePlay();
+    if (button("Pause", "PAUSE: the tape held, PLAY still down", in && deck->paused, playing)) host.tapePause();
+    if (button("Stop", "STOP: PLAY up", false, playing)) host.tapeStop();
+    if (button(">>", "Fast forward: to the next block", false, in && !deck->tapeEnded)) host.tapeFastForward();
+    if (button("Eject", "Take the tape out", false, in)) host.tapeEject();
+    // any block
+    if (in && blocks > 0) {
+        char preview[160];
+        std::snprintf(preview, sizeof preview, "%s", deck->getBlockDescription(std::max(0, block)).c_str());
+        ImGui::SetNextItemWidth(-1);
+        if (ImGui::BeginCombo("##tapeblock", preview)) {
+            for (int i = 0; i < blocks; i++) {
+                const long long at = i < (int)deck->blockStartCycles.size() ? deck->blockStartCycles[(size_t)i] : 0;
+                char label[200];
+                std::snprintf(label, sizeof label, "%s  %s", clock(at / deck->cyclesPerSecond()).c_str(), deck->getBlockDescription(i).c_str());
+                ImGui::PushID(i);
+                if (ImGui::Selectable(label, i == block)) host.tapeSeekBlock(i);
+                ImGui::PopID();
+            }
+            ImGui::EndCombo();
+        }
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Go to any block");
+    }
+    ImGui::EndDisabled();
 }
 
 // ============================================================== lightgun aim
@@ -471,6 +558,7 @@ void GuiShell::windowPrinter() {
     bool& open = panelOpen("Printer");
     if (!open) return;
     if (ImGui::Begin("Printer", &open)) {
+        WrapText wrapText;                     // text wraps at the window's edge
         ImGui::TextDisabled("Printer port:");
         ImGui::SameLine();
         printerPortItems(false);
@@ -481,10 +569,8 @@ void GuiShell::windowPrinter() {
             if (ImGui::BeginTabItem("Text", nullptr, refit && host.dacType == "printer" ? ImGuiTabItemFlags_SetSelected : 0)) {
                 if (ImGui::Button("Save as text...")) saver.open("Save printer text", host.romDir, "printer.txt",
                                                                 [this](const std::string& p) { host.savePrinterText(p); });
-                ImGui::SameLine();
-                if (ImGui::Button("Clear")) host.clearPrinter();
-                ImGui::SameLine();
-                ImGui::TextDisabled("%zu characters", host.printerText.size());
+                if (after().button("Clear")) host.clearPrinter();
+                { char n[48]; std::snprintf(n, sizeof n, "%zu characters", host.printerText.size()); after().textDisabled(n); }
                 ImGui::InputTextMultiline("##printertext", host.printerText.data(), host.printerText.size() + 1,
                                           ImVec2(-1, -1), ImGuiInputTextFlags_ReadOnly);
                 ImGui::EndTabItem();
@@ -494,13 +580,10 @@ void GuiShell::windowPrinter() {
                 const int pages = mp ? mp->pageCount() : 0;
                 if (ImGui::Button("Save page as BMP...")) saver.open("Save printer page", host.romDir, "page.bmp",
                                                                      [this](const std::string& p) { host.savePrinterPageBmp(p); });
-                ImGui::SameLine();
-                if (ImGui::Button("Save page as SVG...")) saver.open("Save printer page", host.romDir, "page.svg",
+                if (after().button("Save page as SVG...")) saver.open("Save printer page", host.romDir, "page.svg",
                                                                      [this](const std::string& p) { host.savePrinterPageSvg(p); });
-                ImGui::SameLine();
-                if (ImGui::Button("Clear##mp")) host.clearPrinter();
-                ImGui::SameLine();
-                ImGui::TextDisabled("page %d of %d", mp ? mp->pageNumber() : 0, pages);
+                if (after().button("Clear##mp")) host.clearPrinter();
+                { char n[48]; std::snprintf(n, sizeof n, "page %d of %d", mp ? mp->pageNumber() : 0, pages); after().textDisabled(n); }
                 if (mp && pages > 0 && uploadTexture) {
                     if (printerTextureRevision != host.printerRevision || !printerTexture) {
                         std::vector<uint8_t>& page = mp->pageData(mp->pageNumber() - 1);
@@ -588,11 +671,22 @@ void GuiShell::romPrompt() {
         ImGui::SameLine();
         const bool busy = romFetch && !romFetch->done;
         ImGui::BeginDisabled(busy || !romUrl[0]);
-        if (ImGui::Button("Download", ImVec2(-1, 0))) {
+        // Only the web: URLDownloadToFile would also take file:// (any file on this machine),
+        // and to curl a "URL" starting with '-' is an option.
+        const std::string urlText = romUrl;
+        const bool webUrl = urlText.rfind("https://", 0) == 0 || urlText.rfind("http://", 0) == 0;
+        const bool clicked = ImGui::Button("Download", ImVec2(-1, 0));
+        if (clicked && !webUrl) status = "Not fitted: the URL must start with https:// or http://";
+        if (clicked && webUrl) {
             status = "Downloading...";
             auto fetch = std::make_shared<RomFetch>();
             std::error_code ec;
-            fetch->path = (std::filesystem::temp_directory_path(ec) / ("cpcse_" + dest + ".part")).string();
+            // A name nobody can plant beforehand in the shared temporary folder.
+            char unique[64];
+            std::snprintf(unique, sizeof unique, "cpcse_%llx_%llx_",
+                          (unsigned long long)std::chrono::steady_clock::now().time_since_epoch().count(),
+                          (unsigned long long)(uintptr_t)fetch.get());
+            fetch->path = (std::filesystem::temp_directory_path(ec) / (unique + dest + ".part")).string();
             RomFetch* f = fetch.get();
             const std::string url = romUrl;
             fetch->worker = std::thread([f, url] {
@@ -638,8 +732,7 @@ void GuiShell::romPrompt() {
             });
         }
         if (!romChooseStatus.empty()) { status = romChooseStatus; romChooseStatus.clear(); }
-        ImGui::SameLine();
-        if (ImGui::Button("Not now")) { romPromptFor.clear(); status.clear(); ImGui::CloseCurrentPopup(); }
+        if (after().button("Not now")) { romPromptFor.clear(); status.clear(); ImGui::CloseCurrentPopup(); }
         if (!status.empty()) ImGui::TextColored(status.rfind("Not", 0) == 0 ? ImVec4(1, 0.5f, 0.4f, 1) : kAccent, "%s", status.c_str());
         if (romPromptFor.empty()) ImGui::CloseCurrentPopup();
         ImGui::EndPopup();
@@ -677,13 +770,16 @@ void GuiShell::drawGfxMonitor(ImDrawList* dl, float x, float y, float w, float h
 void GuiShell::windowGfx9000() {
     if (!panelOpen("GFX9000")) return;
     if (beginTool("GFX9000")) {
+        WrapText wrapText;                     // text wraps at the window's edge
         bool gfx = host.v9990Enabled;
-        if (ImGui::Checkbox("Fitted", &gfx)) host.setV9990(gfx);
-        ImGui::SameLine(0, 20);
+        FlowRow head;
+        if (head.checkbox("Fitted", &gfx)) host.setV9990(gfx);
+        head.spacing = 20.0f;
         static const char* places[] = { "beside", "window", "switch", "video9000" };
         static const char* placeNames[] = { "beside the CPC's screen", "in this window", "one monitor, switched", "one monitor, via a Video9000" };
         int place = 0;
         for (int i = 0; i < 4; i++) if (host.gfx9000Monitor == places[i]) place = i;
+        head.item(ImGui::GetFontSize() * 18 + ImGui::GetStyle().ItemInnerSpacing.x + ImGui::CalcTextSize("picture").x);
         ImGui::SetNextItemWidth(ImGui::GetFontSize() * 18);
         if (ImGui::Combo("picture", &place, placeNames, 4)) host.gfx9000Monitor = places[place];
         if (!host.v9990Enabled) ImGui::TextDisabled("Not fitted.");
@@ -735,13 +831,28 @@ struct GuiShell::CslRun {
 };
 
 #ifdef _WIN32
-static std::string quoteArg(const std::string& s) { return "\"" + s + "\""; }
+// One argument for a Windows command line, as CommandLineToArgvW / the C runtime split it:
+// backslashes are literal except before a quote, so those before a quote -- and before
+// the closing one -- are doubled ("C:\shots\" would otherwise swallow the next argument).
+static std::string quoteArg(const std::string& s) {
+    std::string out = "\"";
+    size_t slashes = 0;
+    for (char c : s) {
+        if (c == '\\') { slashes++; continue; }
+        if (c == '"') { out.append(slashes * 2 + 1, '\\'); out += '"'; }
+        else { out.append(slashes, '\\'); out += c; }
+        slashes = 0;
+    }
+    out.append(slashes * 2, '\\');
+    return out + "\"";
+}
 #endif
 
 void GuiShell::windowCslScripts() {
     bool& open = panelOpen("CSL scripts");
     if (!open) return;
     if (ImGui::Begin("CSL scripts", &open)) {
+        WrapText wrapText;                     // text wraps at the window's edge
         const bool busy = cslRun && cslRun->running;
         ImGui::BeginDisabled(busy);
         auto pathRow = [&](const char* label, std::string& value, const char* button, auto pick) {
@@ -773,8 +884,7 @@ void GuiShell::windowCslScripts() {
         int sel = cslCrtc + 1;
         if (ImGui::Combo("##cslcrtc", &sel, crtcs, 6)) cslCrtc = sel - 1;
         ImGui::Checkbox("Follow csl_load chains", &cslChain);
-        ImGui::SameLine();
-        ImGui::Checkbox("Apply published-script errata", &cslErrata);
+        after().checkbox("Apply published-script errata", &cslErrata);
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("Off: play published scripts exactly as written.");
         ImGui::EndDisabled();
 
@@ -875,9 +985,8 @@ void GuiShell::windowCslScripts() {
 #endif
         }
         ImGui::EndDisabled();
-        ImGui::SameLine();
         ImGui::BeginDisabled(!busy);
-        if (ImGui::Button("Stop")) {
+        if (after().button("Stop")) {
 #ifdef _WIN32
             if (cslRun && cslRun->process) TerminateProcess(cslRun->process, 1);
 #else
@@ -885,8 +994,7 @@ void GuiShell::windowCslScripts() {
 #endif
         }
         ImGui::EndDisabled();
-        ImGui::SameLine();
-        if (ImGui::Button("Open screenshot folder")) {
+        if (after().button("Open screenshot folder")) {
 #ifdef _WIN32
             std::error_code ec;
             const std::string abs = std::filesystem::absolute(cslOut, ec).string();
@@ -898,9 +1006,13 @@ void GuiShell::windowCslScripts() {
 #endif
         }
         if (cslRun) {
-            ImGui::SameLine();
-            if (cslRun->running) ImGui::TextColored(kAccent, "running...");
-            else ImGui::TextDisabled(cslRun->exitCode == 0 ? "finished" : "stopped (exit %d)", (int)cslRun->exitCode);
+            if (cslRun->running) after().textColored(kAccent, "running...");
+            else {
+                char s[48];
+                if (cslRun->exitCode == 0) std::snprintf(s, sizeof s, "finished");
+                else std::snprintf(s, sizeof s, "stopped (exit %d)", (int)cslRun->exitCode);
+                after().textDisabled(s);
+            }
             ImGui::BeginChild("##csllog", ImVec2(0, 0), true, ImGuiWindowFlags_HorizontalScrollbar);
             {
                 std::lock_guard<std::mutex> g(cslRun->lock);
@@ -914,6 +1026,92 @@ void GuiShell::windowCslScripts() {
         }
     }
     ImGui::End();
+}
+
+// External debugging (devserver.h): the GDB server for DeZog, the command API for scripts
+// and cpcse-ctl, and a build's output reloaded when it changes.
+void GuiShell::sectionDevelopment(bool asMenu) {
+    DevServer& d = *dev;
+    if (asMenu) {
+        bool gdbOn = d.gdbListening(), apiOn = d.apiListening();
+        char label[64];
+        std::snprintf(label, sizeof(label), "GDB server (port %d)", d.gdbPortSetting);
+        if (ImGui::MenuItem(label, nullptr, &gdbOn)) { d.gdbAtStart = gdbOn; if (gdbOn) d.startGdb(d.gdbPortSetting); else d.stopGdb(); }
+        std::snprintf(label, sizeof(label), "Command API (port %d)", d.apiPortSetting);
+        if (ImGui::MenuItem(label, nullptr, &apiOn)) { d.apiAtStart = apiOn; if (apiOn) d.startApi(d.apiPortSetting); else d.stopApi(); }
+        if (d.watched() && ImGui::MenuItem("Stop watching the file")) d.watch(LoadRequest{});
+        if (ImGui::MenuItem("Settings...")) panelOpen("Settings") = true;
+        return;
+    }
+    auto server = [&](const char* id, bool listening, bool& atStart, int& port, bool (DevServer::*start)(int), void (DevServer::*stop)(),
+                      const std::string& error) {
+        ImGui::PushID(id);
+        bool on = listening;
+        if (ImGui::Checkbox("Listen", &on)) {
+            atStart = on;
+            if (on) (d.*start)(port); else (d.*stop)();
+        }
+        after().item(ImGui::GetFontSize() * 6 + ImGui::GetStyle().ItemInnerSpacing.x + ImGui::CalcTextSize("Port").x);
+        ImGui::SetNextItemWidth(ImGui::GetFontSize() * 6);
+        ImGui::InputInt("Port", &port, 0, 0);
+        if (ImGui::IsItemDeactivatedAfterEdit()) {   // applied when the field is left
+            port = std::clamp(port, 1, 65535);
+            if (listening) (d.*start)(port);
+        }
+        if (!error.empty() && !listening) ImGui::TextColored(ImVec4(1.0f, 0.45f, 0.35f, 1.0f), "%s", error.c_str());
+        ImGui::PopID();
+    };
+
+    sectionHeading("GDB server (DeZog in VS Code, gdb)");
+    server("gdb", d.gdbListening(), d.gdbAtStart, d.gdbPortSetting, &DevServer::startGdb, &DevServer::stopGdb, d.gdbError);
+    if (d.gdbListening())
+        ImGui::TextDisabled("127.0.0.1:%d, %s", d.gdbPort(), d.gdbConnected() ? "a debugger is attached" : "waiting for a debugger");
+    else ImGui::TextDisabled("DeZog: remoteType \"mame\", port %d", d.gdbPortSetting);
+
+    sectionHeading("Command API (cpcse-ctl, scripts)");
+    server("api", d.apiListening(), d.apiAtStart, d.apiPortSetting, &DevServer::startApi, &DevServer::stopApi, d.apiError);
+    if (d.apiListening()) ImGui::TextDisabled("127.0.0.1:%d, %d client%s", d.apiPort(), d.apiClients(), d.apiClients() == 1 ? "" : "s");
+    else ImGui::TextDisabled("JSON lines; cpcse-ctl help lists the commands");
+
+    sectionHeading("Reload a file when it changes");
+    const LoadRequest* w = d.watched();
+    if (w) {
+        ImGui::TextWrapped("Watching %s", w->path.c_str());
+        ImGui::TextDisabled("Reloaded %d time%s", d.reloads(), d.reloads() == 1 ? "" : "s");
+        if (ImGui::SmallButton("Stop watching")) d.watch(LoadRequest{});
+    } else {
+        ImGui::SetNextItemWidth(-ImGui::GetFontSize() * 6);
+        ImGui::InputTextWithHint("##path", ".bin, .sna, .dsk, .cpr or a tape", devWatchPath, sizeof(devWatchPath));
+        if (after().smallButton("Browse..."))
+            browser.open("File to watch", host.mediaDir, { ".bin", ".sna", ".dsk", ".cpr", ".cdt", ".tzx", ".wav" },
+                         [this](const std::string& p) { std::snprintf(devWatchPath, sizeof(devWatchPath), "%s", p.c_str()); });
+        ImGui::SetNextItemWidth(ImGui::GetFontSize() * 7);
+        ImGui::InputTextWithHint("Load at", "header", devWatchAddr, sizeof(devWatchAddr));
+        after().item(ImGui::GetFontSize() * 7 + ImGui::GetStyle().ItemInnerSpacing.x + ImGui::CalcTextSize("Start at").x);
+        ImGui::SetNextItemWidth(ImGui::GetFontSize() * 7);
+        ImGui::InputTextWithHint("Start at", "entry / -", devWatchRun, sizeof(devWatchRun));
+        ImGui::SetNextItemWidth(-ImGui::GetFontSize() * 6);
+        ImGui::InputTextWithHint("Then type", "RUN\"GAME\\n (disc, tape)", devWatchCommand, sizeof(devWatchCommand));
+        ImGui::Checkbox("Reset first", &devWatchReset);
+        if (after().button("Watch") && devWatchPath[0]) {
+            LoadRequest r;
+            r.path = devWatchPath;
+            r.reset = devWatchReset;
+            r.address = devWatchAddr[0] ? debugger.parseAddress(devWatchAddr) : -1;
+            const std::string run = devWatchRun;
+            if (run.empty() || run == "entry") r.run = LoadRequest::RUN_ENTRY;   // the hint: entry
+            else if (run != "-") r.run = debugger.parseAddress(run);
+            std::string cmd;
+            for (const char* c = devWatchCommand; *c; c++) {
+                if (c[0] == '\\' && c[1] == 'n') { cmd += '\n'; c++; } else cmd += *c;
+            }
+            r.command = cmd;
+            if (devWatchAddr[0] && r.address < 0) d.lastEvent = std::string("Load at: '") + devWatchAddr + "' is not an address or a label";
+            else if (run != "-" && r.run == -1) d.lastEvent = "Start at: '" + run + "' is not an address or a label (entry, or - for none)";
+            else d.watch(r);
+        }
+    }
+    if (!d.lastEvent.empty()) ImGui::TextDisabled("%s", d.lastEvent.c_str());
 }
 
 } // namespace cpcse

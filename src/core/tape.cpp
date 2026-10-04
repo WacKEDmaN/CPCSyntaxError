@@ -1,6 +1,9 @@
 // CPCSyntaxError — Cassette image and pulse engine.
 #include "tape.h"
 #include "ay.h"
+#include <algorithm>
+#include <cstdlib>
+#include <cstring>
 #include <stdexcept>
 #include <regex>
 
@@ -10,9 +13,12 @@ static const uint8_t TZX_SIGNATURE[8] = { 0x5a, 0x58, 0x54, 0x61, 0x70, 0x65, 0x
 static const int TAPE_RELAY_DELAY_CYCLES = 1500000;
 static const int PULSE_REFILL_THRESHOLD = 2048;
 static const int MAX_CONTROL_BLOCK_STEPS = 100000;
+static const size_t MAX_CALL_DEPTH = 65536;           // TZX 0x26 return addresses outstanding
+static const long long MAX_BLOCK_PULSES = 30000000;   // one block's pulses (an hour of WAV is ~15M)
 
 static void requireBytes(const Bytes& data, int offset, int length, const std::string& context = "tape image") {
-    if (offset < 0 || length < 0 || offset + length > (int)data.size()) {
+    // Never offset + length: a block length read from the file can be near 2^31 and wrap.
+    if (offset < 0 || length < 0 || offset > (int)data.size() || length > (int)data.size() - offset) {
         char buf[64]; std::snprintf(buf, sizeof(buf), "0x%X", std::max(0, offset));
         throw std::runtime_error("Truncated " + context + " at offset " + buf);
     }
@@ -45,13 +51,80 @@ static bool endsWithCi(const std::string& s, const std::string& suffix) {
     return true;
 }
 
+// A sampled recording (.wav: RIFF PCM, 8 or 16 bits, any channels -- the first is used)
+// as a TZX holding one CSW block (0x18), so the one pulse engine plays it. The signal is
+// squared with a Schmitt trigger at a tenth of its peak either side of its middle, so hiss
+// near zero makes no edges; each run of samples between two edges is one pulse.
+static Bytes wavToTzx(const Bytes& wav) {
+    auto u16 = [&](size_t o) { return (unsigned)(wav[o] | wav[o + 1] << 8); };
+    auto u32 = [&](size_t o) { return (uint32_t)(wav[o] | wav[o + 1] << 8 | wav[o + 2] << 16 | (uint32_t)wav[o + 3] << 24); };
+    if (wav.size() < 12 || std::memcmp(wav.data(), "RIFF", 4) != 0 || std::memcmp(wav.data() + 8, "WAVE", 4) != 0)
+        throw std::runtime_error("Not a WAV file");
+    unsigned format = 0, channels = 0, bits = 0;
+    uint32_t rate = 0;
+    size_t dataAt = 0, dataSize = 0;
+    for (size_t p = 12; p + 8 <= wav.size();) {
+        const uint32_t size = u32(p + 4);
+        if (size > wav.size() - (p + 8)) { if (std::memcmp(wav.data() + p, "data", 4) == 0) { dataAt = p + 8; dataSize = wav.size() - (p + 8); } break; }
+        if (std::memcmp(wav.data() + p, "fmt ", 4) == 0 && size >= 16) {
+            format = u16(p + 8); channels = u16(p + 10); rate = u32(p + 12); bits = u16(p + 22);
+        } else if (std::memcmp(wav.data() + p, "data", 4) == 0) {
+            dataAt = p + 8; dataSize = size;
+        }
+        p += 8 + size + (size & 1);   // chunks are padded to an even size
+    }
+    if (format != 1 || (bits != 8 && bits != 16) || !channels || channels > 8 || rate < 1000 || rate > 0xffffff || !dataAt)
+        throw std::runtime_error("Unsupported WAV (PCM, 8 or 16 bits, is what a tape is)");
+    const size_t frame = channels * (bits / 8), samples = dataSize / frame;
+    auto sample = [&](size_t i) -> int {
+        const size_t o = dataAt + i * frame;
+        return bits == 8 ? ((int)wav[o] - 128) * 256 : (int16_t)u16(o);
+    };
+    long long sum = 0;
+    int peak = 0;
+    for (size_t i = 0; i < samples; i++) sum += sample(i);
+    const int middle = samples ? (int)(sum / (long long)samples) : 0;
+    for (size_t i = 0; i < samples; i++) peak = std::max(peak, std::abs(sample(i) - middle));
+    const int hysteresis = std::max(64, peak / 10);
+    Bytes rle;
+    uint32_t pulses = 0;
+    int level = -1;               // not yet known
+    uint32_t run = 0;
+    auto putRun = [&](uint32_t n) {
+        if (n == 0) return;
+        if (n < 256) rle.push_back((uint8_t)n);
+        else { rle.push_back(0); for (int k = 0; k < 4; k++) rle.push_back((uint8_t)(n >> (8 * k))); }
+        pulses += 1;
+    };
+    for (size_t i = 0; i < samples; i++) {
+        const int v = sample(i) - middle;
+        int now = level;
+        if (v > hysteresis) now = 1;
+        else if (v < -hysteresis) now = 0;
+        if (level >= 0 && now != level) { putRun(run); run = 0; }
+        level = now;
+        run += 1;
+    }
+    putRun(run);
+    if (!pulses) throw std::runtime_error("The WAV holds no signal");
+    Bytes t = { 'Z', 'X', 'T', 'a', 'p', 'e', '!', 0x1a, 1, 20, 0x18 };
+    const uint32_t body = 10 + (uint32_t)rle.size();
+    for (int k = 0; k < 4; k++) t.push_back((uint8_t)(body >> (8 * k)));
+    t.push_back(0); t.push_back(0);                                           // no pause after
+    for (int k = 0; k < 3; k++) t.push_back((uint8_t)(rate >> (8 * k)));
+    t.push_back(1);                                                           // RLE
+    for (int k = 0; k < 4; k++) t.push_back((uint8_t)(pulses >> (8 * k)));
+    t.insert(t.end(), rle.begin(), rle.end());
+    return t;
+}
+
 CPCTapeDrive::CPCTapeDrive(AY38912* ay, bool requireMotor, double tstateFrequency)
     : ay(ay), requireMotor(requireMotor), tstateRatio(tstateFrequency / 3500000.0) {
     reset();
 }
 
 bool CPCTapeDrive::isMotorActive() { return requireMotor ? motorOn : true; }
-bool CPCTapeDrive::isActive() { return isMotorActive() && loaded && playing && !tapeEnded; }
+bool CPCTapeDrive::isActive() { return isMotorActive() && loaded && playing && !paused && !tapeEnded; }
 bool CPCTapeDrive::isPulseActive() { return pulseLedCycles > 0; }
 
 void CPCTapeDrive::reset() {
@@ -66,6 +139,9 @@ void CPCTapeDrive::reset() {
 }
 void CPCTapeDrive::eject() {
     loaded = false;
+    paused = false;
+    playedCycles = counterZeroCycles = totalCycles = 0;
+    blockStartCycles.clear();
     name = "";
     format = "";
     data.clear();
@@ -154,7 +230,9 @@ void CPCTapeDrive::parseTap(const Bytes& data) {
     }
 }
 bool CPCTapeDrive::load(const Bytes& input, const std::string& fileName) {
-    data = input;
+    const bool riff = input.size() >= 12 && std::memcmp(input.data(), "RIFF", 4) == 0;
+    try { data = riff ? wavToTzx(input) : input; }
+    catch (...) { eject(); throw; }
     bool tapName = endsWithCi(fileName, ".tap");
     bool tzx = hasTzxSignature(data);
     playing = false;
@@ -166,7 +244,7 @@ bool CPCTapeDrive::load(const Bytes& input, const std::string& fileName) {
     lastError = "";
     try {
         if (tzx) {
-            format = endsWithCi(fileName, ".cdt") ? "CDT" : "TZX";
+            format = riff ? "WAV" : endsWithCi(fileName, ".cdt") ? "CDT" : "TZX";
             parseTzx(data);
         } else if (tapName || isStructurallyValidTap(data)) {
             format = "TAP";
@@ -180,6 +258,7 @@ bool CPCTapeDrive::load(const Bytes& input, const std::string& fileName) {
         throw;
     }
     loaded = true;
+    buildTimeline();
     rewind();
     return true;
 }
@@ -209,6 +288,9 @@ void CPCTapeDrive::prepareCompressedBlocks() {
     }
 }
 void CPCTapeDrive::rewind() {
+    playedCycles = 0;
+    pulseCarry = 0;
+    counterZeroCycles = 0;
     currentBlock = 0;
     fastBlockIndex = 0;
     tapeEnded = false;
@@ -247,11 +329,15 @@ int CPCTapeDrive::getPortBBit() { return isActive() ? portBBit : 0x00; }
 int CPCTapeDrive::getEarLevel() { return portBBit == 0x80 ? 1 : 0; }
 void CPCTapeDrive::setTapeNoise(double level) { if (ay) ay->tapeNoise = level; }
 void CPCTapeDrive::addPulse(double cycles, int level) {
-    int c = std::max(1, (int)std::lround(cycles));
+    // Whole cycles, with what each rounding leaves carried into the next pulse: 2168 T is
+    // 619.43 us, and rounding every one alone ran a pilot tone 0.07% fast.
+    const double exact = cycles + pulseCarry;
+    int c = std::max(1, (int)std::lround(exact));
+    pulseCarry = exact - c;
     PulseEvent e; e.type = PulseEvent::PULSE; e.cycles = c; e.level = level ? 1 : 0; pulseQueue.push_back(e);
 }
 void CPCTapeDrive::addLevel(int level) { PulseEvent e; e.type = PulseEvent::LEVEL; e.level = level ? 1 : 0; pulseQueue.push_back(e); }
-void CPCTapeDrive::addStop(const std::string& reason) { PulseEvent e; e.type = PulseEvent::STOP; e.reason = reason; pulseQueue.push_back(e); }
+void CPCTapeDrive::addStop(const char* reason) { PulseEvent e; e.type = PulseEvent::STOP; e.reason = reason; pulseQueue.push_back(e); }
 double CPCTapeDrive::tstatesToCycles(double tstates) { return tstates * tstateRatio; }
 double CPCTapeDrive::msToCycles(double ms) { return ms * (tstateRatio * 3500); }
 void CPCTapeDrive::emitPilot(double tstates, int count) {
@@ -298,7 +384,11 @@ void CPCTapeDrive::emitCsw(TapeBlock& block) {
     if (!sampleRate) throw std::runtime_error("Invalid zero sample rate in TZX CSW block");
     Bytes rleStorage;
     const Bytes* rle = block.hasCswRle ? &block.cswRle : nullptr;
-    if (!rle && compression == 1) { rleStorage = Bytes(data.begin() + (p + 14), data.begin() + (p + block.length)); rle = &rleStorage; }
+    if (!rle && compression == 1) {
+        if (block.length < 14) throw std::runtime_error("Truncated TZX CSW recording block");
+        rleStorage = Bytes(data.begin() + (p + 14), data.begin() + (p + block.length));
+        rle = &rleStorage;
+    }
     if (!rle) throw std::runtime_error("Z-RLE CSW block was not prepared; use loadAsync()");
     int offset = 0;
     int pulseCount = 0;
@@ -352,8 +442,10 @@ void CPCTapeDrive::emitGeneralizedSymbol(const GeneralizedDefinition& definition
 void CPCTapeDrive::emitGeneralized(TapeBlock& block) {
     int p = block.start;
     int limit = p + block.length;
+    if (block.length < 18) throw std::runtime_error("Truncated TZX generalized data block");
     int pause = get2(data, p + 4);
     int pilotRecords = get4(data, p + 6);
+    if (pilotRecords < 0 || (long long)pilotRecords * 3 > block.length) throw std::runtime_error("Generalized pilot stream exceeds its TZX block");
     int pilotMaximumPulses = data[p + 10] & 0xff;
     int pilotAlphabetSize = (data[p + 11] & 0xff) ? (data[p + 11] & 0xff) : 256;
     int dataSymbols = get4(data, p + 12);
@@ -365,19 +457,26 @@ void CPCTapeDrive::emitGeneralized(TapeBlock& block) {
         offset = parsed.next;
         requireBytes(data, offset, pilotRecords * 3, "TZX generalized pilot stream");
         if (offset + pilotRecords * 3 > limit) throw std::runtime_error("Generalized pilot stream exceeds its TZX block");
+        long long pulses = 0;
         for (int record = 0; record < pilotRecords; record += 1) {
             int symbol = data[offset] & 0xff;
             int repetitions = get2(data, offset + 1);
             offset += 3;
             if (symbol >= (int)parsed.definitions.size()) throw std::runtime_error("Invalid generalized pilot symbol " + std::to_string(symbol));
+            pulses += (long long)repetitions * (long long)(parsed.definitions[symbol].pulses.size() + 1);
+            if (pulses > MAX_BLOCK_PULSES) throw std::runtime_error("Generalized pilot stream is too long");
             for (int repeat = 0; repeat < repetitions; repeat += 1) emitGeneralizedSymbol(parsed.definitions[symbol]);
         }
     }
     if (dataSymbols) {
         GenParsed parsed = readGeneralizedDefinitions(offset, dataAlphabetSize, dataMaximumPulses, limit);
         offset = parsed.next;
-        int bitsPerSymbol = (int)std::ceil(std::log2((double)dataAlphabetSize));
+        int bitsPerSymbol = std::max(1, (int)std::ceil(std::log2((double)dataAlphabetSize)));
+        if (dataSymbols < 0 || (double)dataSymbols * bitsPerSymbol / 8 > block.length) throw std::runtime_error("Generalized data stream exceeds its TZX block");
         int streamBytes = (int)std::ceil(bitsPerSymbol * (double)dataSymbols / 8);
+        size_t longest = 1;
+        for (const auto& d : parsed.definitions) longest = std::max(longest, d.pulses.size() + 1);
+        if ((long long)dataSymbols * (long long)longest > MAX_BLOCK_PULSES) throw std::runtime_error("Generalized data stream is too long");
         requireBytes(data, offset, streamBytes, "TZX generalized data stream");
         if (offset + streamBytes > limit) throw std::runtime_error("Generalized data stream exceeds its TZX block");
         int bitOffset = 0;
@@ -566,7 +665,21 @@ void CPCTapeDrive::ensurePulses() {
     while ((int)pulseQueue.size() - pulseQueueIndex < PULSE_REFILL_THRESHOLD
         && currentBlock >= 0 && currentBlock < (int)blocks.size()) {
         int index = currentBlock;
-        std::string result = decodeBlock(index);
+        std::string result;
+        // A block the image gets wrong stops the tape, as a deck stops on a bad block; the
+        // error must not leave the emulation loop (it would end the program).
+        try { result = decodeBlock(index); }
+        catch (const std::exception& ex) {
+            lastError = ex.what();
+            addStop("block-error");
+            currentBlock = index + 1;
+            break;
+        }
+        if (callStack.size() > MAX_CALL_DEPTH) {
+            lastError = "TZX call sequences nest too deeply";
+            addStop("control-flow-error");
+            break;
+        }
         if (result != "jump") currentBlock = index + 1;
         controlSteps += 1;
         if (result == "stop") break;
@@ -605,10 +718,11 @@ void CPCTapeDrive::advanceCycles(int cycles) {
         setTapeNoise(0);
         return;
     }
+    playedCycles += elapsedCycles;
     tapeCounterCycles += elapsedCycles;
-    while (tapeCounterCycles >= 1000000) {
+    while (tapeCounterCycles >= 1000000) {   // once a second of tape, not every step
         tapeCounterCycles -= 1000000;
-        tapeCounter = (tapeCounter + 1) % 1000;
+        tapeCounter = counter();
     }
     int remaining = elapsedCycles;
     ensurePulses();
@@ -638,6 +752,8 @@ void CPCTapeDrive::advanceCycles(int cycles) {
 }
 void CPCTapeDrive::jumpToBlock(int index) {
     if (!loaded || index < 0 || index >= (int)blocks.size()) return;
+    if (index < (int)blockStartCycles.size()) playedCycles = blockStartCycles[(size_t)index];
+    pulseCarry = 0;
     currentBlock = index;
     fastBlockIndex = index;
     pulseQueue.clear();
@@ -715,7 +831,7 @@ std::optional<Bytes> CPCTapeDrive::getNextLoadableBlock() {
             default: fastBlockIndex = index + 1; break;
         }
         controlSteps += 1;
-        if (controlSteps > MAX_CONTROL_BLOCK_STEPS) {
+        if (controlSteps > MAX_CONTROL_BLOCK_STEPS || fastCallStack.size() > MAX_CALL_DEPTH) {
             lastError = "TZX fast-load control flow did not make progress";
             fastFinished = true;
             return std::nullopt;
@@ -766,9 +882,84 @@ std::string CPCTapeDrive::getBlockDescription(int index) {
         default: { char b[16]; std::snprintf(b, sizeof(b), "0x%X", id); return "[" + i + "] Block " + b + " (" + std::to_string(block.length) + " B)"; }
     }
 }
+// Each block's start on the tape: every block decoded once, in order, and its pulses
+// added up. Jumps and loops are not followed -- the tape is a length of tape, whatever a
+// loader then does with it.
+void CPCTapeDrive::buildTimeline() {
+    blockStartCycles.assign(blocks.size(), 0);
+    pulseCarry = 0;
+    long long at = 0;
+    for (size_t i = 0; i < blocks.size(); i++) {
+        blockStartCycles[i] = at;
+        pulseQueue.clear();
+        try { decodeBlock((int)i); } catch (const std::exception&) {}   // a bad block: no length
+        for (const PulseEvent& e : pulseQueue) if (e.type == PulseEvent::PULSE) at += e.cycles;
+    }
+    totalCycles = at;
+    pulseQueue.clear();
+    pulseQueueIndex = 0;
+    loopStack.clear();
+    callStack.clear();
+    currentBlock = 0;
+    ampHigh = false;
+}
+
+int CPCTapeDrive::blockAtPosition() const {
+    if (!loaded || blockStartCycles.empty()) return -1;
+    size_t b = 0;
+    while (b + 1 < blockStartCycles.size() && blockStartCycles[b + 1] <= playedCycles) b++;
+    return (int)b;
+}
+
+int CPCTapeDrive::counter() const {
+    const long long since = playedCycles - counterZeroCycles;
+    const long long seconds = (long long)(since / cyclesPerSecond());
+    return (int)(((seconds % 1000) + 1000) % 1000);   // below its 000 it counts back from 999
+}
+
+void CPCTapeDrive::play() {
+    if (!loaded || tapeEnded) return;
+    playing = true;
+    paused = false;
+}
+
+void CPCTapeDrive::setPaused(bool on) {
+    paused = on && playing;
+    if (!isActive()) setTapeNoise(0);
+}
+
+void CPCTapeDrive::stop() {
+    playing = false;
+    paused = false;
+    setTapeNoise(0);
+}
+
+void CPCTapeDrive::seekBlock(int index) {
+    if (!loaded || blocks.empty()) return;
+    jumpToBlock(std::clamp(index, 0, (int)blocks.size() - 1));
+}
+
+void CPCTapeDrive::fastForward() {
+    const int b = blockAtPosition();
+    if (b < 0) return;
+    if (b + 1 < (int)blocks.size()) seekBlock(b + 1);
+    else { playedCycles = totalCycles; currentBlock = (int)blocks.size(); tapeEnded = true; pulseQueue.clear(); pulseQueueIndex = 0; }
+}
+
+void CPCTapeDrive::rewindBlock() {
+    int b = blockAtPosition();
+    if (b < 0) return;
+    if (b >= (int)blocks.size()) b = (int)blocks.size() - 1;
+    // Within two seconds of a block's start, back to the one before; else to this one's start.
+    const long long into = playedCycles - blockStartCycles[(size_t)b];
+    if (into < (long long)(2 * cyclesPerSecond()) && b > 0) b -= 1;
+    seekBlock(b);
+}
+
 bool CPCTapeDrive::togglePlay() {
     if (!loaded || tapeEnded) return false;
     playing = !playing;
+    paused = false;
     if (!playing) setTapeNoise(0);
     return playing;
 }

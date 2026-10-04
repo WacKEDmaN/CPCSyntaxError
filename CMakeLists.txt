@@ -177,6 +177,9 @@ add_executable(cpcse
   src/gui/gui_memory_views.cpp
   src/gui/gui_dsk_editor.cpp
   src/gui/gui_assembler.cpp
+  src/gui/asm_highlight.cpp
+  src/gui/devserver.cpp
+  src/gui/devnet.cpp
 )
 # A GUI-subsystem executable: no console window. SDL2main provides the WinMain
 # and forwards to main() (renamed SDL_main).
@@ -188,6 +191,7 @@ if(MINGW)
   target_link_options(cpcse PRIVATE -static-libgcc -static-libstdc++ -static)
 endif()
 if(WIN32)
+  target_link_libraries(cpcse PRIVATE ws2_32)   # the GDB server and command API
   # SDL2.dll must sit next to the executable at runtime.
   add_custom_command(TARGET cpcse POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different ${SDL2_LOCAL}/bin/SDL2.dll $<TARGET_FILE_DIR:cpcse>)
@@ -197,3 +201,14 @@ endif()
 add_custom_command(TARGET cpcse POST_BUILD
   COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_CURRENT_SOURCE_DIR}/roms $<TARGET_FILE_DIR:cpcse>/roms
   COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_CURRENT_SOURCE_DIR}/sounds $<TARGET_FILE_DIR:cpcse>/sounds)
+
+# --------------------------------------------------------------- cpcse-ctl
+# The command API's client (docs/external-debugging.md): cpcse-ctl load game.bin 0x4000 entry
+add_executable(cpcse-ctl tools/ctl/ctl.cpp src/gui/devnet.cpp)
+target_include_directories(cpcse-ctl PRIVATE src)
+if(MINGW)
+  target_link_options(cpcse-ctl PRIVATE -static-libgcc -static-libstdc++ -static)
+endif()
+if(WIN32)
+  target_link_libraries(cpcse-ctl PRIVATE ws2_32)
+endif()

@@ -1,5 +1,6 @@
 // CPCSyntaxError — µPD765A floppy controller.
 #include "fdc.h"
+#include <algorithm>
 #include <random>
 
 namespace cpcse {
@@ -66,7 +67,7 @@ void UPD765A::reset() {
     phase = IDLE; command = 0; params.clear(); result.clear();
     transfer.clear(); transferIndex = 0; motor = false;
     machineSounds.motor(false);
-    transferTargets.clear(); ownedTargets.clear(); formatting = false; activeSector.reset();
+    transferTargets.clear(); ownedTargets.clear(); transferRefs.clear(); formatting = false; activeSector.reset();
     drives = mountedDrives;
     // tracks preserved (this.tracks ? slice : [0,0,0,0]) — already a member.
     sectorIndex = 0; interruptState = 0x80; activeDriveIndex = 0;
@@ -187,10 +188,14 @@ std::vector<Sector*> UPD765A::sectorsForTransfer(bool readTrack) {
     return out;
 }
 void UPD765A::beginSectorTransfer(const std::vector<Sector*>& sectors, bool write) {
-    transferTargets.clear(); ownedTargets.clear(); int length = 0;
+    transferTargets.clear(); ownedTargets.clear(); transferRefs.clear(); int length = 0;
     FdcDrive d = drive(paramOr(0, 0));
-    (void)d;
     for (Sector* sector : sectors) {
+        TransferRef ref;
+        if (d.track && !d.track->sectors.empty() && sector >= &d.track->sectors.front() && sector <= &d.track->sectors.back()) {
+            ref.track = d.track;
+            ref.sector = (size_t)(sector - &d.track->sectors.front());
+        }
         Bytes* target = nullptr;
         bool isWeak = !!((sector->st1 & 0x20) || (sector->st2 & 0x20));
         bool isLegacySpeedlock = (!isWeak && sector->c == 0
@@ -200,9 +205,11 @@ void UPD765A::beginSectorTransfer(const std::vector<Sector*>& sectors, bool writ
         sectorReadCounts[sectorKey] = readCount;
         if (isWeak) currentSectorHasError = (readCount > 1);
         else currentSectorHasError = false;
+        if (sector->data.empty()) sector->data.push_back(Bytes{});   // an empty sector transfers nothing
         if (sector->data.size() > 1) {
             int copyIndex = sector->weakIndex++ % (int)sector->data.size();
             target = &sector->data[copyIndex];
+            ref.copy = (size_t)copyIndex;
         } else if (!write && isWeak) {
             ownedTargets.push_back(std::make_shared<Bytes>(mutateWeakSector(*sector)));
             target = ownedTargets.back().get();
@@ -221,6 +228,8 @@ void UPD765A::beginSectorTransfer(const std::vector<Sector*>& sectors, bool writ
             target = &sector->data[0];
         }
         transferTargets.push_back(target);
+        ref.length = target->size();
+        transferRefs.push_back(ref);
         length += (int)target->size();
     }
     transfer.assign(length, 0); int offset = 0;
@@ -345,11 +354,22 @@ void UPD765A::finishTransfer() {
         if (!sectors.empty()) { Sector& last = sectors.back(); activeSector = ActiveSector{ last.c, last.h, last.r, last.n, last.st1, last.st2 }; }
         else activeSector = ActiveSector{ tracks[paramOr(0, 0) & 3], 0, 0, sizeCode, 0, 0 };
     } else if (phase == WRITE) {
-        int offset = 0;
-        for (Bytes* target : transferTargets) {
-            for (size_t k = 0; k < target->size(); k++) (*target)[k] = transfer[offset + k];
-            offset += (int)target->size();
+        // Found again, not written through the pointers taken at the start: the sector may
+        // have moved or gone since. One that is gone takes nothing.
+        size_t offset = 0;
+        for (const TransferRef& ref : transferRefs) {
+            if (ref.track && ref.sector < ref.track->sectors.size()) {
+                Sector& s = ref.track->sectors[ref.sector];
+                if (ref.copy < s.data.size()) {
+                    Bytes& dest = s.data[ref.copy];
+                    const size_t n = std::min({ dest.size(), ref.length, transfer.size() - std::min(offset, transfer.size()) });
+                    for (size_t k = 0; k < n; k++) dest[k] = transfer[offset + k];
+                }
+            }
+            offset += ref.length;
         }
+        transferTargets.clear();
+        transferRefs.clear();
         int driveIndex = paramOr(0, 0) & 3;
         std::shared_ptr<Disk> disk0 = drives[driveIndex];
         if (disk0) {

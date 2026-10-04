@@ -37,6 +37,7 @@ namespace cpcse {
 
 class AssemblerWindow;
 class DskEditorWindow;
+class DevServer;
 
 // What the main loop hands the shell each frame.
 struct ShellFrameInfo {
@@ -72,6 +73,9 @@ public:
     bool screenHovered = false;               // the mouse is over the emulated picture (Symbiface mouse)
     // Keys go to the CPC unless a debugger or assembler window has the focus.
     bool keyboardToCpc() const { return !toolFocused; }
+    // External development (devserver.h): the GDB server, the command API, file watching.
+    // main() polls it every iteration.
+    DevServer& devServer() { return *dev; }
 
 private:
     friend struct GuiShellCheck;              // tools/gui_shell_check draws every section headless
@@ -81,6 +85,10 @@ private:
     Debugger debugger;
     std::unique_ptr<AssemblerWindow> assembler;
     std::unique_ptr<DskEditorWindow> dskEditor;
+    std::unique_ptr<DevServer> dev;
+    void sectionDevelopment(bool asMenu);   // Settings > External debugging (gui_panels.cpp)
+    char devWatchPath[512] = {}, devWatchAddr[32] = {}, devWatchRun[32] = {}, devWatchCommand[128] = {};
+    bool devWatchReset = false;
     bool resetLayout = false;
     bool showStatusBar = true;
     bool showAbout = false;
@@ -141,6 +149,7 @@ private:
     void sectionInput(bool asMenu);
     void sectionExpansions(bool asMenu);
     void sectionTape(bool asMenu);
+    void tapeDeckControls(bool asMenu);       // counter, time, block, motor, transport buttons
     void printerPortItems(bool asMenu);
     void lightgunItems(bool asMenu);
     void windowPrinter();

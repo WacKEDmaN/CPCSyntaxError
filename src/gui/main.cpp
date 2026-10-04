@@ -34,6 +34,8 @@
 #include <string>
 #include <vector>
 
+#include "cpc_typing.h"
+#include "devserver.h"
 #include "emuhost.h"
 #include "core/machine_sounds.h"
 #include "gui_shell.h"
@@ -267,59 +269,23 @@ int main(int argc, char** argv) {
             auto tap = [&](const std::string& code) { if (kb) { kb->setKey(code, true); run(4); kb->setKey(code, false); run(4); } };
             if (!cartPath.empty()) { host.loadCartridgeFile(cartPath); if (wantCrtc >= 0 && host.emu && host.emu->crtc) host.emu->crtc->setType(wantCrtc); run(150); }
             if (!diskPath.empty()) { host.loadDiskFile(diskPath, 0); run(150); }  // let BASIC settle
-            if (!tapePath.empty()) host.loadTapeFile(tapePath);   // plays when the firmware starts the motor
+            if (!tapePath.empty() && host.loadTapeFile(tapePath)) host.tapePlay();   // PLAY down: it moves when the firmware starts the motor
             // The firmware has to reach its keyboard scan before a tap registers at
             // all; without a disk or cart to wait on, nothing else provides that time.
             if (!typeStr.empty() && diskPath.empty() && cartPath.empty()) run(150);
-            // Type a BASIC line on the emulated keyboard. Letters, digits and the
-            // punctuation a CRTC/Gate Array poke needs — "OUT &BC00,4:OUT &BD00,36" —
-            // so a register experiment can be driven from the command line. Shifted
-            // keys follow the CPC's own layout, not a PC's.
+            // Type a BASIC line on the emulated keyboard (cpc_typing.h) -- "OUT &BC00,4:OUT
+            // &BD00,36" -- so a register experiment can be driven from the command line.
             auto shiftTap = [&](const std::string& code) {
                 if (!kb) return;
                 kb->setKey("ShiftLeft", true); kb->setKey(code, true); run(4);
                 kb->setKey(code, false); kb->setKey("ShiftLeft", false); run(4);
             };
             auto typeText = [&](const std::string& text) {
-              for (char c : text) {
-                if (c == '\n') { tap("Enter"); continue; }
-                std::string shifted, code;
-                switch (c) {
-                    case '"': shifted = "Digit2"; break;    // CPC: SHIFT+2
-                    case '&': shifted = "Digit6"; break;    // CPC: SHIFT+6
-                    case '#': shifted = "Digit3"; break;
-                    case '$': shifted = "Digit4"; break;
-                    case '%': shifted = "Digit5"; break;
-                    case '(': shifted = "Digit8"; break;
-                    case ')': shifted = "Digit9"; break;
-                    case '_': shifted = "Digit0"; break;
-                    case '=': shifted = "Minus"; break;     // CPC: the "- =" key
-                    case '+': shifted = "Quote"; break;     // CPC: the "; +" key
-                    case '*': shifted = "Semicolon"; break; // CPC: the ": *" key
-                    case '<': shifted = "Comma"; break;
-                    case '>': shifted = "Period"; break;
-                    case '?': shifted = "Slash"; break;
-                    case ',': code = "Comma"; break;
-                    case '.': code = "Period"; break;
-                    case ':': code = "Semicolon"; break;    // CPC matrix {3,5}
-                    case ';': code = "Quote"; break;        // CPC matrix {3,4}
-                    case '@': code = "BracketLeft"; break;  // CPC: the "@ |" key
-                    case '^': code = "Equal"; break;        // CPC: the "^ Â£" key
-                    case '-': code = "Minus"; break;
-                    case '/': code = "Slash"; break;
-                    case '\\': code = "Backslash"; break;
-                    case '[': code = "BracketLeft"; break;
-                    case ']': code = "BracketRight"; break;
-                    case ' ': code = "Space"; break;
-                    default:
-                        if (c >= 'A' && c <= 'Z') code = std::string("Key") + c;
-                        else if (c >= 'a' && c <= 'z') code = std::string("Key") + (char)(c - 32);
-                        else if (c >= '0' && c <= '9') code = std::string("Digit") + c;
-                        break;
+                for (char c : text) {
+                    std::string code; bool shift = false;
+                    if (!cpcKeyForChar(c, code, shift)) continue;
+                    if (shift) shiftTap(code); else tap(code);
                 }
-                if (!shifted.empty()) shiftTap(shifted);
-                else if (!code.empty()) tap(code);
-              }
             };
             typeText(typeStr);                              // type the boot command
             int last = 0;
@@ -653,6 +619,17 @@ int main(int argc, char** argv) {
         if (pick >= 0) host.bootModel(pick, savedRam, savedCrtc);
     }
 
+    // External development (devserver.h): the servers the settings ask for, then the
+    // command line's --gdb/--api/--load/--watch for this session.
+    DevServer& dev = shell.devServer();
+    dev.startFromSettings();
+    {
+        std::string err;
+        if (!applyDevArguments(dev, argc, argv, err))
+            SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_WARNING, "CPCSyntaxError", err.c_str(), nullptr);
+        if (!dev.lastEvent.empty()) host.status = dev.lastEvent;
+    }
+
     GLuint screenTex = 0;
     glGenTextures(1, &screenTex);
     glBindTexture(GL_TEXTURE_2D, screenTex);
@@ -778,6 +755,7 @@ int main(int argc, char** argv) {
             }
         }
         pollPads();   // feed physical controllers into the CPC joysticks
+        dev.poll();   // an external debugger's or script's requests, a watched file, typing
 
         uint64_t now = SDL_GetPerformanceCounter();
         double dt = (double)(now - prev) / (double)perfFreq;

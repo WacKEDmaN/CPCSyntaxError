@@ -43,7 +43,7 @@ Cartridge parseCartridge(const Bytes& input) {
         std::string id = ascii(bytes, offset, 4);
         int length = (int)readU32LE(bytes, offset + 4);
         offset += 8;
-        if (length < 0 || offset + length > (int)bytes.size()) {
+        if (length < 0 || length > (int)bytes.size() - offset) {   // never offset + length: it can overflow
             char buf[64]; std::snprintf(buf, sizeof(buf), "Invalid CPR chunk length at offset 0x%x.", offset - 8);
             throw std::runtime_error(buf);
         }

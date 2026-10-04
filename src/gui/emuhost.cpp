@@ -198,7 +198,9 @@ bool EmuHost::bootModel(int index, int ram, int crtc) {
         bool okc = false;
         Bytes data = readFile(cartPath, okc);
         if (!okc || data.empty()) { status = "Could not read system cartridge."; return false; }
-        Cartridge cart = parseCartridge(data);
+        Cartridge cart;
+        try { cart = parseCartridge(data); }
+        catch (const std::exception& ex) { status = std::string("Invalid system cartridge: ") + ex.what(); return false; }
         if (cart.banks.empty()) { status = "Invalid system cartridge."; return false; }
         ramKiB = ram > 0 ? ram : m.defaultRam;
         crtcType = 3;
@@ -213,6 +215,7 @@ bool EmuHost::bootModel(int index, int ram, int crtc) {
         applyMonitorSet();                 // a Plus came with a CM14 (ACCC 15.1)
         currentModel = index;
         cartName.clear();
+        snapshotName.clear();
         paused = false;
         status = "Booted " + m.label + "  (" + std::to_string(ramKiB) + "K, " + (m.computer ? "Plus/ASIC" : "GX4000 console") + ")";
         return true;
@@ -257,6 +260,7 @@ bool EmuHost::bootModel(int index, int ram, int crtc) {
     applyMonitorSet();
     currentModel = index;
     cartName.clear();
+    snapshotName.clear();
     paused = false;
     status = "Booted " + m.label + "  (" + std::to_string(ramKiB) + "K, CRTC " + std::to_string(crtcType) + ")";
     return true;
@@ -664,7 +668,11 @@ bool EmuHost::loadCartridgeFile(const std::string& path) {
     bool ok = false;
     Bytes data = readFile(path, ok);
     if (!ok || data.empty()) { status = "Could not read cartridge."; return false; }
-    Cartridge cart = parseCartridge(data);
+    // The readers throw for a file they cannot take: a bad file is a message, not the end
+    // of the program.
+    Cartridge cart;
+    try { cart = parseCartridge(data); }
+    catch (const std::exception& ex) { status = std::string("Not a valid .CPR cartridge: ") + ex.what(); return false; }
     if (cart.banks.empty()) { status = "Not a valid .CPR cartridge."; return false; }
     // Respect the selected machine: a 464/6128 Plus keeps its computer identity
     // (keyboard, RAM, disc); otherwise the cart runs as the selected console, or
@@ -685,6 +693,7 @@ bool EmuHost::loadCartridgeFile(const std::string& path) {
     applySettings();
     applyMonitorSet();
     cartName = std::filesystem::path(path).filename().string();
+    snapshotName.clear();
     paused = false;
     status = "Loaded " + cartName + " into " + m.label;
     return true;
@@ -696,7 +705,9 @@ bool EmuHost::loadDiskFile(const std::string& path, int unit) {
     Bytes data = readFile(path, ok);
     if (!ok || data.empty()) { status = "Could not read disk image."; return false; }
     if (!emu->fdc) { status = "No floppy controller."; return false; }
-    auto disk = emu->fdc->mount(data, unit);
+    std::shared_ptr<Disk> disk;
+    try { disk = emu->fdc->mount(data, unit); }
+    catch (const std::exception& ex) { status = std::string("Not a valid .DSK/.EDSK image: ") + ex.what(); return false; }
     if (!disk) { status = "Not a valid .DSK/.EDSK image."; return false; }
     emu->hasFdc = true;
     diskName[unit] = std::filesystem::path(path).filename().string();
@@ -733,23 +744,68 @@ bool EmuHost::loadTapeFile(const std::string& path) {
     if (!ok || data.empty()) { status = "Could not read tape image."; return false; }
     if (!emu->tape) { status = "No tape drive."; return false; }
     std::string name = std::filesystem::path(path).filename().string();
-    if (!emu->tape->load(data, name)) { status = "Not a valid .CDT/.TZX/.WAV tape."; return false; }
+    try {
+        if (!emu->tape->load(data, name)) { status = "Not a valid .CDT/.TZX tape."; return false; }
+    } catch (const std::exception& ex) { status = std::string("Not a valid .CDT/.TZX tape: ") + ex.what(); return false; }
     tapeName = name;
-    tapePlaying = false;
     status = "Inserted tape " + tapeName + "  (press Play)";
     return true;
 }
 
+CPCTapeDrive* EmuHost::tapeDeck() const { return emu && emu->tape && !tapeName.empty() && emu->tape->loaded ? emu->tape : nullptr; }
+bool EmuHost::tapePlaying() const { CPCTapeDrive* d = tapeDeck(); return d && d->playing && !d->paused; }
+bool EmuHost::tapePaused() const { CPCTapeDrive* d = tapeDeck(); return d && d->playing && d->paused; }
+
 void EmuHost::tapePlayToggle() {
-    if (!emu->tape || tapeName.empty()) return;
-    tapePlaying = emu->tape->togglePlay();
-    status = tapePlaying ? "Tape playing" : "Tape stopped";
+    CPCTapeDrive* d = tapeDeck();
+    if (!d) return;
+    if (d->playing) d->stop(); else d->play();
+    status = d->playing ? "Tape playing" : "Tape stopped";
+}
+
+void EmuHost::tapePlay() {
+    if (CPCTapeDrive* d = tapeDeck()) { d->play(); status = d->playing ? "Tape playing" : "The tape is at its end: rewind it"; }
+}
+
+void EmuHost::tapePause() {
+    CPCTapeDrive* d = tapeDeck();
+    if (!d || !d->playing) return;
+    d->setPaused(!d->paused);
+    status = d->paused ? "Tape paused" : "Tape playing";
+}
+
+void EmuHost::tapeStop() {
+    if (CPCTapeDrive* d = tapeDeck()) { d->stop(); status = "Tape stopped"; }
 }
 
 void EmuHost::tapeRewind() {
-    if (!emu->tape) return;
-    emu->tape->rewind();
-    status = "Tape rewound";
+    if (CPCTapeDrive* d = tapeDeck()) { d->rewind(); status = "Tape rewound"; }
+}
+
+void EmuHost::tapeRewindBlock() {
+    if (CPCTapeDrive* d = tapeDeck()) { d->rewindBlock(); status = "Tape at block " + std::to_string(d->blockAtPosition() + 1); }
+}
+
+void EmuHost::tapeFastForward() {
+    if (CPCTapeDrive* d = tapeDeck()) {
+        d->fastForward();
+        status = d->tapeEnded ? std::string("Tape at its end") : "Tape at block " + std::to_string(d->blockAtPosition() + 1);
+    }
+}
+
+void EmuHost::tapeSeekBlock(int index) {
+    if (CPCTapeDrive* d = tapeDeck()) { d->seekBlock(index); status = "Tape at block " + std::to_string(d->blockAtPosition() + 1); }
+}
+
+void EmuHost::tapeEject() {
+    if (!emu || !emu->tape) return;
+    emu->tape->eject();
+    status = tapeName.empty() ? "No tape" : "Ejected " + tapeName;
+    tapeName.clear();
+}
+
+void EmuHost::tapeResetCounter() {
+    if (CPCTapeDrive* d = tapeDeck()) d->resetCounter();
 }
 
 bool EmuHost::saveSnapshot(const std::string& path) {
@@ -766,12 +822,31 @@ bool EmuHost::loadSnapshot(const std::string& path) {
     bool ok = false;
     Bytes data = readFile(path, ok);
     if (!ok || data.empty()) { status = "Could not read snapshot."; return false; }
-    Snapshot snap = parseSna(data);
+    Snapshot snap;
+    try { snap = parseSna(data); }
+    catch (const std::exception& ex) { status = std::string("Not a valid .SNA snapshot: ") + ex.what(); return false; }
     if (snap.ram.empty()) { status = "Not a valid .SNA snapshot."; return false; }
     applySna(emu, snap);
     applyAudioRate();
     paused = false;
-    status = "Loaded snapshot " + std::filesystem::path(path).filename().string();
+    snapshotName = std::filesystem::path(path).filename().string();
+    status = "Loaded snapshot " + snapshotName;
+    return true;
+}
+
+bool EmuHost::ejectCartridge() {
+    if (cartName.empty() || currentModel < 0) return false;
+    const std::string name = cartName;
+    if (!bootModel(currentModel, ramKiB, crtcType)) return false;
+    status = "Ejected " + name + "; " + models[(size_t)currentModel].label + " booted without it";
+    return true;
+}
+
+bool EmuHost::ejectSnapshot() {
+    if (snapshotName.empty() || currentModel < 0) return false;
+    const std::string name = snapshotName;
+    if (!bootModel(currentModel, ramKiB, crtcType)) return false;
+    status = "Let go of " + name + "; " + models[(size_t)currentModel].label + " booted afresh";
     return true;
 }
 
@@ -781,7 +856,7 @@ void EmuHost::reset() {
     status = "Reset";
 }
 
-void EmuHost::stepInstruction() {
+void EmuHost::stepInstruction(bool redraw) {
     if (!booted()) return;
     emu->memory->watchArmed = watchArmed;
     instructionPc = emu->cpu->pc & 0xffff;
@@ -790,11 +865,12 @@ void EmuHost::stepInstruction() {
     emu->memory->watchArmed = false;
     instructionPc = -1;
     if (emu->debuggerPaused) { emu->debuggerPaused = false; paused = true; }
-    render();
+    if (redraw) render();
 }
 
 void EmuHost::runFrame() {
     if (!booted() || paused) { audioOut.clear(); return; }
+    framesRun++;
     emu->memory->watchArmed = watchArmed;
     int elapsedTStates;
     if (!stopAfter && !watchArmed) {

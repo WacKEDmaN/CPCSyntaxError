@@ -26,8 +26,13 @@ public:
     Bytes transfer;
     int transferIndex = 0;
     bool motor = false;
-    std::vector<Bytes*> transferTargets;
+    std::vector<Bytes*> transferTargets;     // valid only while beginSectorTransfer runs
     std::vector<std::shared_ptr<Bytes>> ownedTargets;
+    // Where a write goes back to when its last byte comes in -- many instructions later, by
+    // which time the disc may have been ejected or swapped, or edited (the DSK editor shares
+    // it): the track is kept alive, and the sector found again by its index there.
+    struct TransferRef { std::shared_ptr<Track> track; size_t sector = 0, copy = 0, length = 0; };
+    std::vector<TransferRef> transferRefs;
     bool formatting = false;
     std::optional<ActiveSector> activeSector;
     std::array<std::shared_ptr<Disk>, 4> drives{};

@@ -130,7 +130,10 @@ bool DskEditorWindow::saveFile(const std::string& p) {
     if (!disk) return false;
     std::string why;
     const bool standard = saveStandard && dskFitsStandard(*disk, &why);
-    if (!writeHost(p, serializeDsk(*disk, standard))) { status = "Could not write " + p; return false; }
+    Bytes image;
+    try { image = serializeDsk(*disk, standard); }
+    catch (const std::exception& ex) { status = std::string("Not saved: ") + ex.what(); return false; }
+    if (!writeHost(p, image)) { status = "Could not write " + p; return false; }
     path = p; name = std::filesystem::path(p).filename().string();
     disk->modified = false;
     status = "Saved " + name + (standard ? " (standard format)" : saveStandard ? " (extended: " + why + ")" : " (extended format)");
@@ -160,6 +163,7 @@ bool DskEditorWindow::insertIntoDrive(int unit) {
 void DskEditorWindow::draw(bool* open) {
     ImGui::SetNextWindowSize(ImVec2(900, 640), ImGuiCond_FirstUseEver);
     if (!ImGui::Begin("DSK editor", open)) { focused = false; ImGui::End(); return; }
+    ImGui::PushTextWrapPos(0.0f);             // text wraps at the window's edge
     focused = ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows);
     toolbar();
     if (!disk) {
@@ -173,50 +177,52 @@ void DskEditorWindow::draw(bool* open) {
         ImGui::EndTabBar();
     }
     requestTab = -1;
+    ImGui::PopTextWrapPos();
     popups();
     ImGui::End();
 }
 
 // ============================================================== toolbar
 void DskEditorWindow::toolbar() {
-    if (ImGui::Button("New...")) openNewPopup = true;
-    ImGui::SameLine();
-    if (ImGui::Button("Open...")) browser.open("Open disc image", path.empty() ? host.romDir : std::filesystem::path(path).parent_path().string(),
-                                               { ".dsk", ".edsk" }, [this](const std::string& p) { openFile(p); });
-    ImGui::SameLine();
+    // one row of buttons, wrapping as the window narrows
+    FlowRow bar;
+    if (bar.button("New...")) openNewPopup = true;
+    if (bar.button("Open...")) browser.open("Open disc image", path.empty() ? host.romDir : std::filesystem::path(path).parent_path().string(),
+                                           { ".dsk", ".edsk" }, [this](const std::string& p) { openFile(p); });
     ImGui::BeginDisabled(!disk);
-    if (ImGui::Button("Save")) {
+    if (bar.button("Save")) {
         if (!path.empty()) saveFile(path);
         else saver.open("Save disc image", host.romDir, "disc.dsk", [this](const std::string& p) { saveFile(p); });
     }
-    ImGui::SameLine();
-    if (ImGui::Button("Save as...")) saver.open("Save disc image", path.empty() ? host.romDir : std::filesystem::path(path).parent_path().string(),
-                                                name.empty() ? "disc.dsk" : name, [this](const std::string& p) { saveFile(p); });
+    if (bar.button("Save as...")) saver.open("Save disc image", path.empty() ? host.romDir : std::filesystem::path(path).parent_path().string(),
+                                            name.empty() ? "disc.dsk" : name, [this](const std::string& p) { saveFile(p); });
     ImGui::EndDisabled();
-    ImGui::SameLine(0, 18);
     for (int unit = 0; unit < 2; unit++) {
         char t[32];
         std::snprintf(t, sizeof t, "From %s", unit ? "B" : "A");
+        bar.spacing = unit == 0 ? 18.0f : -1.0f;   // a gap before the drive buttons
         ImGui::BeginDisabled(!host.driveDisk(unit));
-        if (ImGui::Button(t)) takeFromDrive(unit);
+        if (bar.button(t)) takeFromDrive(unit);
         ImGui::EndDisabled();
-        ImGui::SameLine();
     }
     for (int unit = 0; unit < 2; unit++) {
         char t[32];
         std::snprintf(t, sizeof t, "Into %s", unit ? "B" : "A");
         ImGui::BeginDisabled(!disk || !host.booted());
-        if (ImGui::Button(t)) insertIntoDrive(unit);
+        if (bar.button(t)) insertIntoDrive(unit);
         ImGui::EndDisabled();
-        if (unit == 0) ImGui::SameLine();
     }
     if (disk) {
         const bool shared = host.driveDisk(0) == disk || host.driveDisk(1) == disk;
-        ImGui::TextColored(kAccent, "%s%s", displayName().c_str(), disk->modified ? " *" : "");
-        ImGui::SameLine();
-        ImGui::TextDisabled("%d tracks, %d side%s%s", disk->tracks, disk->sides, disk->sides > 1 ? "s" : "",
-                            shared ? "  -- in a drive, shared with the CPC" : "");
-        ImGui::SameLine(0, 18);
+        FlowRow info;
+        char line[160];
+        std::snprintf(line, sizeof line, "%s%s", displayName().c_str(), disk->modified ? " *" : "");
+        info.textColored(kAccent, line);
+        std::snprintf(line, sizeof line, "%d tracks, %d side%s%s", disk->tracks, disk->sides, disk->sides > 1 ? "s" : "",
+                      shared ? "  -- in a drive, shared with the CPC" : "");
+        info.textDisabled(line);
+        info.spacing = 18.0f;
+        info.item(260.0f);
         ImGui::SetNextItemWidth(260);
         const auto fs = filesystem();
         std::string label = fsChoice < 0 ? "Format: as the disc says (" + (fs ? fs->name : std::string("none found")) + ")" : "Format: " + presets[(size_t)fsChoice].name;
@@ -295,49 +301,47 @@ void DskEditorWindow::tabFiles() {
                 (int)files.size(), freeK, fs.freeBlocks(), fs.totalBlocks(), g->blockSize / 1024, fs.freeEntries());
 
     // import / export / delete / rename
-    if (ImGui::Button("Import...")) browser.open("Import a file onto the disc", host.romDir, {}, [this](const std::string& p) { importFile(p); });
-    ImGui::SameLine();
-    ImGui::Checkbox("add an AMSDOS header", &importHeader);
+    FlowRow imp;
+    if (imp.button("Import...")) browser.open("Import a file onto the disc", host.romDir, {}, [this](const std::string& p) { importFile(p); });
+    imp.checkbox("add an AMSDOS header", &importHeader);
     if (importHeader) {
-        ImGui::SameLine();
-        ImGui::SetNextItemWidth(90);
+        imp.field(90, "##itype");
         static const char* types[] = { "BASIC", "protected", "binary" };
         int t = importType == 0 ? 0 : importType == 1 ? 1 : 2;
         if (ImGui::Combo("##itype", &t, types, 3)) importType = t == 2 ? 2 : t;
-        ImGui::SameLine(); ImGui::SetNextItemWidth(60);
+        imp.field(60, "load");
         ImGui::InputScalar("load", ImGuiDataType_U16, &importLoad, nullptr, nullptr, "%04X", ImGuiInputTextFlags_CharsHexadecimal);
-        ImGui::SameLine(); ImGui::SetNextItemWidth(60);
+        imp.field(60, "exec");
         ImGui::InputScalar("exec", ImGuiDataType_U16, &importExec, nullptr, nullptr, "%04X", ImGuiInputTextFlags_CharsHexadecimal);
     }
-    ImGui::SameLine(); ImGui::SetNextItemWidth(70);
+    imp.field(70, "user");
     if (ImGui::InputInt("user", &importUser)) importUser = std::clamp(importUser, 0, 15);
 
     const DskFsFile* sel = nullptr;
     for (const DskFsFile& f : files) if (fileKey(f) == selectedKey) sel = &f;
     ImGui::BeginDisabled(!sel);
-    if (ImGui::Button("Export...") && sel) {
+    FlowRow ops;
+    if (ops.button("Export...") && sel) {
         const DskFsFile f = *sel;
         saver.open("Export the file", host.romDir, f.displayName(), [this, f, g](const std::string& p) {
             DskFs fs2(disk, *g);
             status = writeHost(p, fs2.read(f, exportStrip && f.header)) ? "Exported " + f.displayName() : "Could not write " + p;
         });
     }
-    ImGui::SameLine();
-    ImGui::Checkbox("without its header", &exportStrip);
-    ImGui::SameLine();
-    if (ImGui::Button("Delete") && sel) { fs.remove(*sel); status = "Deleted " + sel->displayName(); selectedKey.clear(); }
-    ImGui::SameLine();
-    if (ImGui::Button("Rename...") && sel) {
+    ops.checkbox("without its header", &exportStrip);
+    if (ops.button("Delete") && sel) { fs.remove(*sel); status = "Deleted " + sel->displayName(); selectedKey.clear(); }
+    if (ops.button("Rename...") && sel) {
         std::snprintf(renameBuf, sizeof renameBuf, "%s", sel->displayName().c_str());
         renameUser = sel->user;
         openRenamePopup = true;
     }
     if (sel) {
         bool ro = sel->readOnly, sys = sel->system, arc = sel->archived;
-        ImGui::SameLine(0, 18);
-        bool ch = ImGui::Checkbox("read-only", &ro);
-        ImGui::SameLine(); ch |= ImGui::Checkbox("system", &sys);
-        ImGui::SameLine(); ch |= ImGui::Checkbox("archived", &arc);
+        ops.spacing = 18.0f;
+        bool ch = ops.checkbox("read-only", &ro);
+        ops.spacing = -1.0f;
+        ch |= ops.checkbox("system", &sys);
+        ch |= ops.checkbox("archived", &arc);
         if (ch) fs.setAttributes(*sel, ro, sys, arc);
     }
     ImGui::EndDisabled();
@@ -369,11 +373,15 @@ void DskEditorWindow::tabFiles() {
     // the file looked at
     if (!sel) { ImGui::TextDisabled("Click a file to look at it."); return; }
     static const char* modes[] = { "Hex", "BASIC", "Text", "Disassembly" };
-    ImGui::SetNextItemWidth(130);
+    FlowRow view;
+    view.field(130, "##view");
     ImGui::Combo("##view", &viewMode, modes, 4);
-    ImGui::SameLine();
-    ImGui::TextDisabled("%s: %d records, entries %d, %s", sel->displayName().c_str(), sel->records, (int)sel->entries.size(),
-                        sel->header ? "AMSDOS header" : "no header");
+    {
+        char l[200];
+        std::snprintf(l, sizeof l, "%s: %d records, entries %d, %s", sel->displayName().c_str(), sel->records, (int)sel->entries.size(),
+                      sel->header ? "AMSDOS header" : "no header");
+        view.textDisabled(l);
+    }
     Bytes raw = fs.read(*sel, false);
     if (viewMode == 0) {
         int dummy = -1; char b[4];
@@ -412,31 +420,33 @@ void DskEditorWindow::tabTracks() {
     ImGui::SameLine();
     ImGui::BeginChild("##trackpane", ImVec2(0, 0));
     auto& slot = disk->trackData[(size_t)selCyl][(size_t)selSide];
-    ImGui::Text("Cylinder %d, side %d", selCyl, selSide);
-    ImGui::SameLine(0, 18);
-    if (ImGui::Button("Format...")) {
+    FlowRow head;
+    { char c[48]; std::snprintf(c, sizeof c, "Cylinder %d, side %d", selCyl, selSide); head.text(c); }
+    head.spacing = 18.0f;
+    if (head.button("Format...")) {
         formatGeometry = filesystem().value_or(newGeometry);
         std::snprintf(formatInterleave, sizeof formatInterleave, "%s", interleaveText(formatGeometry.interleave).c_str());
         openFormatPopup = true;
     }
-    ImGui::SameLine();
+    head.spacing = -1.0f;
     ImGui::BeginDisabled(!slot);
-    if (ImGui::Button("Unformat")) { slot = nullptr; disk->modified = true; }
+    if (head.button("Unformat")) { slot = nullptr; disk->modified = true; }
     ImGui::EndDisabled();
     if (!slot) { ImGui::TextDisabled("Unformatted: Format... gives it sectors."); ImGui::EndChild(); return; }
     Track& t = *slot;
     // the Track-Info's own fields
+    FlowRow fields;                            // the fields, a row that wraps
     auto byteField = [&](const char* label, int& v) {
-        ImGui::SetNextItemWidth(42);
+        fields.field(42, label);
         uint8_t b = (uint8_t)v;
         if (ImGui::InputScalar(label, ImGuiDataType_U8, &b, nullptr, nullptr, "%02X", ImGuiInputTextFlags_CharsHexadecimal)) { v = b; disk->modified = true; }
     };
-    byteField("track", t.cylinder); ImGui::SameLine();
-    byteField("side", t.side); ImGui::SameLine();
-    byteField("N", t.sizeCode); ImGui::SameLine();
-    byteField("GAP#3", t.gap3); ImGui::SameLine();
-    byteField("filler", t.filler); ImGui::SameLine();
-    byteField("rate", t.dataRate); ImGui::SameLine();
+    byteField("track", t.cylinder);
+    byteField("side", t.side);
+    byteField("N", t.sizeCode);
+    byteField("GAP#3", t.gap3);
+    byteField("filler", t.filler);
+    byteField("rate", t.dataRate);
     byteField("mode", t.recordingMode);
     // its sectors
     if (ImGui::Button("Add sector")) {
@@ -450,9 +460,8 @@ void DskEditorWindow::tabTracks() {
         selSector = (int)t.sectors.size() - 1;
         disk->modified = true;
     }
-    ImGui::SameLine();
     ImGui::BeginDisabled(t.sectors.empty());
-    if (ImGui::Button("Remove sector") && selSector < (int)t.sectors.size()) {
+    if (after().button("Remove sector") && selSector < (int)t.sectors.size()) {
         t.sectors.erase(t.sectors.begin() + selSector);
         selSector = std::max(0, selSector - 1);
         disk->modified = true;
@@ -479,32 +488,31 @@ void DskEditorWindow::tabTracks() {
     }
     if (t.sectors.empty()) { ImGui::EndChild(); return; }
     Sector& s = t.sectors[(size_t)selSector];
-    ImGui::TextDisabled("Sector %d:", selSector);
-    ImGui::SameLine();
-    byteField("C##s", s.c); ImGui::SameLine();
-    byteField("H##s", s.h); ImGui::SameLine();
-    byteField("R##s", s.r); ImGui::SameLine();
-    byteField("N##s", s.n); ImGui::SameLine();
-    byteField("ST1##s", s.st1); ImGui::SameLine();
+    fields.newRow();                           // the sector's fields: a row of their own
+    { char l[32]; std::snprintf(l, sizeof l, "Sector %d:", selSector); fields.textDisabled(l); }
+    byteField("C##s", s.c);
+    byteField("H##s", s.h);
+    byteField("R##s", s.r);
+    byteField("N##s", s.n);
+    byteField("ST1##s", s.st1);
     byteField("ST2##s", s.st2);
     int size = s.data.empty() ? 0 : (int)s.data[0].size();
-    ImGui::SetNextItemWidth(90);
+    FlowRow copies;
+    copies.field(90, "bytes stored");
     if (ImGui::InputInt("bytes stored", &size, 128, 512, ImGuiInputTextFlags_EnterReturnsTrue)) {
         size = std::clamp(size, 0, 0x8000);
         if (s.data.empty()) s.data.push_back({});
         for (Bytes& b : s.data) b.resize((size_t)size, (uint8_t)t.filler);
         disk->modified = true;
     }
-    ImGui::SameLine();
-    ImGui::TextDisabled("(N %d is %d)", s.n, 128 << std::min(7, s.n & 7));
-    ImGui::SameLine(0, 18);
+    { char l[48]; std::snprintf(l, sizeof l, "(N %d is %d)", s.n, 128 << std::min(7, s.n & 7)); copies.textDisabled(l); }
+    copies.spacing = 18.0f;
     selCopy = std::clamp(selCopy, 0, std::max(0, (int)s.data.size() - 1));
-    ImGui::SetNextItemWidth(80);
-    if (s.data.size() > 1) { ImGui::SliderInt("copy", &selCopy, 0, (int)s.data.size() - 1); ImGui::SameLine(); }
-    if (ImGui::Button("Add a copy (weak)")) { s.data.push_back(s.data.empty() ? Bytes() : s.data[(size_t)selCopy]); selCopy = (int)s.data.size() - 1; disk->modified = true; }
-    ImGui::SameLine();
+    if (s.data.size() > 1) { copies.field(80, "copy"); ImGui::SliderInt("copy", &selCopy, 0, (int)s.data.size() - 1); }
+    copies.spacing = -1.0f;
+    if (copies.button("Add a copy (weak)")) { s.data.push_back(s.data.empty() ? Bytes() : s.data[(size_t)selCopy]); selCopy = (int)s.data.size() - 1; disk->modified = true; }
     ImGui::BeginDisabled(s.data.size() < 2);
-    if (ImGui::Button("Remove this copy")) { s.data.erase(s.data.begin() + selCopy); selCopy = 0; disk->modified = true; }
+    if (copies.button("Remove this copy")) { s.data.erase(s.data.begin() + selCopy); selCopy = 0; disk->modified = true; }
     ImGui::EndDisabled();
     if (!s.data.empty() && hexEditor("##shex", s.data[(size_t)selCopy], hexEditing, hexBuf, true)) disk->modified = true;
     ImGui::EndChild();
@@ -614,12 +622,11 @@ void DskEditorWindow::tabInfo() {
     ImGui::Spacing();
     ImGui::TextDisabled("Tracks and sides (new tracks unformatted, fewer drops the rest):");
     if (ImGui::IsWindowAppearing()) { resizeTracks = disk->tracks; resizeSides = disk->sides; }
-    ImGui::SetNextItemWidth(90); ImGui::InputInt("tracks##rs", &resizeTracks);
-    ImGui::SameLine(); ImGui::SetNextItemWidth(90); ImGui::InputInt("sides##rs", &resizeSides);
-    ImGui::SameLine();
-    if (ImGui::Button("Apply")) { dskResize(*disk, resizeTracks, resizeSides); status = "Now " + std::to_string(disk->tracks) + " tracks, " + std::to_string(disk->sides) + " side(s)"; }
-    ImGui::SameLine();
-    if (ImGui::Button("Format the new tracks")) {
+    FlowRow rs;
+    rs.field(90, "tracks##rs"); ImGui::InputInt("tracks##rs", &resizeTracks);
+    rs.field(90, "sides##rs"); ImGui::InputInt("sides##rs", &resizeSides);
+    if (after().button("Apply")) { dskResize(*disk, resizeTracks, resizeSides); status = "Now " + std::to_string(disk->tracks) + " tracks, " + std::to_string(disk->sides) + " side(s)"; }
+    if (after().button("Format the new tracks")) {
         const DskGeometry g = filesystem().value_or(newGeometry);
         int n = 0;
         for (int c = 0; c < disk->tracks; c++)
@@ -631,23 +638,28 @@ void DskEditorWindow::tabInfo() {
 
 // ============================================================== popups
 void DskEditorWindow::geometryFields(DskGeometry& g, char* interleave, size_t interleaveSize, bool withFilesystem) {
-    auto num = [](const char* label, int& v, int lo, int hi) {
-        ImGui::SetNextItemWidth(90);
+    // the fields in rows of their kind, each row wrapping as the popup narrows
+    FlowRow row;
+    auto num = [&row](const char* label, int& v, int lo, int hi) {
+        row.field(90, label);
         if (ImGui::InputInt(label, &v)) v = std::clamp(v, lo, hi);
     };
-    auto hex = [](const char* label, int& v) {
-        ImGui::SetNextItemWidth(50);
+    auto hex = [&row](const char* label, int& v) {
+        row.field(50, label);
         uint8_t b = (uint8_t)v;
         if (ImGui::InputScalar(label, ImGuiDataType_U8, &b, nullptr, nullptr, "%02X", ImGuiInputTextFlags_CharsHexadecimal)) v = b;
     };
-    num("tracks", g.tracks, 1, 255); ImGui::SameLine(); num("sides", g.sides, 1, 2);
-    num("sectors a track", g.sectors, 0, 64); ImGui::SameLine(); num("N (128 << N bytes)", g.sizeCode, 0, 7);
-    hex("first sector ID", g.firstSector); ImGui::SameLine(); hex("GAP#3", g.gap3); ImGui::SameLine(); hex("filler", g.filler);
+    num("tracks", g.tracks, 1, 255); num("sides", g.sides, 1, 2);
+    row.newRow();
+    num("sectors a track", g.sectors, 0, 64); num("N (128 << N bytes)", g.sizeCode, 0, 7);
+    row.newRow();
+    hex("first sector ID", g.firstSector); hex("GAP#3", g.gap3); hex("filler", g.filler);
     ImGui::SetNextItemWidth(220);
     if (ImGui::InputText("interleave (sector offsets round the track)", interleave, interleaveSize)) g.interleave = parseInterleave(interleave);
     if (withFilesystem) {
-        num("reserved tracks", g.reservedTracks, 0, 10); ImGui::SameLine();
-        num("block size", g.blockSize, 1024, 16384); ImGui::SameLine();
+        row.newRow();
+        num("reserved tracks", g.reservedTracks, 0, 10);
+        num("block size", g.blockSize, 1024, 16384);
         num("directory entries", g.dirEntries, 16, 1024);
     }
 }

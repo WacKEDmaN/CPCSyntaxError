@@ -47,7 +47,13 @@ std::shared_ptr<Disk> parseDsk(const Bytes& input) {
             if (!trackSize) { disk->trackData[cylinder][side] = nullptr; continue; }
             if (offset + trackSize > (int)bytes.size() || text(bytes, offset, 12) != "Track-Info\r\n")
                 throw std::runtime_error("Invalid DSK track " + std::to_string(cylinder) + "/" + std::to_string(side) + ".");
+            // The track header and its sector table must lie in the file: a short or crafted
+            // image must not be read past its end.
+            if (offset + 0x18 > (int)bytes.size())
+                throw std::runtime_error("Truncated DSK track " + std::to_string(cylinder) + "/" + std::to_string(side) + ".");
             int sectorCount = bytes[offset + 0x15];
+            const int tableEnd = std::min(offset + (sectorCount > 29 ? 0x200 : 0x100), (int)bytes.size());
+            sectorCount = std::min(sectorCount, std::max(0, (tableEnd - (offset + 0x18)) / 8));
             auto track = std::make_shared<Track>();
             track->cylinder = bytes[offset + 0x10]; track->side = bytes[offset + 0x11];
             track->dataRate = bytes[offset + 0x12]; track->recordingMode = bytes[offset + 0x13];
@@ -121,6 +127,15 @@ Bytes serializeDsk(const Disk& disk, bool standard) {
             const int info = track->sectors.size() > 29 ? 0x200 : 0x100;
             trackSizes.push_back(standard ? info + dataBytes : (info + dataBytes + 255) / 256 * 256);
         }
+    // What the format cannot hold is refused, not written as a broken image: an extended
+    // image keeps each track's size in one byte of 256s (0xFF00 at most) and has room
+    // for 204 of them; a standard one keeps one 16-bit size for all.
+    if (!standard && tracks * sides > 0x100 - 0x34)
+        throw std::runtime_error("The disc has " + std::to_string(tracks * sides) + " tracks; an extended DSK holds 204 at most.");
+    for (size_t i = 0; i < trackSizes.size(); i++)
+        if (trackSizes[i] > (standard ? 0xffff : 0xff00))
+            throw std::runtime_error("Track " + std::to_string((int)i / sides) + " side " + std::to_string((int)i % sides) + " holds " +
+                                     std::to_string(trackSizes[i]) + " bytes, more than a DSK track can.");
     int total = 0x100; for (int x : trackSizes) total += x;
     Bytes out(total, 0);
     auto putText = [&](int offset, const std::string& value) { for (int i = 0; i < (int)value.size(); i += 1) out[offset + i] = (uint8_t)value[i]; };

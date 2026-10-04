@@ -69,6 +69,7 @@ static int countLines(const std::string& s) { return 1 + (int)std::count(s.begin
 
 void AssemblerWindow::newFile() {
     source = SAMPLE_SOURCE;
+    sourceRevision++;
     path.clear();
     modified = false;
     lineCount = countLines(source);
@@ -81,6 +82,7 @@ void AssemblerWindow::openFile(const std::string& p) {
     std::stringstream ss; ss << f.rdbuf();
     source = ss.str();
     source.erase(std::remove(source.begin(), source.end(), '\r'), source.end());
+    sourceRevision++;
     path = p;
     modified = false;
     lineCount = countLines(source);
@@ -115,6 +117,15 @@ void AssemblerWindow::loadSettings(const std::map<std::string, std::string>& ini
     if (it != ini.end()) syntax = std::clamp(std::atoi(it->second.c_str()), 0, 5);
     it = ini.find("asm_brk");
     if (it != ini.end()) brkLabels = std::atoi(it->second.c_str()) != 0;
+    it = ini.find("asm_highlight");
+    if (it != ini.end()) highlight = std::atoi(it->second.c_str()) != 0;
+    for (size_t k = 0; k < colours.size(); k++) {
+        it = ini.find(std::string("asm_colour_") + asmTokenKey((AsmToken)k));
+        if (it == ini.end() || it->second.size() != 6) continue;
+        char* end = nullptr;
+        const unsigned long v = std::strtoul(it->second.c_str(), &end, 16);
+        if (end && !*end) colours[k] = (uint32_t)v & 0xffffff;
+    }
     it = ini.find("asm_file");
     if (it != ini.end() && !it->second.empty()) {
         std::error_code ec;
@@ -126,6 +137,93 @@ void AssemblerWindow::saveSettings(std::ostream& out) const {
     out << "asm_syntax=" << syntax << "\n";
     out << "asm_brk=" << (brkLabels ? 1 : 0) << "\n";
     out << "asm_file=" << path << "\n";
+    out << "asm_highlight=" << (highlight ? 1 : 0) << "\n";
+    for (size_t k = 0; k < colours.size(); k++) {
+        char hex[8];
+        std::snprintf(hex, sizeof hex, "%06X", (unsigned)colours[k] & 0xffffff);
+        out << "asm_colour_" << asmTokenKey((AsmToken)k) << "=" << hex << "\n";
+    }
+}
+
+// Where each line starts, and whether it starts inside /* */ -- again only when the text
+// has changed.
+void AssemblerWindow::indexLines() {
+    if (indexedRevision == sourceRevision) return;
+    indexedRevision = sourceRevision;
+    lineStarts.assign(1, 0);
+    lineInComment.assign(1, 0);
+    bool inComment = false;
+    size_t start = 0;
+    for (;;) {
+        const size_t nl = source.find('\n', start);
+        const std::string line = source.substr(start, nl == std::string::npos ? std::string::npos : nl - start);
+        highlightAsmLine(line, inComment);
+        if (nl == std::string::npos) break;
+        start = nl + 1;
+        lineStarts.push_back((int)start);
+        lineInComment.push_back(inComment ? 1 : 0);
+    }
+}
+
+// The visible lines' spans, drawn where the text box drew its (invisible) text: the same
+// font, the same origin, its scroll; each span's x is the width of the line before it, as
+// the box measures (tabs included).
+void AssemblerWindow::drawHighlighted(const char* childName, float lineH, float editorH) {
+    ImGuiWindow* child = ImGui::FindWindowByName(childName);
+    if (!child) return;
+    indexLines();
+    const ImGuiStyle& style = ImGui::GetStyle();
+    const ImVec2 frame = ImGui::GetItemRectMin();
+    const ImVec2 origin(frame.x + style.FramePadding.x - child->Scroll.x, frame.y + style.FramePadding.y - child->Scroll.y);
+    ImFont* font = ImGui::GetFont();
+    const float size = ImGui::GetFontSize();
+    ImDrawList* dl = child->DrawList;
+    dl->PushClipRect(child->InnerClipRect.Min, child->InnerClipRect.Max, true);
+    const int lines = (int)lineStarts.size();
+    const int first = std::max(0, (int)(child->Scroll.y / lineH) - 1);
+    const int last = std::min(lines, first + (int)(editorH / lineH) + 3);
+    ImU32 col[(size_t)AsmToken::Count];
+    for (size_t k = 0; k < colours.size(); k++) {
+        const uint32_t c = colours[k];
+        col[k] = IM_COL32((c >> 16) & 0xff, (c >> 8) & 0xff, c & 0xff, 255);
+    }
+    for (int l = first; l < last; l++) {
+        const int a = lineStarts[(size_t)l];
+        const int b = l + 1 < lines ? lineStarts[(size_t)l + 1] - 1 : (int)source.size();
+        if (b <= a) continue;
+        const std::string line = source.substr((size_t)a, (size_t)(b - a));
+        bool inComment = lineInComment[(size_t)l] != 0;
+        const float y = origin.y + (float)l * lineH;
+        float x = origin.x;
+        for (const AsmSpan& s : highlightAsmLine(line, inComment)) {
+            const char* begin = line.data() + s.start;
+            const char* end = begin + s.length;
+            dl->AddText(font, size, ImVec2(x, y), col[(size_t)s.kind], begin, end);
+            x += font->CalcTextSizeA(size, FLT_MAX, 0.0f, begin, end).x;
+        }
+    }
+    dl->PopClipRect();
+}
+
+void AssemblerWindow::coloursPopup() {
+    if (!ImGui::BeginPopup("Code colours")) return;
+    ImGui::Checkbox("Colour the code", &highlight);
+    ImGui::Separator();
+    ImGui::BeginDisabled(!highlight);
+    for (size_t k = 0; k < colours.size(); k++) {
+        const uint32_t c = colours[k];
+        float rgb[3] = { ((c >> 16) & 0xff) / 255.0f, ((c >> 8) & 0xff) / 255.0f, (c & 0xff) / 255.0f };
+        ImGui::PushID((int)k);
+        if (ImGui::ColorEdit3("##c", rgb, ImGuiColorEditFlags_NoInputs))
+            colours[k] = (uint32_t)(rgb[0] * 255.0f + 0.5f) << 16 | (uint32_t)(rgb[1] * 255.0f + 0.5f) << 8 | (uint32_t)(rgb[2] * 255.0f + 0.5f);
+        ImGui::SameLine();
+        ImGui::TextColored(ImVec4(rgb[0], rgb[1], rgb[2], 1.0f), "%s", asmTokenLabel((AsmToken)k));
+        ImGui::PopID();
+    }
+    ImGui::EndDisabled();
+    ImGui::Separator();
+    if (ImGui::Button("Defaults")) colours = defaultAsmColours();
+    ImGui::EndPopup();
 }
 
 int AssemblerWindow::lineStartOffset(int line) const {
@@ -246,6 +344,7 @@ void AssemblerWindow::draw(bool* open) {
     focused = false;
     ImGui::SetNextWindowSize(ImVec2(640, 480), ImGuiCond_FirstUseEver);
     if (!ImGui::Begin("Assembler", open)) { ImGui::End(); return; }
+    ImGui::PushTextWrapPos(0.0f);             // text wraps at the window's edge
     focused = ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows);
     ImGuiIO& io = ImGui::GetIO();
     if (focused) {
@@ -256,28 +355,27 @@ void AssemblerWindow::draw(bool* open) {
 
     // ---- toolbar
     if (ImGui::Button("New")) newFile();
-    ImGui::SameLine();
-    if (ImGui::Button("Open...")) requestOpen();
-    ImGui::SameLine();
-    if (ImGui::Button("Save")) requestSave(false);
-    ImGui::SameLine();
-    if (ImGui::Button("Save as...")) requestSave(true);
-    ImGui::SameLine();
-    ImGui::TextDisabled("|");
-    ImGui::SameLine();
-    if (ImGui::Button("Assemble (F9)")) assemble(false);
-    ImGui::SameLine();
-    if (ImGui::Button("Assemble + run (Ctrl+F9)")) assemble(true);
-    ImGui::SameLine();
-    ImGui::SetNextItemWidth(130);
+    if (after().button("Open...")) requestOpen();
+    if (after().button("Save")) requestSave(false);
+    if (after().button("Save as...")) requestSave(true);
+    after().textDisabled("|");
+    if (after().button("Assemble (F9)")) assemble(false);
+    if (after().button("Assemble + run (Ctrl+F9)")) assemble(true);
+    after().field(130, "##syntax");
     ImGui::Combo("##syntax", &syntax, SYNTAX_NAMES, IM_ARRAYSIZE(SYNTAX_NAMES));
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("rasm's compatibility switches");
-    ImGui::SameLine();
-    ImGui::Checkbox("BRK labels", &brkLabels);
+    after().checkbox("BRK labels", &brkLabels);
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("Labels named BRK..., @BRK... or ....BRK become breakpoints (rasm -eb)");
-    ImGui::TextColored(kAccent, "%s", displayName().c_str());
-    ImGui::SameLine();
-    ImGui::TextDisabled("%d lines", lineCount);
+    if (after().button("Colours...")) ImGui::OpenPopup("Code colours");
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Syntax colouring: on or off, and a colour for each kind of word");
+    coloursPopup();
+    {
+        FlowRow file;
+        file.textColored(kAccent, displayName().c_str());
+        char n[32];
+        std::snprintf(n, sizeof n, "%d lines", lineCount);
+        file.textDisabled(n);
+    }
 
     // ---- editor with a line-number gutter
     const ImGuiStyle& style = ImGui::GetStyle();
@@ -296,11 +394,17 @@ void AssemblerWindow::draw(bool* open) {
     if (gotoLine > 0) ImGui::SetKeyboardFocusHere();
     ImGuiInputTextFlags flags = ImGuiInputTextFlags_AllowTabInput | ImGuiInputTextFlags_CallbackResize |
                                 ImGuiInputTextFlags_CallbackAlways;
+    // Coloured: the box's own text invisible (its cursor and selection are not), the
+    // spans drawn over it.
+    if (highlight) ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0, 0, 0, 0));
     if (ImGui::InputTextMultiline("##asmsrc", source.data(), source.capacity() + 1, ImVec2(-1, editorH), flags,
                                   &AssemblerWindow::editorCallback, this)) {
         modified = true;
+        sourceRevision++;
         lineCount = countLines(source);
     }
+    if (highlight) ImGui::PopStyleColor();
+    if (highlight) drawHighlighted(childName, lineH, editorH);
     float scrollY = 0.0f;
     if (ImGuiWindow* child = ImGui::FindWindowByName(childName)) scrollY = child->Scroll.y;
     {
@@ -324,9 +428,12 @@ void AssemblerWindow::draw(bool* open) {
     }
 
     // ---- result
-    ImGui::TextColored(lastOk ? ImVec4(0.5f, 0.9f, 0.5f, 1) : (messages.empty() ? ImVec4(0.7f, 0.7f, 0.7f, 1) : ImVec4(1.0f, 0.45f, 0.4f, 1)),
-                       "%s", summary.c_str());
-    if (lastOk && lastRun >= 0) { ImGui::SameLine(); ImGui::TextDisabled("RUN &%04X", lastRun & 0xffff); }
+    {
+        FlowRow result;
+        result.textColored(lastOk ? ImVec4(0.5f, 0.9f, 0.5f, 1) : (messages.empty() ? ImVec4(0.7f, 0.7f, 0.7f, 1) : ImVec4(1.0f, 0.45f, 0.4f, 1)),
+                           summary.c_str());
+        if (lastOk && lastRun >= 0) { char r[16]; std::snprintf(r, sizeof r, "RUN &%04X", lastRun & 0xffff); result.textDisabled(r); }
+    }
     if (ImGui::BeginTabBar("##asmresult")) {
         char label[48];
         std::snprintf(label, sizeof(label), "Messages (%d)###msgs", (int)messages.size());
@@ -349,8 +456,7 @@ void AssemblerWindow::draw(bool* open) {
         if (ImGui::BeginTabItem(label)) {
             ImGui::SetNextItemWidth(200);
             ImGui::InputTextWithHint("##symfilter", "filter", symbolFilter, sizeof(symbolFilter));
-            ImGui::SameLine();
-            ImGui::TextDisabled("click a symbol to show it in the disassembly");
+            after().textDisabled("click a symbol to show it in the disassembly");
             if (ImGui::BeginTable("##symtab", 2, ImGuiTableFlags_ScrollY | ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerV |
                                                  ImGuiTableFlags_Sortable, ImVec2(0, 0))) {
                 ImGui::TableSetupScrollFreeze(0, 1);
@@ -390,6 +496,7 @@ void AssemblerWindow::draw(bool* open) {
         }
         ImGui::EndTabBar();
     }
+    ImGui::PopTextWrapPos();
     ImGui::End();
 }
 

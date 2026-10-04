@@ -195,6 +195,16 @@ std::vector<M4Entry> M4Storage::list(const std::string& realDir) const {
 static bool validLongName(const std::string& leaf) {
     if (leaf.empty() || leaf == "." || leaf == "..") return false;
     for (unsigned char c : leaf) if (c < 32 || std::strchr("\\/:*?\"<>|", c)) return false;
+    // Windows drops a trailing dot or space (so the file is not the one named) ...
+    if (leaf.back() == '.' || leaf.back() == ' ') return false;
+    // ... and CON, PRN, AUX, NUL, COM1-9 and LPT1-9 -- with any extension -- are devices:
+    // a CPC program must not reach a serial port or a printer through the M4's folder.
+    std::string base = leaf.substr(0, leaf.find('.'));
+    while (!base.empty() && base.back() == ' ') base.pop_back();
+    for (char& c : base) c = (char)std::toupper((unsigned char)c);
+    if (base == "CON" || base == "PRN" || base == "AUX" || base == "NUL") return false;
+    if (base.size() == 4 && (base.compare(0, 3, "COM") == 0 || base.compare(0, 3, "LPT") == 0) && base[3] >= '0' && base[3] <= '9')
+        return false;
     return true;
 }
 
@@ -559,7 +569,7 @@ uint8_t* M4SdCard::sector(uint32_t lba, bool forWrite) {
 int M4SdCard::read(uint32_t lba, int count, uint8_t* out) {
     if (!ensureBuilt()) return 3;
     for (int i = 0; i < count; i++) {
-        if (lba + i >= total) return 1;
+        if (lba >= total || (uint32_t)i >= total - lba) return 1;   // never lba + i: it wraps
         const uint8_t* s = sector(lba + i, false);
         if (s) std::memcpy(out + i * 512, s, 512); else std::memset(out + i * 512, 0, 512);
     }
@@ -570,7 +580,7 @@ int M4SdCard::write(uint32_t lba, int count, const uint8_t* in) {
     if (storage.readOnly) return 2;
     if (!ensureBuilt()) return 3;
     for (int i = 0; i < count; i++) {
-        if (lba + i >= total) return 1;
+        if (lba >= total || (uint32_t)i >= total - lba) return 1;   // never lba + i: it wraps
         std::memcpy(sector(lba + i, true), in + i * 512, 512);
     }
     dirtySectors = true;
@@ -602,6 +612,12 @@ bool M4SdCard::syncToHost(std::string* report) {
     };
     struct Parsed { bool dir; std::string path; Bytes data; };
     std::map<std::string, Parsed> now;
+    // What the CPC wrote is not to be trusted: a directory's clusters may lead back to
+    // itself or a parent, and cross-linked files may each claim the whole card.
+    std::set<uint32_t> dirClustersSeen;
+    int depth = 0;
+    uint64_t bytesTaken = 0;
+    const uint64_t cardBytes = (uint64_t)total * 512;
     std::function<bool(const std::string&, const std::vector<uint32_t>&, bool)> readDir =
         [&](const std::string& path, const std::vector<uint32_t>& lbas, bool isRoot) -> bool {
         std::string lfn; int lfnSum = -1, lfnNext = 0; bool lfnValid = false;
@@ -613,7 +629,8 @@ bool M4SdCard::syncToHost(std::string* report) {
                 if (e[0] == 0xe5) { lfnValid = false; continue; }
                 if (e[11] == 0x0f) {
                     if (e[0] & 0x40) { lfnNext = e[0] & 0x1f; lfnSum = e[13]; lfn.assign((size_t)lfnNext * 13, '\0'); lfnValid = true; }
-                    if (!lfnValid || (e[0] & 0x1f) != lfnNext || e[13] != lfnSum) { lfnValid = false; continue; }
+                    // Sequence numbers run from 1: a 0 here would write before the name.
+                    if (!lfnValid || lfnNext < 1 || (e[0] & 0x1f) != lfnNext || e[13] != lfnSum) { lfnValid = false; continue; }
                     for (int k = 0; k < 13; k++) {
                         const int ch = get16(e + LFN_POS[k]);
                         lfn[(size_t)(lfnNext - 1) * 13 + k] = ch == 0xffff ? '\0' : (char)(ch & 0xff);
@@ -639,13 +656,21 @@ bool M4SdCard::syncToHost(std::string* report) {
                 std::vector<uint32_t> cl;
                 chain(first, cl);
                 if (e[11] & 0x10) {
+                    for (uint32_t c : cl)
+                        if (!dirClustersSeen.insert(c).second) { lastError = full + ": a directory loops back on itself"; return false; }
+                    if (depth >= 32) { lastError = full + ": directories nest too deeply"; return false; }
                     now[M4Storage::lower(full)] = { true, full, {} };
                     std::vector<uint32_t> sub;
                     for (uint32_t c : cl) for (uint32_t k = 0; k < sPc; k++) sub.push_back(dStart + (c - 2) * sPc + k);
-                    if (!readDir(full, sub, false)) return false;
+                    depth += 1;
+                    const bool ok = readDir(full, sub, false);
+                    depth -= 1;
+                    if (!ok) return false;
                 } else {
                     const uint32_t size = get32(e + 28);
                     if ((uint64_t)cl.size() * sPc * 512 < size) { lastError = full + ": its clusters end before its size"; return false; }
+                    bytesTaken += size;
+                    if (bytesTaken > cardBytes) { lastError = full + ": the files hold more than the card"; return false; }
                     Bytes data(size);
                     for (uint32_t i = 0, got = 0; got < size; i++) {
                         for (uint32_t k = 0; k < sPc && got < size; k++) {

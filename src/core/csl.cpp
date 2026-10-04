@@ -447,10 +447,19 @@ bool CslPlayer::execute(const std::string& ins, const std::vector<std::string>& 
     // ---- directories
     if (ins == "disk_dir") { if (!need(1)) return false; diskDir = a[0]; return true; }
     if (ins == "tape_dir") { if (!need(1)) return false; tapeDir = a[0]; return true; }
-    if (ins == "snapshot_dir") { if (!need(1)) return false; snapshotDir = a[0]; return true; }
-    if (ins == "screenshot_dir") { if (!need(1)) return false; screenshotDir = a[0]; return true; }
-    if (ins == "screenshot_name") { if (!need(1)) return false; screenshotName = a[0]; return true; }
-    if (ins == "snapshot_name") { if (!need(1)) return false; snapshotName = a[0]; return true; }
+    // Where a script SAVES: a folder below the one it is run in, never an absolute path or
+    // one climbing out with '..' -- a script from elsewhere must not write over files
+    // anywhere the user can write.
+    auto staysInside = [&](const std::string& p) {
+        const fs::path path(p);
+        if (path.has_root_path() || path.has_root_name()) { why = "a script may not save to an absolute path: " + p; return false; }
+        for (const auto& part : path) if (part == "..") { why = "a script may not save outside its folder ('..'): " + p; return false; }
+        return true;
+    };
+    if (ins == "snapshot_dir") { if (!need(1) || !staysInside(a[0])) return false; snapshotDir = a[0]; return true; }
+    if (ins == "screenshot_dir") { if (!need(1) || !staysInside(a[0])) return false; screenshotDir = a[0]; return true; }
+    if (ins == "screenshot_name") { if (!need(1) || !staysInside(a[0])) return false; screenshotName = a[0]; return true; }
+    if (ins == "snapshot_name") { if (!need(1) || !staysInside(a[0])) return false; snapshotName = a[0]; return true; }
     if (ins == "snapshot_version") {
         double v = 0;
         if (!number(0, v)) return false;

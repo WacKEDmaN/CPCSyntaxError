@@ -162,13 +162,19 @@ bool AmstradDSK::load(const Bytes& arrayBuffer) {
     if (signature.rfind("MV - CPC", 0) == 0) isExtended = false;
     else if (signature.rfind("EXTENDED", 0) == 0) isExtended = true;
     else throw std::runtime_error("Invalid DSK file format - unknown signature");
+    // The disc header and the first track's header must be there before any is read.
+    if (data.size() < 0x100 + 0x100) throw std::runtime_error("Truncated DSK file");
     int tracks = data[0x30], sides = data[0x31];
+    if (!tracks || !sides || sides > 2) throw std::runtime_error("Invalid DSK geometry");
     format = detectFormat(tracks, sides);
-    if (!format.valid) throw std::runtime_error("Could not detect disk format");
+    // Every block and sector calculation divides by these.
+    if (!format.valid || format.sectors <= 0 || format.sides <= 0 || format.sectorSize <= 0 || format.blockSize < format.sectorSize)
+        throw std::runtime_error("Could not detect disk format");
     return true;
 }
 DiskFormat AmstradDSK::detectFormat(int tracks, int sides) {
     int trackOffset = 256;
+    if (trackOffset + 0x100 > (int)data.size()) return DiskFormat{};
     int sectors = data[trackOffset + 0x15];
     int sectorBase = 0xff;
     for (int s = 0; s < sectors && s < 29; s++) {
@@ -234,7 +240,7 @@ int AmstradDSK::detectBlockSizeFromDirectory(int dirTrack, int sectorBase) {
             if (firstBlock > 0) {
                 int maxBlock = 0;
                 for (int i = 16; i < 32; i++) { int blk = sector[offset + i]; if (blk > maxBlock) maxBlock = blk; }
-                int sectorsPerBlock = (int)sector.size() / 512;
+                int sectorsPerBlock = std::max(1, (int)sector.size() / 512);
                 int totalBlocks = (maxBlock * 1024) / 512 / sectorsPerBlock + 1;
                 int blockBytes = totalBlocks * 1024;
                 if (blockBytes > 2048) return 2048;
@@ -253,7 +259,7 @@ int AmstradDSK::getTrackOffset(int track, int side) {
     if (trackNum < 0 || trackNum >= totalTracks) return -1;
     if (isExtended) {
         int offset = 256;
-        for (int t = 0; t < trackNum; t++) { int size = data[0x34 + t] * 256; if (size == 0) break; offset += size; }
+        for (int t = 0; t < trackNum && 0x34 + t < 0x100; t++) { int size = data[0x34 + t] * 256; if (size == 0) break; offset += size; }
         return offset;
     } else {
         int trackSize = data[0x32] | (data[0x33] << 8);
@@ -263,14 +269,14 @@ int AmstradDSK::getTrackOffset(int track, int side) {
 Bytes AmstradDSK::getSectorData(int track, int side, int sectorId, bool* found) {
     if (found) *found = false;
     int trackOffset = getTrackOffset(track, side);
-    if (trackOffset < 0 || trackOffset >= (int)data.size()) return {};
+    if (trackOffset < 0 || trackOffset + 0x18 > (int)data.size()) return {};
     int sectors = data[trackOffset + 0x15];
     int sectorDataOffset = trackOffset + 256;
     for (int s = 0; s < sectors; s++) {
         int infoOffset = trackOffset + 0x18 + s * 8;
         if (infoOffset + 8 > (int)data.size()) return {};
         int sid = data[infoOffset + 2];
-        int sizeCode = data[infoOffset + 3];
+        int sizeCode = data[infoOffset + 3] & 7;   // N above 7 is what the FDC reads as 7: and 128 << 111 is no number
         int sectorSize;
         if (isExtended) { sectorSize = data[infoOffset + 6] | (data[infoOffset + 7] << 8); if (sectorSize == 0) sectorSize = 128 << sizeCode; }
         else sectorSize = 128 << sizeCode;
@@ -285,18 +291,19 @@ Bytes AmstradDSK::getSectorData(int track, int side, int sectorId, bool* found) 
 }
 bool AmstradDSK::setSectorData(int track, int side, int sectorId, const Bytes& sectorData) {
     int trackOffset = getTrackOffset(track, side);
-    if (trackOffset < 0) return false;
+    if (trackOffset < 0 || trackOffset + 0x18 > (int)data.size()) return false;
     int sectors = data[trackOffset + 0x15];
     int sectorDataOffset = trackOffset + 256;
     for (int s = 0; s < sectors; s++) {
         int infoOffset = trackOffset + 0x18 + s * 8;
+        if (infoOffset + 8 > (int)data.size()) return false;
         int sid = data[infoOffset + 2];
-        int sizeCode = data[infoOffset + 3];
+        int sizeCode = data[infoOffset + 3] & 7;
         int sectorSize;
         if (isExtended) { sectorSize = data[infoOffset + 6] | (data[infoOffset + 7] << 8); if (sectorSize == 0) sectorSize = 128 << sizeCode; }
         else sectorSize = 128 << sizeCode;
         if (sid == sectorId) {
-            int len = std::min((int)sectorData.size(), sectorSize);
+            int len = std::min({ (int)sectorData.size(), sectorSize, (int)data.size() - sectorDataOffset });
             for (int i = 0; i < len; i++) data[sectorDataOffset + i] = sectorData[i];
             modified = true;
             return true;

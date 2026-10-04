@@ -18,7 +18,7 @@ struct PulseEvent {
     enum Type { PULSE, LEVEL, STOP } type = PULSE;
     int cycles = 0;
     int level = 0;
-    std::string reason;
+    const char* reason = "";   // a literal: a long recording queues millions of these
 };
 
 struct LoopFrame { int start; int remaining; };
@@ -46,6 +46,7 @@ public:
     std::vector<double> sampleQueue;
     int sampleReadIndex = 0;
     double lastOutputSample = 0;
+    double pulseCarry = 0;         // the fraction of a cycle the last pulse rounded away
     std::string lastError;
 
     bool motorOn = false;
@@ -67,6 +68,29 @@ public:
     std::vector<LoopFrame> fastLoopStack;
     std::deque<int> fastCallStack;
     bool fastFinished = false;
+
+    // THE DECK: where the tape is, and its buttons. The position counts the cycles the tape
+    // has actually moved under the head (playing, not paused, the motor on); each block's
+    // start is measured once, when the tape goes in, by decoding it. PAUSE holds the tape
+    // with PLAY still down; STOP lets PLAY up.
+    bool paused = false;
+    long long playedCycles = 0;
+    long long counterZeroCycles = 0;            // the counter's 000 (its reset button)
+    std::vector<long long> blockStartCycles;    // per block, where it starts on the tape
+    long long totalCycles = 0;
+    double cyclesPerSecond() const { return tstateRatio * 3500000.0; }
+    double positionSeconds() const { return playedCycles / cyclesPerSecond(); }
+    double lengthSeconds() const { return totalCycles / cyclesPerSecond(); }
+    int blockAtPosition() const;                // the block under the head (-1: no tape)
+    int counter() const;                        // 000-999, a second a count, from its last reset
+    void resetCounter() { counterZeroCycles = playedCycles; }
+    void play();                                // PLAY down (and PAUSE up)
+    void setPaused(bool on);
+    void stop();                                // PLAY up
+    void fastForward();                         // to the start of the next block
+    void rewindBlock();                         // to this block's start, or the one before it
+    void seekBlock(int index);                  // to a block's start
+    void buildTimeline();
 
     CPCTapeDrive(AY38912* ay = nullptr, bool requireMotor = true, double tstateFrequency = 1000000);
     virtual ~CPCTapeDrive() = default;
@@ -91,7 +115,7 @@ public:
     void setTapeNoise(double level);
     void addPulse(double cycles, int level);
     void addLevel(int level);
-    void addStop(const std::string& reason = "stop");
+    void addStop(const char* reason = "stop");
     double tstatesToCycles(double tstates);
     double msToCycles(double ms);
     void emitPilot(double tstates, int count);

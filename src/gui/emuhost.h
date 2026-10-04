@@ -16,6 +16,7 @@
 namespace cpcse {
 
 class GX4000;
+class CPCTapeDrive;
 struct Disk;
 class CpcVideo;
 class MatrixPrinter;
@@ -135,7 +136,7 @@ public:
     std::string diskName[2];
     std::string tapeName;
     std::string cartName;
-    bool tapePlaying = false;
+    std::string snapshotName;               // the .SNA last loaded ("" once the machine reboots)
 
     // firmware ROM overrides (empty = auto-find by keyword). Let the user see
     // exactly which files are installed and swap them.
@@ -178,15 +179,34 @@ public:
     // Where the disc in a drive came from (empty for one made in the editor).
     std::string diskPath[2];
     bool loadTapeFile(const std::string& path);
+    // THE TAPE DECK (core/tape.h): its buttons. Whether it plays is asked of the deck --
+    // a tape stops by itself too (a stop block, its end).
+    CPCTapeDrive* tapeDeck() const;           // null with no tape in
+    bool tapePlaying() const;                 // PLAY down and not paused
+    bool tapePaused() const;
     void tapePlayToggle();
-    void tapeRewind();
+    void tapePlay();
+    void tapePause();                         // toggles PAUSE
+    void tapeStop();
+    void tapeRewind();                        // to the start
+    void tapeRewindBlock();                   // to this block's start, or the one before
+    void tapeFastForward();                   // to the next block
+    void tapeSeekBlock(int index);
+    void tapeEject();
+    void tapeResetCounter();
 
+    // Out of the slot: the machine as it boots without it (a Plus on its system
+    // cartridge). false when there is none.
+    bool ejectCartridge();
+    // The snapshot let go: the machine booted afresh. false when none is loaded.
+    bool ejectSnapshot();
     bool saveSnapshot(const std::string& path);
     bool loadSnapshot(const std::string& path);
 
     void reset();
-    void stepInstruction();
+    void stepInstruction(bool redraw = true);   // false: leave the picture to the caller (many steps)
     void runFrame();                         // advance one frame + drain audio
+    uint64_t framesRun = 0;                  // frames runFrame has run (not counting paused calls)
 
     // Debugger hooks. A breakpoint, a watchpoint or a reached step target stops the
     // machine by setting `paused` -- the same pause the UI's Pause shows -- and says why

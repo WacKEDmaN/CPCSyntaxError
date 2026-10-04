@@ -10,6 +10,8 @@
 #include <string>
 #include <vector>
 
+#include "asm_highlight.h"
+
 struct ImFont;
 struct ImGuiInputTextCallbackData;
 
@@ -29,7 +31,7 @@ public:
     std::function<void(int address)> showInDisassembly;
 
     void assemble(bool thenRun);                // F9 / Ctrl+F9
-    void setSource(const std::string& text) { source = text; modified = true; }
+    void setSource(const std::string& text) { source = text; modified = true; sourceRevision++; }
     const std::string& resultSummary() const { return summary; }
     bool assembledOk() const { return lastOk; }
     int errorCount() const { return (int)messages.size(); }
@@ -69,6 +71,17 @@ private:
     std::string summary = "Nothing assembled yet.";
     bool lastOk = false;
     char symbolFilter[64] = {0};
+
+    // Syntax colouring (asm_highlight.h): the text box draws its text invisibly and the
+    // coloured spans are drawn over it, so editing, selection and undo stay ImGui's own.
+    bool highlight = true;
+    AsmColours colours = defaultAsmColours();
+    uint64_t sourceRevision = 0, indexedRevision = ~0ull;
+    std::vector<int> lineStarts;                // offset of each line in `source`
+    std::vector<uint8_t> lineInComment;         // the line starts inside /* */
+    void indexLines();
+    void drawHighlighted(const char* childName, float lineH, float editorH);
+    void coloursPopup();
 
     int gotoLine = -1;                          // move the editor's cursor here next frame
     static int editorCallback(ImGuiInputTextCallbackData* data);

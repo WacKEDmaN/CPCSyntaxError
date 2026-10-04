@@ -20,7 +20,12 @@ built around a cycle-level model of the machine's video chips.
 - **CPC Plus ASIC**: sprites, DMA sound, 4096-colour palette, raster interrupts,
   split screen, soft scroll.
 - Disc (DSK/EDSK), tape (CDT/TZX/WAV), cartridge (CPR) and snapshot (SNA) loading,
-  joysticks and game controllers; RAM expansions up to 4 MB (in 512K steps past 576K).
+  each with an **Eject**; joysticks and game controllers; RAM expansions up to 4 MB (in
+  512K steps past 576K).
+- A **tape deck** (Media window, Media > Tape, Debug > Chips > Tape): a tape counter
+  with its reset, the time and block the tape is at, **rewind to the start, back a
+  block, play, pause, stop, fast forward, eject**, and a list of the tape's blocks to
+  jump to.
 - **Expansions** (all in **Expansions** / the Settings window):
   - **M4 board**: a folder on your PC is its SD card. The M4's own ROM (`M4ROM.ROM`, by Duke,
     [spinpoint.org](http://www.spinpoint.org) -- included in `roms/` with his permission) runs unmodified;
@@ -60,7 +65,8 @@ built around a cycle-level model of the machine's video chips.
     expansion bank), a pixel a byte, coloured by what the Z80 did there -- opcode fetch,
     operand, read, write.
   - **GFX9000**: its picture, and the V9990's state, registers, palette, command
-    engine and VRAM.
+    engine and VRAM -- as bytes, or as an image coloured as the display colours it
+    (P1's layers A and B side by side).
 - A **DSK editor** (Tools, or Media > Drive > Edit): make new discs in any CPC format
   (DATA, SYSTEM, IBM, 42/80-track, ParaDOS, ROMDOS, Vortex, Dobbertin or a geometry of
   your own), open standard and extended images, or work on the disc in a drive while
@@ -74,11 +80,18 @@ built around a cycle-level model of the machine's video chips.
   every test. See [CSL scripts](#csl-scripts-and-ssm-screenshots).
 - A built-in **assembler**: [RASM](https://github.com/EdouardBERGE/rasm) itself,
   linked in. Assemble straight into the running machine's memory (F9) and run it
-  (Ctrl+F9).
+  (Ctrl+F9). The editor colours the syntax -- instructions, registers, numbers,
+  strings, labels, directives, comments -- in colours you can change (**Colours...**).
+- **External debugging and code loading**: a **GDB server** for VS Code's
+  [DeZog](https://github.com/maziac/DeZog) (source-level breakpoints, stepping,
+  watchpoints), a **command API** with the `cpcse-ctl` client for build scripts (load,
+  run, type, read/write memory, breakpoints, screenshots), and **auto-reload** of your
+  build every time it changes. See [External debugging](#external-debugging).
 - Dockable, resizable windows (Dear ImGui docking branch); any window can be pulled
   out of the main window into its own. Only the screen, the machine and its media are
   open at first; the rest opens from the menus and docks with its group. Window >
-  Interface size makes everything larger (90-200%).
+  Interface size makes everything larger (90-200%). Button rows and text wrap to fit a
+  narrow window.
 
 ## Screenshots
 
@@ -133,7 +146,9 @@ Keys go to the CPC unless a debugger or assembler window has the focus.
 
 ## Command line
 
-`cpcse.exe --roms <folder>` starts with another ROM folder. A headless screenshot
+`cpcse.exe --roms <folder>` starts with another ROM folder. `--gdb`, `--api`, `--load`,
+`--watch`, `--run`, `--reset`, `--command` and `--symbols` are described under
+[External debugging](#external-debugging). A headless screenshot
 mode is also available for scripting:
 
 ```
@@ -155,6 +170,27 @@ Models: `cpc464`, `cpc6128`, `cpc464plus`, `cpc6128plus`, `gx4000`.
 The headless modes print to the Command Prompt they were started from. `cpcse.exe` is a
 windowed program, so the prompt does not wait for it: use `start /wait cpcse.exe ...` in
 a batch file that needs the result.
+
+## External debugging
+
+Work in VS Code (or any editor) and let the emulator follow your build. All of this is
+off until you turn it on: *Settings -> External debugging*, or the command line. The
+servers listen on `127.0.0.1` only.
+
+- **GDB server** (`--gdb`, port 12000): DeZog's `mame` remote attaches, for source-level
+  debugging with breakpoints, stepping, watchpoints, and memory and register views.
+- **Command API** (`--api`, port 6128) and `cpcse-ctl` (beside `cpcse.exe`): load code,
+  type, read and write memory, set breakpoints, wait for a stop, take screenshots.
+- **Auto-reload** (`--watch build/game.bin@0x4000 --run entry`): every build is written
+  back into memory and started again.
+
+```
+cpcse.exe --gdb --api --watch build/game.bin@0x4000 --run entry --symbols build/game.sym
+cpcse-ctl load build/game.bin 0x4000 entry
+```
+
+[docs/external-debugging.md](docs/external-debugging.md) has the DeZog `launch.json`, a
+build task, every option and every command.
 
 ## CSL scripts and SSM screenshots
 
@@ -210,7 +246,7 @@ cmake --build build
 ```
 
 or unpack the SDL2 package's `x86_64-w64-mingw32` folder into `third_party/SDL2` and
-run `build.bat`. The result is `build/cpcse.exe`, with `SDL2.dll` and the `roms`
+run `build.bat`. The result is `build/cpcse.exe` (and `build/cpcse-ctl.exe`), with `SDL2.dll` and the `roms`
 folder copied beside it; the GCC runtime is linked statically, so nothing else is
 needed to run it.
 
@@ -237,7 +273,10 @@ are matched case-insensitively.
 
 ```
 src/core/      the emulation core (static library, no host dependencies)
-src/gui/       the desktop front end: SDL2 + OpenGL + Dear ImGui, debugger, assembler
+src/gui/       the desktop front end: SDL2 + OpenGL + Dear ImGui, debugger, assembler,
+               the GDB server and command API
+tools/ctl/     cpcse-ctl, the command API's client
+docs/          external-debugging.md
 roms/          Amstrad firmware and the Plus system cartridge (see roms/README.txt)
 third_party/   Dear ImGui (docking branch), RASM, ymfm, the SP0256 core, minimp3 and the
                DejaVu Sans Mono font, vendored; SDL2 is fetched separately

@@ -136,31 +136,31 @@ void GuiShell::memoryMapContent() {
         ImGui::EndCombo();
     }
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("%d K of RAM: %d blocks of 64K", (int)(m.ram.size() / 1024), chunks);
-    ImGui::SameLine();
-    ImGui::Checkbox("Record", &memMapRecord);
+    after().checkbox("Record", &memMapRecord);
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("Tag every memory access the Z80 makes (only while this window is open).");
-    ImGui::SameLine();
-    if (ImGui::Button("Clear")) m.clearAccessMap();
-    ImGui::SameLine();
-    ImGui::Checkbox("Live", &memMapLive);
+    if (after().button("Clear")) m.clearAccessMap();
+    after().checkbox("Live", &memMapLive);
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("Show only what was touched since the window last drew: the activity of each moment.");
-    ImGui::SameLine();
-    ImGui::Checkbox("Mark written code", &memMapWrittenCode);
+    after().checkbox("Mark written code", &memMapWrittenCode);
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("Code that was also written: self-modifying code, or code loaded while recording.");
 
     // the legend, with how many bytes of this 64K are in each class
     int counts[MAP_CLASSES] = {};
     const size_t base = (size_t)memMapChunk * MAP_CHUNK;
     for (int i = 0; i < MAP_CHUNK && base + i < m.ram.size(); i++) counts[mapClass(m.accessMap[base + i], memMapWrittenCode)]++;
+    FlowRow legend;                            // swatch + name, kept together; the legend wraps
+    legend.spacing = 14.0f;
     for (int c = 0; c < MAP_CLASSES; c++) {
         if (c == MAP_WRITTEN_CODE && !memMapWrittenCode) continue;
-        if (c) ImGui::SameLine(0, 14);
-        const ImVec2 p = ImGui::GetCursorScreenPos();
+        char name[64];
+        std::snprintf(name, sizeof name, "%s %d", MAP_LEGEND[c].name, counts[c]);
         const float s = ImGui::GetTextLineHeight();
+        legend.place(s + ImGui::CalcTextSize(name).x);
+        const ImVec2 p = ImGui::GetCursorScreenPos();
         ImGui::GetWindowDrawList()->AddRectFilled(ImVec2(p.x, p.y + 2), ImVec2(p.x + s - 4, p.y + s - 2), legendColour(c));
         ImGui::Dummy(ImVec2(s - 2, s));
         ImGui::SameLine(0, 2);
-        ImGui::TextDisabled("%s %d", MAP_LEGEND[c].name, counts[c]);
+        ImGui::TextDisabled("%s", name);
     }
     memMapPixels.assign((size_t)256 * 256, 0);
     for (int i = 0; i < MAP_CHUNK; i++) {
@@ -372,11 +372,16 @@ void GuiShell::gfxInternalsTabs() {
         }
         // ------------------------------------------------------ VRAM as a picture
         if (ImGui::BeginTabItem("VRAM image", nullptr, tabFlags(3))) {
-            const int w = std::min(v->imageWidth(), 2048), h = v->imageHeight();
+            const int w = v->imageViewWidth(), h = v->imageViewHeight();
+            const bool layers = v->mode() == V9990Mode::P1;
             ImGui::SetNextItemWidth(120);
             ImGui::SliderInt("Zoom", &gfxVramZoom, 1, 4);
-            ImGui::SameLine();
-            ImGui::TextDisabled("%d x %d image space, %s, as the display colours it", w, h, v9990ModeName(v->mode()));
+            {
+                char l[128];
+                if (layers) std::snprintf(l, sizeof l, "layer A | layer B, 256 x %d each, P1, as the display colours it", h);
+                else std::snprintf(l, sizeof l, "%d x %d image space, %s, as the display colours it", w, h, v9990ModeName(v->mode()));
+                after().textDisabled(l);
+            }
             ImGui::BeginChild("##v99img", ImVec2(0, 0), ImGuiChildFlags_Borders, ImGuiWindowFlags_HorizontalScrollbar);
             const float z = (float)gfxVramZoom;
             const ImVec2 at = ImGui::GetCursorScreenPos();
@@ -387,18 +392,24 @@ void GuiShell::gfxInternalsTabs() {
             const int first = std::clamp((int)(scrollY / z), 0, std::max(0, h - 1));
             const int count = std::clamp((int)(viewH / z) + 2, 1, std::max(1, h - first));
             gfxVramPixels.resize((size_t)w * count);
-            for (int y = 0; y < count; y++)
-                for (int x = 0; x < w; x++) gfxVramPixels[(size_t)y * w + x] = v->imageColour(x, first + y);
+            for (int y = 0; y < count; y++) v->imageViewLine(first + y, &gfxVramPixels[(size_t)y * w]);
             if (uploadTexture) {
                 const unsigned t = uploadTexture(5, gfxVramPixels.data(), w, count);
                 const ImVec2 p0(at.x, at.y + first * z);
                 ImGui::GetWindowDrawList()->AddImage((ImTextureID)(intptr_t)t, p0, ImVec2(p0.x + w * z, p0.y + count * z));
+                if (layers)                                 // the seam between layer A and B
+                    ImGui::GetWindowDrawList()->AddLine(ImVec2(at.x + 256 * z, p0.y), ImVec2(at.x + 256 * z, p0.y + count * z),
+                                                        ImGui::GetColorU32(ImGuiCol_Separator));
             }
             if (ImGui::IsWindowHovered()) {
                 const ImVec2 mp = ImGui::GetMousePos();
-                const int x = (int)((mp.x - at.x) / z), y = (int)((mp.y - at.y) / z);
-                if (x >= 0 && x < w && y >= 0 && y < h)
-                    ImGui::SetTooltip("X %d  Y %d\ndot %d  (VRAM &%05X)", x, y, v->getDot(x, y), v->dotAddress(x, y));
+                const int c = (int)((mp.x - at.x) / z), y = (int)((mp.y - at.y) / z);
+                if (c >= 0 && c < w && y >= 0 && y < h) {
+                    const int x = v->imageViewX(c);
+                    if (layers) ImGui::SetTooltip("layer %c  X %d  Y %d\ndot %d  (VRAM &%05X)", c >= 256 ? 'B' : 'A', x & 255, y,
+                                                  v->getDot(x, y), v->dotAddress(x, y));
+                    else ImGui::SetTooltip("X %d  Y %d\ndot %d  (VRAM &%05X)", x, y, v->getDot(x, y), v->dotAddress(x, y));
+                }
             }
             ImGui::EndChild();
             ImGui::EndTabItem();
@@ -408,9 +419,12 @@ void GuiShell::gfxInternalsTabs() {
             ImGui::SetNextItemWidth(120);
             bool jump = ImGui::InputTextWithHint("##v99goto", "address (hex)", gfxVramGoto, sizeof gfxVramGoto,
                                                  ImGuiInputTextFlags_CharsHexadecimal | ImGuiInputTextFlags_EnterReturnsTrue);
-            ImGui::SameLine();
-            ImGui::TextDisabled("addresses as the CPU gives them to P#0 (%s mapping); write &%05X, read &%05X",
-                                v9990ModeName(v->mode()), v->vramWriteAddress(), v->vramReadAddress());
+            {
+                char l[128];
+                std::snprintf(l, sizeof l, "addresses as the CPU gives them to P#0 (%s mapping); write &%05X, read &%05X",
+                              v9990ModeName(v->mode()), v->vramWriteAddress(), v->vramReadAddress());
+                after().textDisabled(l);
+            }
             ImGui::BeginChild("##v99hex", ImVec2(0, 0), ImGuiChildFlags_Borders);
             const float rowH = ImGui::GetTextLineHeightWithSpacing();
             if (jump && gfxVramGoto[0]) ImGui::SetScrollY((float)((std::strtol(gfxVramGoto, nullptr, 16) & (V9990_VRAM_SIZE - 1)) / 16) * rowH);
