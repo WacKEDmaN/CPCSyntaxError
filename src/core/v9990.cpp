@@ -410,13 +410,21 @@ int V9990::loadVram(int physical) const {
 }
 
 // Powergraph notes (PSET, BMLX, LMMC): X and Y are masked by the image space; a line is
-// 128 bytes in P1 and 256 in P2 (so in P1 layer B is Y 2048 on, not DX9 as 11.2 p.51
-// says: X is masked to 255 first), the bit-map modes' R#6's width at its depth. The
-// logical address then goes to the physical as the CPU's does (P1: the same).
+// 128 bytes in P1 and 256 in P2, the bit-map modes' R#6's width at its depth. The logical
+// address then goes to the physical as the CPU's does (P1: the same).
+// P1's two layers: 11.2 (p.51) "screen A is selected at DX9=0 and screen B at DX9=1", and
+// the notes found Y 2048 on (address bit 18) is layer B too -- either picks layer B. (0.2.4
+// and 0.2.5 took DX9 as masked away with the rest of X: a program drawing layer B the
+// manual's way drew into layer A, its two layers mixed -- a user's report.)
 int V9990::dotLogical(int x, int y) const {
     const V9990Mode m = mode();
     const int bpp = bitsPerDot(), w = imageWidth();
-    const int lineBytes = m == V9990Mode::P1 ? 128 : m == V9990Mode::P2 ? 256 : w * bpp / 8;
+    if (m == V9990Mode::P1) {
+        const int layerB = ((x >> 9) & 1) | ((y >> 11) & 1);
+        y &= std::min(imageHeight(), 2048) - 1;
+        return (layerB << 18 | (y * 128 + (x & 255) * bpp / 8)) & VRAM_MASK;
+    }
+    const int lineBytes = m == V9990Mode::P2 ? 256 : w * bpp / 8;
     x &= w - 1;
     y &= imageHeight() - 1;
     return (y * lineBytes + x * bpp / 8) & VRAM_MASK;
@@ -1109,17 +1117,20 @@ void V9990::movePointer(int opcode) {
     if (opcode & 0x04) pointerY = (pointerY + ((opcode & 0x08) ? -1 : 1)) & (imageHeight() - 1);
 }
 
-// LMMV's colour (Powergraph notes). DIX = 0: FC's low byte, then its high byte, byte by
-// byte from each line's start -- not by the VRAM bank as for the other commands; in
-// P1/P2 only the low byte is read, the high one being what the last bit-map LMMV took.
-// DIX = 1 follows DX in a way not yet pinned down: the bank rule is kept there.
+// LMMV's colour (Powergraph notes). In P1/P2: "low byte of FC is always read for the
+// colour" -- every dot, either layer (only a 16-bit dot takes a high byte: the one the last
+// bit-map LMMV took). (0.2.4/0.2.5 alternated the low byte with that latched one, 0 after a
+// reset: a P1 fill came out in stripes of the colour and of transparent 0.)
+// Bit-map modes, DIX = 0: FC's low byte, then its high byte, byte by byte from each line's
+// start -- not by the VRAM bank as for the other commands. DIX = 1 follows DX in a way not
+// yet pinned down: the bank rule is kept there.
 int V9990::lmmvColour(int column, int x, int y) const {
-    if (registers[44] & ARG_DIX) return fontColourAt(x, y, true);
     const int bpp = bitsPerDot();
     const bool pattern = mode() == V9990Mode::P1 || mode() == V9990Mode::P2;
     const int low = registers[48], high = pattern ? lmmvHighByte : registers[49];
+    if (!pattern && (registers[44] & ARG_DIX)) return fontColourAt(x, y, true);
     if (bpp == 16) return low | high << 8;
-    const int byte = ((column * bpp) / 8) & 1 ? high : low;
+    const int byte = pattern ? low : ((column * bpp) / 8) & 1 ? high : low;
     if (bpp == 8) return byte;
     if (bpp == 4) return (x & 1) ? byte & 15 : byte >> 4;
     return byte >> (6 - 2 * (x & 3)) & 3;
