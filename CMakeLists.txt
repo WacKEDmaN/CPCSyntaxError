@@ -106,6 +106,10 @@ else()
     target_link_libraries(cpcse-sdl INTERFACE PkgConfig::SDL2PC)
   endif()
   target_link_libraries(cpcse-sdl INTERFACE OpenGL::GL Threads::Threads ${CMAKE_DL_LIBS})
+  if(APPLE)
+    # macOS marks OpenGL deprecated (it still works, as a 3.2 Core context: src/gui/main.cpp)
+    target_compile_definitions(cpcse-sdl INTERFACE GL_SILENCE_DEPRECATION)
+  endif()
 endif()
 
 # --------------------------------------------------------------- Dear ImGui

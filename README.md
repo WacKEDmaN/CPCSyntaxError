@@ -2,7 +2,7 @@
 
 # CPCSyntaxError
 
-An Amstrad **CPC 464 / 6128, CPC Plus and GX4000** emulator for Windows and Linux,
+An Amstrad **CPC 464 / 6128, CPC Plus and GX4000** emulator for Windows, Linux and macOS,
 built around a cycle-level model of the machine's video chips.
 
 > **Work in progress.** The CRTC, Gate Array and monitor emulation is the mature part
@@ -109,7 +109,7 @@ built around a cycle-level model of the machine's video chips.
 
 1. Download `CPCSyntaxError-win64.zip` from the
    [Releases](../../releases) page, unzip it anywhere and run `cpcse.exe` -- or build
-   it yourself (below; Windows and Linux).
+   it yourself (below; Windows, Linux and macOS).
 2. The CPC 464 and 6128 firmware ROMs and the CPC Plus / GX4000 system cartridge are
    included, in `roms/` (Amstrad have kindly given their permission for the
    redistribution of their copyrighted material but retain that copyright). The release
@@ -271,6 +271,23 @@ looked for in `sounds/` next to the executable, then in the working directory. O
 Linux the GUI runs CSL scripts with `fork`/`exec`, opens folders with `xdg-open`,
 and downloads ROMs with `curl` (or `wget`). Paths in Windows-authored CSL scripts
 are matched case-insensitively.
+
+### macOS
+
+Requirements: Xcode's command-line tools (Apple Clang), CMake 3.16+ and SDL2, for example
+from Homebrew. Apple silicon and Intel Macs build the same way:
+
+```
+xcode-select --install
+brew install cmake ninja sdl2
+cmake -S . -B build -G Ninja
+cmake --build build
+./build/cpcse
+```
+
+The interface runs on OpenGL 3.2 (Core Profile), which every Mac since 2011 has. As on
+Linux, the `roms` and `sounds` folders are copied beside `build/cpcse`; folders open with
+`open`. The macOS build has been reported working by users but is not tested here.
 
 ## Source layout
 

@@ -32,6 +32,9 @@
 #include <fcntl.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#if defined(__APPLE__)
+#include <mach-o/dyld.h>   // _NSGetExecutablePath
+#endif
 #endif
 
 #include "devserver.h"
@@ -69,9 +72,22 @@ void spawnDetached(const std::vector<std::string>& args) {
 // This program's own path, to run its windowless modes.
 std::string selfExecutable() {
     char buf[4096];
+#if defined(__APPLE__)
+    uint32_t size = sizeof buf;                  // macOS has no /proc
+    if (_NSGetExecutablePath(buf, &size) == 0) return buf;
+#else
     const ssize_t n = readlink("/proc/self/exe", buf, sizeof buf - 1);
     if (n > 0) { buf[n] = 0; return buf; }
+#endif
     return "cpcse";
+}
+// The desktop's own "open this folder / file" program.
+const char* desktopOpener() {
+#if defined(__APPLE__)
+    return "open";
+#else
+    return "xdg-open";
+#endif
 }
 }  // namespace
 #endif
@@ -1008,7 +1024,7 @@ void GuiShell::windowCslScripts() {
 #else
             std::error_code ec;
             std::filesystem::create_directories(cslOut, ec);
-            spawnDetached({ "xdg-open", std::filesystem::absolute(cslOut, ec).string() });
+            spawnDetached({ desktopOpener(), std::filesystem::absolute(cslOut, ec).string() });
 #endif
         }
         if (cslRun) {

@@ -522,8 +522,20 @@ int main(int argc, char** argv) {
         return (float)(std::isfinite(v) ? std::clamp(v, lo, hi) : d);
     };
 
+#if defined(__APPLE__)
+    // macOS gives a modern OpenGL only as a 3.2+ Core Profile, forward-compatible context;
+    // asked for anything else it hands back the legacy 2.1 one, which ImGui's GL3 renderer
+    // cannot start on ("Failed to initialize OpenGL loader!"). Every GL call here is core.
+    const char* glslVersion = "#version 150";
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_FLAGS, SDL_GL_CONTEXT_FORWARD_COMPATIBLE_FLAG);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 2);
+#else
+    const char* glslVersion = "#version 130";
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 0);
+#endif
     SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
     SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 0);
 
@@ -534,6 +546,11 @@ int main(int argc, char** argv) {
     SDL_EventState(SDL_DROPFILE, SDL_ENABLE);
 
     SDL_GLContext gl = SDL_GL_CreateContext(window);
+    if (!gl) {
+        const std::string why = std::string("This computer's graphics driver could not give an OpenGL 3 context: ") + SDL_GetError();
+        SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "CPCSyntaxError", why.c_str(), window);
+        SDL_DestroyWindow(window); SDL_Quit(); return 1;
+    }
     SDL_GL_MakeCurrent(window, gl);
     SDL_GL_SetSwapInterval(1);
 	enableDarkTitleBar(window);
@@ -552,7 +569,13 @@ int main(int argc, char** argv) {
     io.ConfigFlags |= ImGuiConfigFlags_DockingEnable | ImGuiConfigFlags_ViewportsEnable;
     io.ConfigWindowsMoveFromTitleBarOnly = true;   // dragging inside the screen never moves it
     ImGui_ImplSDL2_InitForOpenGL(window, gl);
-    ImGui_ImplOpenGL3_Init("#version 130");
+    if (!ImGui_ImplOpenGL3_Init(glslVersion)) {
+        // A context too old for the renderer: say so, rather than assert in its first frame.
+        const char* version = (const char*)glGetString(GL_VERSION);
+        const std::string why = std::string("The interface needs OpenGL 3; this context is ") + (version ? version : "unknown") + ".";
+        SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "CPCSyntaxError", why.c_str(), window);
+        SDL_GL_DeleteContext(gl); SDL_DestroyWindow(window); SDL_Quit(); return 1;
+    }
 
     EmuHost host;
     loadMachineSounds();

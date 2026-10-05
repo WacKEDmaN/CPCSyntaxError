@@ -78,6 +78,11 @@ void setNonBlocking(Native s) {
 void noDelay(Native s) {
     int on = 1;   // small packets, answered at once
     setsockopt(s, IPPROTO_TCP, TCP_NODELAY, (const char*)&on, sizeof(on));
+#if defined(SO_NOSIGPIPE)
+    // macOS has no MSG_NOSIGNAL: a client gone mid-answer would raise SIGPIPE and end the
+    // program; the socket's own option stops that instead.
+    setsockopt(s, SOL_SOCKET, SO_NOSIGPIPE, (const char*)&on, sizeof(on));
+#endif
 }
 
 // Waits up to `ms` for the socket to be readable (or writable). select() on Windows,
