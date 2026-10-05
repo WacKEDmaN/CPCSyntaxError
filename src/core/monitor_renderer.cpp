@@ -529,58 +529,6 @@ bool CtmMonitor::consumeVerticalFrameEdge() {
     return edge;
 }
 
-MonitorRendererState CtmMonitor::save() const {
-    return { character, pixel, hsyncLimit, hsyncCount, hsyncMatch, lineOffset,
-        vsyncLimit, vsyncCount, vsyncMatch, vsyncPulse, verticalFrameEdge, verticalOffset,
-        verticalPhase, lastVsyncPeriod, verticalHalfLine, lockedLines,
-        csyncLast, pulseWidth, preTipMatch, tipRetriggered,
-        lastPulseWidth, lineSyncAt, tipStartAt, measuredPeriod, sinceLastSync,
-        separator, vsyncSeparated,
-        curN, curErr, pendActive, pendSince, pendN, pendErr, pendStable, pendPhase,
-        curAt, pendAt, pixelClock, lastLineSyncAt, fieldPeriodSum, fieldPeriodCount,
-        curWid, pendWid, widthSlot, widthSlotPend };
-}
 
-void CtmMonitor::restore(const MonitorRendererState& state) {
-    character = state.character;
-    // save() used to skip `pixel` while the struct carried it, so every field from
-    // hsyncLimit on was written one slot early -- a save/restore round trip put the
-    // line period into `pixel`. Both halves name it now.
-    pixel = state.pixel;
-    hsyncLimit = state.hsyncLimit;
-    hsyncCount = state.hsyncCount;
-    hsyncMatch = state.hsyncMatch;
-    lineOffset = state.lineOffset;
-    vsyncLimit = state.vsyncLimit;
-    vsyncCount = state.vsyncCount;
-    vsyncMatch = state.vsyncMatch;
-    vsyncPulse = state.vsyncPulse;
-    verticalFrameEdge = state.verticalFrameEdge;
-    verticalOffset = state.verticalOffset;
-    verticalPhase = state.verticalPhase;
-    lastVsyncPeriod = state.lastVsyncPeriod;
-    verticalHalfLine = state.verticalHalfLine;
-    lockedLines = state.lockedLines;
-    csyncLast = state.csyncLast;
-    pulseWidth = state.pulseWidth;
-    preTipMatch = state.preTipMatch;
-    tipRetriggered = state.tipRetriggered;
-    lastPulseWidth = state.lastPulseWidth;
-    lineSyncAt = state.lineSyncAt;
-    tipStartAt = state.tipStartAt;
-    measuredPeriod = state.measuredPeriod;
-    sinceLastSync = state.sinceLastSync;
-    separator = state.separator;
-    vsyncSeparated = state.vsyncSeparated;
-    curN = state.curN; curErr = state.curErr;
-    pendActive = state.pendActive;
-    pendSince = state.pendSince; pendN = state.pendN; pendErr = state.pendErr;
-    curAt = state.curAt; pendAt = state.pendAt;
-    pixelClock = state.pixelClock; lastLineSyncAt = state.lastLineSyncAt;
-    fieldPeriodSum = state.fieldPeriodSum; fieldPeriodCount = state.fieldPeriodCount;
-    pendStable = state.pendStable; pendPhase = state.pendPhase;
-    curWid = state.curWid; pendWid = state.pendWid;
-    widthSlot = state.widthSlot; widthSlotPend = state.widthSlotPend;
-}
 
 } // namespace cpcse

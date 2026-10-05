@@ -91,9 +91,8 @@ void AssemblerWindow::openFile(const std::string& p) {
 }
 
 void AssemblerWindow::saveFile(const std::string& p) {
-    std::ofstream f(p, std::ios::binary);
-    if (!f) { summary = "Cannot write " + p; return; }
-    f.write(source.data(), (std::streamsize)source.size());
+    std::string why;
+    if (!writeFileSafely(p, source.data(), source.size(), &why)) { summary = "Not saved: " + why; return; }
     path = p;
     modified = false;
     summary = "Saved " + p;
@@ -226,11 +225,6 @@ void AssemblerWindow::coloursPopup() {
     ImGui::EndPopup();
 }
 
-int AssemblerWindow::lineStartOffset(int line) const {
-    int l = 1;
-    for (size_t i = 0; i < source.size() && l < line; i++) if (source[i] == '\n') { l++; if (l == line) return (int)i + 1; }
-    return line <= 1 ? 0 : (int)source.size();
-}
 
 // A message as rasm stored it: `length` bytes (it is not reliably terminated), with
 // terminal colour codes, and sometimes a second line quoting the source. Kept: the

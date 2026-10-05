@@ -82,7 +82,6 @@ public:
     int readAsicRam(int address);
     void updateDmaStatusRam();
     void setDmaStatus(int value);
-    void onHsync(AY38912* ay, int rasterLine = -1, int hsyncWidth = -1);
     void onHsyncStart(AY38912* ay, int rasterLine = -1, int hsyncWidth = -1);
     void onCharacter();
     void checkRasterInterrupt(int rasterLine);
@@ -99,7 +98,6 @@ public:
     int interruptVectorForSources(Z80* cpu = nullptr);
     void triggerAsicInterrupt();
     void acknowledgeInterrupt();
-    void onScanline(int line);
 };
 
 extern const int PLUS_PALETTE[32];

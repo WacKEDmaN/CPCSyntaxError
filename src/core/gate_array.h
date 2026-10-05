@@ -70,10 +70,6 @@ public:
     int outputPen(bool displayEnabled, int decodedPen) const {
         return displayEnabled ? decodedPen : BORDER_PEN;
     }
-    // Pen -> the 5-bit hardware colour this chip holds -> R, G and B. The tube's tint
-    // (colour, green, monochrome) is applied after this, by the monitor.
-    int penHardwareColour(int pen) const;
-    int penRgb(int pen) const;
     static int rgbForHardwareColour(int hardwareColour);
     // ACCC §27 (p.284): the RMR's bit 4 zeroes R52, and "if this request takes place on
     // the last µsecond of the HSYNC (C0=R2+R3-1), then THE RESET TO 0 HAS PRIORITY OVER
@@ -231,13 +227,6 @@ public:
     void onHsync() { onHsync(cpu); }
     void onHsync(Z80* cpu);
 
-    // ---- ACCC §9.1: the pixel pipeline -------------------------------------------
-    // "The GATE ARRAY/ASIC reads the data pointed to by the CRTC from memory in order
-    // to convert and display it as pixels." Implemented in gate_array_pixels.cpp. The
-    // renderer used to do all of this; it is a consumer of RGB and should not know how
-    // a VRAM byte becomes a pen. The 40007/40008-vs-40010 padding difference is taken
-    // from `model` here rather than passed in by whoever is calling.
-    int videoByte(int address) const;
     int penFromRotation(int mode, int byte, int rotation) const;
     void bytePens(int byte, int modeBefore, int modeAfter, int switchPixel, int pens[8]) const;
     std::array<int, 2> mode0Pens(int byte) const;

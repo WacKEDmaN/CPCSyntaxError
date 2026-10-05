@@ -102,8 +102,7 @@ bool writePng(const std::string& path, const uint8_t* pixels, int width, int hei
     std::FILE* f = std::fopen(path.c_str(), "wb");
     if (!f) return false;
     const bool ok = std::fwrite(out.data(), 1, out.size(), f) == out.size();
-    std::fclose(f);
-    return ok;
+    return std::fclose(f) == 0 && ok;   // the last of it is written at the close
 }
 
 } // namespace cpcse

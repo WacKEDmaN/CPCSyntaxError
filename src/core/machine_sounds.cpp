@@ -58,6 +58,7 @@ bool MachineSounds::readWav(const std::string& path, Sample& out) {
             else if (bits == 16) v = (int16_t)le16(p) / 32768.0f;
             else if (bits == 24) v = (float)((int32_t)((p[0] << 8) | (p[1] << 16) | ((uint32_t)p[2] << 24)) >> 8) / 8388608.0f;
             else if (bits == 32) v = (float)(int32_t)le32(p) / 2147483648.0f;
+            if (!std::isfinite(v)) v = 0.0f;   // a float file's NaN or infinity would poison the mix
             sum += v;
         }
         out.data[i] = sum / channels;
@@ -180,7 +181,7 @@ float MachineSounds::next() {
         i += 1;
     }
     clock += 1;
-    return std::clamp(out, -1.0f, 1.0f);
+    return out == out ? std::clamp(out, -1.0f, 1.0f) : 0.0f;   // never a NaN to the (int) the mix makes of it
 }
 
 } // namespace cpcse

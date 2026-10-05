@@ -5,8 +5,6 @@
 
 namespace cpcse {
 
-Bytes matrixPrinterSelfTestBytes();
-
 struct PrinterDot { int x = 0, y = 0; double r = 1.15; double ry = 0; bool hasRy = false; double opacity = 0.82; };
 
 struct BitImageState {
@@ -55,15 +53,18 @@ public:
 
     explicit MatrixPrinter(int width = 1240, int height = 1754);
 
-    int pageNumber() const { return activePageIndex + 1; }
-    int pageCount() const { return (int)pages.size(); }
+    // Pages are numbered from 1 over the whole print; only the last MAX_PAGES are kept (each
+    // is width x height x 4 bytes, and a program's form feeds cost it nothing to send).
+    static constexpr int MAX_PAGES = 8;
+    int pagesDropped = 0;
+    int pageNumber() const { return pagesDropped + activePageIndex + 1; }
+    int pageCount() const { return pagesDropped + (int)pages.size(); }
 
     void reset();
     int verticalPinStep();
     void resetPrintState(bool home = true);
     void updateCharWidth();
     std::vector<uint8_t> createBlankPage();
-    void clearPage(int index, bool keepPosition = false);
     void setPixelOn(std::vector<uint8_t>& page, double x, double y, const std::array<int, 4>& rgba);
     void setPixel(double x, double y, const std::array<int, 4>& rgba);
     void emitSound(const std::string& name);

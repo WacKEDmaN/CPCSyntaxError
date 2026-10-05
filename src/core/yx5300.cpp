@@ -15,8 +15,9 @@ struct Yx5300::Decoder {
     bool open = false;
     std::vector<mp3d_sample_t> buf;
     size_t at = 0, have = 0;
+    size_t produced = 0;            // frames this track has given
     ~Decoder() { close(); }
-    void close() { if (open) mp3dec_ex_close(&mp3); open = false; buf.clear(); at = have = 0; }
+    void close() { if (open) mp3dec_ex_close(&mp3); open = false; buf.clear(); at = have = produced = 0; }
 };
 
 Yx5300::Yx5300() : dec(std::make_unique<Decoder>()) {}
@@ -153,6 +154,7 @@ bool Yx5300::nextSourceFrame(float& l, float& r) {
     l = d.buf[d.at] / 32768.0f;
     r = channels > 1 ? d.buf[d.at + 1] / 32768.0f : l;
     d.at += channels;
+    d.produced += 1;
     return true;
 }
 
@@ -166,7 +168,10 @@ void Yx5300::advanceMicrosecond(double outputRate) {
                 // The track ended: tell the CPC side, and loop or move on as asked.
                 reply(0x3d, 0, file & 0xff);
                 curL = curR = 0.0f;
-                if (loopTrack) play(folder, file);
+                // A file that decodes to nothing is not played again: looped, it would be
+                // listed and opened anew every microsecond.
+                if (dec->produced == 0) { dec->close(); state = 0; }
+                else if (loopTrack) play(folder, file);
                 else if (loopFolder) {
                     auto fs = filesIn(folder);
                     auto it = std::find_if(fs.begin(), fs.end(), [&](const auto& f) { return f.first > file; });

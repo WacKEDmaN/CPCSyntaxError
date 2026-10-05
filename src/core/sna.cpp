@@ -235,7 +235,6 @@ static std::vector<Bytes> buildDebugChunks(GX4000* emulator) {
         if (!rom.empty() && !ids.count(id)) chunks.push_back(buildChunk(id, rom));
     }
     BuildRemuOptions opts;
-    if (emulator->debugSymbols) opts.symbols = emulator->debugSymbols->entries;
     opts.breakpoints = snapshotBreakpointRecords(emulator);
     opts.watchpoints = emulator->watchpoints;
     std::string remuText = buildRemuText(metadata, opts);

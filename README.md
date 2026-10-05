@@ -92,6 +92,9 @@ built around a cycle-level model of the machine's video chips.
   open at first; the rest opens from the menus and docks with its group. Window >
   Interface size makes everything larger (90-200%). Button rows and text wrap to fit a
   narrow window.
+- The file picker switches drives (C:, D: ... on Windows) and goes to a folder typed into
+  it (`D:\games`); the Save dialog browses the same way. Files and folders with any name
+  open -- accented, CJK, emoji (Windows 10 1903 or later).
 
 ## Screenshots
 

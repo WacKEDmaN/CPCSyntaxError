@@ -23,12 +23,6 @@
 
 namespace cpcse {
 
-// ACCC §9.1: the address the CRTC put on the bus, answered by RAM onto this chip's
-// data pins. The GATE ARRAY reads VRAM through the base 64K regardless of the banking
-// it is itself imposing on the Z80 -- the video fetch does not go through readMap.
-int GateArray::videoByte(int address) const {
-    return memory ? memory->readVideo(address) : 0;
-}
 
 // ACCC §9.3.4: the GATE ARRAY decodes a byte through a shift register that is rotated
 // left one bit as each pixel OF THE CURRENT MODE is clocked out — so mode 2 rotates
@@ -145,18 +139,6 @@ int GateArray::rgbForHardwareColour(int hardwareColour) {
     return GA_RGB[hardwareColour & 0x1f];
 }
 
-// The 5-bit colour this chip is holding for a pen. Pen 16 is §9.1's 17th colour, the
-// BORDER.
-int GateArray::penHardwareColour(int pen) const {
-    return gaPalette[pen < 0 ? 0 : pen > 16 ? 16 : pen] & 0x1f;
-}
 
-// What this chip actually puts on R, G and B for a pen. Unlocked, a CPC+ answers from
-// its own 12-bit palette instead -- that is the ASIC extending this chip, not replacing
-// it, so the question is still asked here.
-int GateArray::penRgb(int pen) const {
-    if (asic && !asic->locked) return asic->color(pen);
-    return rgbForHardwareColour(penHardwareColour(pen));
-}
 
 } // namespace cpcse

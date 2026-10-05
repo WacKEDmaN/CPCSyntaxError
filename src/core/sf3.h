@@ -31,7 +31,6 @@ public:
     void move(double dx, double dy);
     void scroll(double delta);
     void button(int index, bool pressed);
-    void releaseButtons();
     int readPort(int port);
     bool writePort(int port, int value);
 };

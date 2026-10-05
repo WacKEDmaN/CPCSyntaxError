@@ -80,7 +80,9 @@ void Symbiface2Rtc::setClockField(int index, int rawValue, bool binaryModeV) {
         case 50: date.fullYear = clampd(value, 0, 99) * 100 + (date.fullYear % 100); break;
         default: return;
     }
-    guestEpochMs = makeLocalMs(date);
+    const long long ms = makeLocalMs(date);
+    if (ms == -1000) return;   // mktime cannot place it (a year before 1970 on Windows): the clock keeps its time
+    guestEpochMs = ms;
     hostAnchorMs = nowMs();
 }
 int Symbiface2Rtc::readPort(int port) {

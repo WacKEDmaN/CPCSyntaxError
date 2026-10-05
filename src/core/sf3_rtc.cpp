@@ -42,7 +42,9 @@ void Symbiface3Rtc::setTime(const std::deque<int>& payload) {
     d.hours = clampd(at(payload, 0), 0, 23);
     d.minutes = clampd(at(payload, 1), 0, 59);
     d.seconds = clampd(at(payload, 2), 0, 59);
-    guestEpochMs = makeLocalMs(d);
+    const long long ms = makeLocalMs(d);
+    if (ms == -1000) return;   // mktime cannot place it: the clock keeps its time
+    guestEpochMs = ms;
     hostAnchorMs = nowMs();
 }
 void Symbiface3Rtc::setDate(const std::deque<int>& payload) {
@@ -50,7 +52,9 @@ void Symbiface3Rtc::setDate(const std::deque<int>& payload) {
     d.date = clampd(at(payload, 0), 1, 31);
     d.month = clampd(at(payload, 1), 1, 12) - 1;
     d.fullYear = 2000 + clampd(at(payload, 2), 0, 99);
-    guestEpochMs = makeLocalMs(d);
+    const long long ms = makeLocalMs(d);
+    if (ms == -1000) return;   // mktime cannot place it: the clock keeps its time
+    guestEpochMs = ms;
     hostAnchorMs = nowMs();
 }
 void Symbiface3Rtc::issueCommand(int cmd) {

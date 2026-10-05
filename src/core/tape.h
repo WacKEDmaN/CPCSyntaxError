@@ -9,9 +9,6 @@ class AY38912;
 
 struct TapeBlock {
     int id = 0, start = 0, length = 0, fileOffset = 0;
-    Bytes cswRle;
-    bool hasCswRle = false;
-    int cswPulseCount = 0;
 };
 
 struct PulseEvent {
@@ -41,21 +38,15 @@ public:
     std::string name, format;
     Bytes data;
     std::vector<TapeBlock> blocks;
-    double outputSampleRate = 0;
-    double samplePhase = 0;
-    std::vector<double> sampleQueue;
-    int sampleReadIndex = 0;
-    double lastOutputSample = 0;
     double pulseCarry = 0;         // the fraction of a cycle the last pulse rounded away
     std::string lastError;
 
     bool motorOn = false;
-    int pulseLedCycles = 0;
     int tapeCounter = 0;
     int tapeCounterCycles = 0;
     int startupDelayCycles = 0;
     bool playing = false;
-    int currentBlock = 0, fastBlockIndex = 0;
+    int currentBlock = 0;
     bool tapeEnded = false;
     std::vector<PulseEvent> pulseQueue;
     int pulseQueueIndex = 0;
@@ -65,9 +56,6 @@ public:
     bool ampHigh = false;
     std::vector<LoopFrame> loopStack;
     std::deque<int> callStack;
-    std::vector<LoopFrame> fastLoopStack;
-    std::deque<int> fastCallStack;
-    bool fastFinished = false;
 
     // THE DECK: where the tape is, and its buttons. The position counts the cycles the tape
     // has actually moved under the head (playing, not paused, the motor on); each block's
@@ -97,21 +85,14 @@ public:
 
     bool isMotorActive();
     bool isActive();
-    bool isPulseActive();
     void reset();
     void eject();
-    void setOutputSampleRate(double sampleRate);
-    double readSample();
     void parseTzx(const Bytes& data);
     void parseTap(const Bytes& data);
     bool load(const Bytes& input, const std::string& fileName = "tape.cdt");
-    bool loadAsync(const Bytes& input, const std::string& fileName = "tape.cdt");
-    void prepareCompressedBlocks();
     void rewind();
     void setMotor(bool on);
-    bool isMotorOn();
     int getPortBBit();
-    int getEarLevel();
     void setTapeNoise(double level);
     void addPulse(double cycles, int level);
     void addLevel(int level);
@@ -135,17 +116,8 @@ public:
     bool processQueueEvent(const PulseEvent& event);
     void advanceCycles(int cycles = 1);
     void jumpToBlock(int index);
-    std::optional<Bytes> getBlockData(int index);
-    std::optional<Bytes> getNextLoadableBlock();
     std::string getBlockDescription(int index);
     bool togglePlay();
-};
-
-// Spectrum transport: no motor relay, one tape tick per Z80 T-state.
-class SpectrumTapeDrive : public CPCTapeDrive {
-public:
-    explicit SpectrumTapeDrive(AY38912* ay = nullptr);
-    void setModel(const std::string& model);
 };
 
 } // namespace cpcse

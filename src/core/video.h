@@ -93,7 +93,6 @@ public:
     CpcVideo(int width, int height, GXMemory* memory, PlusAsic* asic, CRTC6845* crtc, GateArray* gateArray = nullptr);
     void setMonitorMode(const std::string& mode);
     void setMonitorModel(const MonitorModel* model);
-    std::optional<bool> lightgunBrightnessAt(double x, double y);
     std::optional<bool> lightgunBrightnessAtRaster(double x, double y);
     bool lightgunRgbBright(int rgb);
     uint32_t packedColor(int rgb);

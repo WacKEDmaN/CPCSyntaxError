@@ -234,6 +234,7 @@ int M4Storage::writeFile(const std::string& realPath, const Bytes& data) {
     std::ofstream f(host(realPath), std::ios::binary | std::ios::trunc);
     if (!f) return M4_FR_DENIED;
     f.write((const char*)data.data(), (std::streamsize)data.size());
+    f.close();   // a full disc shows here, as the last of it is written
     revision += 1;
     return f ? M4_FR_OK : M4_FR_DISK_ERR;
 }

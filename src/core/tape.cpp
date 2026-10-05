@@ -125,11 +125,9 @@ CPCTapeDrive::CPCTapeDrive(AY38912* ay, bool requireMotor, double tstateFrequenc
 
 bool CPCTapeDrive::isMotorActive() { return requireMotor ? motorOn : true; }
 bool CPCTapeDrive::isActive() { return isMotorActive() && loaded && playing && !paused && !tapeEnded; }
-bool CPCTapeDrive::isPulseActive() { return pulseLedCycles > 0; }
 
 void CPCTapeDrive::reset() {
     motorOn = false;
-    pulseLedCycles = 0;
     tapeCounter = 0;
     tapeCounterCycles = 0;
     startupDelayCycles = 0;
@@ -148,7 +146,6 @@ void CPCTapeDrive::eject() {
     blocks.clear();
     playing = false;
     currentBlock = 0;
-    fastBlockIndex = 0;
     tapeEnded = false;
     pulseQueue.clear();
     pulseQueueIndex = 0;
@@ -157,16 +154,6 @@ void CPCTapeDrive::eject() {
     tapeCounterCycles = 0;
     startupDelayCycles = 0;
     setTapeNoise(0);
-}
-void CPCTapeDrive::setOutputSampleRate(double sampleRate) {
-    outputSampleRate = std::max(0.0, std::isfinite(sampleRate) ? sampleRate : 0.0);
-    samplePhase = 0;
-    sampleQueue.clear();
-    sampleReadIndex = 0;
-}
-double CPCTapeDrive::readSample() {
-    if (sampleReadIndex < (int)sampleQueue.size()) return sampleQueue[sampleReadIndex++];
-    return lastOutputSample;
 }
 
 void CPCTapeDrive::parseTzx(const Bytes& data) {
@@ -262,37 +249,11 @@ bool CPCTapeDrive::load(const Bytes& input, const std::string& fileName) {
     rewind();
     return true;
 }
-bool CPCTapeDrive::loadAsync(const Bytes& input, const std::string& fileName) {
-    load(input, fileName);
-    try {
-        prepareCompressedBlocks();
-    } catch (...) {
-        eject();
-        throw;
-    }
-    return true;
-}
-void CPCTapeDrive::prepareCompressedBlocks() {
-    for (auto& block : blocks) {
-        if (block.id != 0x18) continue;
-        int p = block.start;
-        if (block.length < 14) throw std::runtime_error("Truncated TZX CSW recording block");
-        int bodyLength = get4(data, p);
-        if (bodyLength < 10) throw std::runtime_error("Invalid TZX CSW recording length");
-        int compression = data[p + 9] & 0xff;
-        Bytes encoded(data.begin() + (p + 14), data.begin() + (p + 4 + bodyLength));
-        if (compression == 1) { block.cswRle = encoded; block.hasCswRle = true; }
-        else if (compression == 2) throw std::runtime_error("Z-RLE compressed CSW tape blocks are not supported");
-        else throw std::runtime_error("Unsupported TZX CSW compression type " + std::to_string(compression));
-        block.cswPulseCount = get4(data, p + 10);
-    }
-}
 void CPCTapeDrive::rewind() {
     playedCycles = 0;
     pulseCarry = 0;
     counterZeroCycles = 0;
     currentBlock = 0;
-    fastBlockIndex = 0;
     tapeEnded = false;
     pulseQueue.clear();
     pulseQueueIndex = 0;
@@ -305,9 +266,6 @@ void CPCTapeDrive::rewind() {
     ampHigh = false;
     loopStack.clear();
     callStack.clear();
-    fastLoopStack.clear();
-    fastCallStack.clear();
-    fastFinished = false;
     lastError = "";
 }
 void CPCTapeDrive::setMotor(bool on) {
@@ -319,14 +277,12 @@ void CPCTapeDrive::setMotor(bool on) {
     }
     if (!isActive()) setTapeNoise(0);
 }
-bool CPCTapeDrive::isMotorOn() { return motorOn; }
 // PPI port B bit 7, the cassette read input. It carries the head's signal only while a
 // tape is actually playing under it; with the motor off, no tape, or the tape ended there
 // is no signal and the input reads 0. The real CPC photographed for SHAKER reads PPI.B as
 // #5E/#5F on AI/E and C3/A with nothing in the deck -- bit 7 clear. We reported the level a
 // tape STARTS at (initialSignalLevel) whenever the deck was idle, and printed #DE/#DF.
 int CPCTapeDrive::getPortBBit() { return isActive() ? portBBit : 0x00; }
-int CPCTapeDrive::getEarLevel() { return portBBit == 0x80 ? 1 : 0; }
 void CPCTapeDrive::setTapeNoise(double level) { if (ay) ay->tapeNoise = level; }
 void CPCTapeDrive::addPulse(double cycles, int level) {
     // Whole cycles, with what each rounding leaves carried into the next pulse: 2168 T is
@@ -348,7 +304,13 @@ void CPCTapeDrive::emitSync(double t1, double t2) {
     if (t1 > 0) { ampHigh = !ampHigh; addPulse(tstatesToCycles(t1), ampHigh); }
     if (t2 > 0) { ampHigh = !ampHigh; addPulse(tstatesToCycles(t2), ampHigh); }
 }
+// A block's pulses are queued whole: one may not ask for more than MAX_BLOCK_PULSES (a
+// crafted turbo block's 16 MB of data would be 268 million of them, gigabytes).
+static void requirePulses(long long pulses, const char* what) {
+    if (pulses > MAX_BLOCK_PULSES) throw std::runtime_error(std::string(what) + " is too long");
+}
 void CPCTapeDrive::emitData(int p, int length, double t0, double t1, int lastBits) {
+    requirePulses((long long)std::max(0, length) * 16, "Data block");
     double c0 = tstatesToCycles(t0);
     double c1 = tstatesToCycles(t1);
     int finalBits = lastBits >= 1 && lastBits <= 8 ? lastBits : 8;
@@ -363,6 +325,7 @@ void CPCTapeDrive::emitData(int p, int length, double t0, double t1, int lastBit
     }
 }
 void CPCTapeDrive::emitDirect(int p, int length, double tstatesPerSample, int bitsUsedInLastByte) {
+    requirePulses((long long)std::max(0, length) * 8, "Direct recording");
     double c = tstatesToCycles(tstatesPerSample);
     int finalBits = bitsUsedInLastByte >= 1 && bitsUsedInLastByte <= 8 ? bitsUsedInLastByte : 8;
     for (int i = 0; i < length; i += 1) {
@@ -377,19 +340,18 @@ void CPCTapeDrive::emitDirect(int p, int length, double tstatesPerSample, int bi
 }
 void CPCTapeDrive::emitCsw(TapeBlock& block) {
     int p = block.start;
+    // the 10-byte header after the length, before any field of it is read (the compression
+    // byte at +9 was read unchecked)
+    if (block.length < 14) throw std::runtime_error("Truncated TZX CSW recording block");
+    requireBytes(data, p, 14, "TZX CSW recording block");
     int pause = get2(data, p + 4);
     int sampleRate = get3(data, p + 6);
     int compression = data[p + 9] & 0xff;
     int expectedPulses = get4(data, p + 10);
     if (!sampleRate) throw std::runtime_error("Invalid zero sample rate in TZX CSW block");
-    Bytes rleStorage;
-    const Bytes* rle = block.hasCswRle ? &block.cswRle : nullptr;
-    if (!rle && compression == 1) {
-        if (block.length < 14) throw std::runtime_error("Truncated TZX CSW recording block");
-        rleStorage = Bytes(data.begin() + (p + 14), data.begin() + (p + block.length));
-        rle = &rleStorage;
-    }
-    if (!rle) throw std::runtime_error("Z-RLE CSW block was not prepared; use loadAsync()");
+    if (compression != 1) throw std::runtime_error("Only RLE CSW tape blocks are supported (Z-RLE is not)");
+    const Bytes rleStorage(data.begin() + (p + 14), data.begin() + (p + block.length));
+    const Bytes* rle = &rleStorage;
     int offset = 0;
     int pulseCount = 0;
     while (offset < (int)rle->size() && (!expectedPulses || pulseCount < expectedPulses)) {
@@ -400,6 +362,7 @@ void CPCTapeDrive::emitCsw(TapeBlock& block) {
             offset += 4;
         }
         if (!samples) throw std::runtime_error("Invalid zero-length CSW pulse");
+        if (pulseCount >= MAX_BLOCK_PULSES) throw std::runtime_error("CSW recording is too long");
         ampHigh = !ampHigh;
         addPulse(tstatesToCycles(samples * 3500000.0 / sampleRate), ampHigh);
         pulseCount += 1;
@@ -704,13 +667,11 @@ bool CPCTapeDrive::processQueueEvent(const PulseEvent& event) {
     portBBit = currentPulseLevel ? 0x80 : 0x00;
     if (event.type == PulseEvent::PULSE) {
         pulseCyclesLeft = event.cycles;
-        pulseLedCycles = std::max(pulseLedCycles, 1200);
     }
     return true;
 }
 void CPCTapeDrive::advanceCycles(int cycles) {
     int elapsedCycles = std::max(0, cycles);
-    pulseLedCycles = std::max(0, pulseLedCycles - elapsedCycles);
     if (!isActive()) { setTapeNoise(0); return; }
     if (startupDelayCycles > 0) {
         ensurePulses();
@@ -755,7 +716,6 @@ void CPCTapeDrive::jumpToBlock(int index) {
     if (index < (int)blockStartCycles.size()) playedCycles = blockStartCycles[(size_t)index];
     pulseCarry = 0;
     currentBlock = index;
-    fastBlockIndex = index;
     pulseQueue.clear();
     pulseQueueIndex = 0;
     pulseCyclesLeft = 0;
@@ -764,81 +724,7 @@ void CPCTapeDrive::jumpToBlock(int index) {
     ampHigh = false;
     loopStack.clear();
     callStack.clear();
-    fastLoopStack.clear();
-    fastCallStack.clear();
-    fastFinished = false;
     tapeEnded = false;
-}
-std::optional<Bytes> CPCTapeDrive::getBlockData(int index) {
-    if (index < 0 || index >= (int)blocks.size()) return std::nullopt;
-    TapeBlock& block = blocks[index];
-    int p = block.start;
-    auto sub = [&](int a, int b) { return Bytes(data.begin() + a, data.begin() + b); };
-    switch (block.id) {
-        case 0xfe: return sub(p, p + block.length);
-        case 0x10: { int dataLength = get2(data, p + 2); return sub(p + 4, p + 4 + dataLength); }
-        case 0x11: { int dataLength = get3(data, p + 15); return sub(p + 18, p + 18 + dataLength); }
-        case 0x14: { int dataLength = get3(data, p + 7); return sub(p + 10, p + 10 + dataLength); }
-        case 0x15: { int dataLength = get3(data, p + 5); return sub(p + 8, p + 8 + dataLength); }
-        default: return std::nullopt;
-    }
-}
-std::optional<Bytes> CPCTapeDrive::getNextLoadableBlock() {
-    if (!loaded || fastFinished) return std::nullopt;
-    int controlSteps = 0;
-    while (fastBlockIndex >= 0 && fastBlockIndex < (int)blocks.size()) {
-        int index = fastBlockIndex;
-        TapeBlock& block = blocks[index];
-        int p = block.start;
-        if (block.id == 0xfe || block.id == 0x10 || block.id == 0x11) {
-            fastBlockIndex = index + 1;
-            std::optional<Bytes> bytes = getBlockData(index);
-            currentBlock = fastBlockIndex;
-            pulseQueue.clear();
-            pulseQueueIndex = 0;
-            pulseCyclesLeft = 0;
-            currentPulseLevel = initialSignalLevel ? 1 : 0;
-            portBBit = currentPulseLevel ? 0x80 : 0x00;
-            ampHigh = false;
-            tapeEnded = false;
-            return bytes;
-        }
-        switch (block.id) {
-            case 0x23: fastBlockIndex = index + signed16(get2(data, p)); break;
-            case 0x24: fastLoopStack.push_back({ index + 1, (int)get2(data, p) }); fastBlockIndex = index + 1; break;
-            case 0x25: {
-                if (!fastLoopStack.empty()) {
-                    LoopFrame& loop = fastLoopStack.back();
-                    loop.remaining -= 1;
-                    if (loop.remaining > 0) fastBlockIndex = loop.start;
-                    else { fastLoopStack.pop_back(); fastBlockIndex = index + 1; }
-                } else fastBlockIndex = index + 1;
-                break;
-            }
-            case 0x26: {
-                int callCount = get2(data, p);
-                std::vector<int> destinations;
-                for (int i = 0; i < callCount; i += 1) destinations.push_back(index + signed16(get2(data, p + 2 + i * 2)));
-                std::vector<int> toInsert;
-                for (int i = 1; i < (int)destinations.size(); i++) toInsert.push_back(destinations[i]);
-                toInsert.push_back(index + 1);
-                fastCallStack.insert(fastCallStack.begin(), toInsert.begin(), toInsert.end());
-                fastBlockIndex = !destinations.empty() ? destinations[0] : index + 1;
-                break;
-            }
-            case 0x27: fastBlockIndex = !fastCallStack.empty() ? (fastCallStack.front()) : index + 1; if (!fastCallStack.empty()) fastCallStack.pop_front(); break;
-            case 0x28: fastBlockIndex = getSelectTarget(block, index); break;
-            default: fastBlockIndex = index + 1; break;
-        }
-        controlSteps += 1;
-        if (controlSteps > MAX_CONTROL_BLOCK_STEPS || fastCallStack.size() > MAX_CALL_DEPTH) {
-            lastError = "TZX fast-load control flow did not make progress";
-            fastFinished = true;
-            return std::nullopt;
-        }
-    }
-    fastFinished = true;
-    return std::nullopt;
 }
 std::string CPCTapeDrive::getBlockDescription(int index) {
     if (index < 0 || index >= (int)blocks.size()) return "Invalid Block";
@@ -888,12 +774,17 @@ std::string CPCTapeDrive::getBlockDescription(int index) {
 void CPCTapeDrive::buildTimeline() {
     blockStartCycles.assign(blocks.size(), 0);
     pulseCarry = 0;
-    long long at = 0;
+    long long at = 0, pulses = 0;
     for (size_t i = 0; i < blocks.size(); i++) {
         blockStartCycles[i] = at;
+        // A real tape is a few million pulses; a crafted one of tiny blocks each asking for
+        // 65535 could take minutes to measure. Past this the blocks after are not measured
+        // (they all start where the measuring stopped).
+        if (pulses > 2 * MAX_BLOCK_PULSES) continue;   // 60 million: some eight hours of CPC tape
         pulseQueue.clear();
         try { decodeBlock((int)i); } catch (const std::exception&) {}   // a bad block: no length
         for (const PulseEvent& e : pulseQueue) if (e.type == PulseEvent::PULSE) at += e.cycles;
+        pulses += (long long)pulseQueue.size();
     }
     totalCycles = at;
     pulseQueue.clear();
@@ -906,9 +797,10 @@ void CPCTapeDrive::buildTimeline() {
 
 int CPCTapeDrive::blockAtPosition() const {
     if (!loaded || blockStartCycles.empty()) return -1;
-    size_t b = 0;
-    while (b + 1 < blockStartCycles.size() && blockStartCycles[b + 1] <= playedCycles) b++;
-    return (int)b;
+    // the last block starting at or before the head (the starts never go back): a binary
+    // search, as a tape can have a million blocks and this is asked every frame
+    auto after = std::upper_bound(blockStartCycles.begin() + 1, blockStartCycles.end(), playedCycles);
+    return (int)(after - blockStartCycles.begin()) - 1;
 }
 
 int CPCTapeDrive::counter() const {
@@ -962,20 +854,6 @@ bool CPCTapeDrive::togglePlay() {
     paused = false;
     if (!playing) setTapeNoise(0);
     return playing;
-}
-
-SpectrumTapeDrive::SpectrumTapeDrive(AY38912* ay) : CPCTapeDrive(ay, false, 3500000) {
-    tapeRelayDelay = false;
-    headerPilotPulses = 8063;
-    dataPilotPulses = 3223;
-    initialSignalLevel = 0;
-    stopTapeMode = "spectrum";
-    machineModel = "zx48";
-    rewind();
-}
-void SpectrumTapeDrive::setModel(const std::string& model) {
-    machineModel = model;
-    tstateRatio = model == "zx48" ? 1 : 3546900.0 / 3500000.0;
 }
 
 } // namespace cpcse

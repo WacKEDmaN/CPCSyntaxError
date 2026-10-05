@@ -192,6 +192,7 @@ if(MINGW)
 endif()
 if(WIN32)
   target_link_libraries(cpcse PRIVATE ws2_32)   # the GDB server and command API
+  target_sources(cpcse PRIVATE src/gui/cpcse.rc)   # the manifest: UTF-8 file names (Windows 10 1903+)
   # SDL2.dll must sit next to the executable at runtime.
   add_custom_command(TARGET cpcse POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different ${SDL2_LOCAL}/bin/SDL2.dll $<TARGET_FILE_DIR:cpcse>)
@@ -211,4 +212,5 @@ if(MINGW)
 endif()
 if(WIN32)
   target_link_libraries(cpcse-ctl PRIVATE ws2_32)
+  target_sources(cpcse-ctl PRIVATE src/gui/cpcse.rc)   # UTF-8 arguments: the paths it passes on
 endif()

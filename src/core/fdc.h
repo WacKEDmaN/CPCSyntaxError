@@ -63,9 +63,6 @@ public:
     int read(int port);
     void write(int port, int value);
     FdcDrive drive(int unit = 0);
-    bool isDriveActive(int index = 0);
-    Sector* sectorFor();
-    Sector* sectorFor(const std::vector<int>& params);
     std::vector<Sector*> sectorsForTransfer(bool readTrack = false);
     void beginSectorTransfer(const std::vector<Sector*>& sectors, bool write);
     void result7(int st0 = 0, int st1 = 0, int st2 = 0);

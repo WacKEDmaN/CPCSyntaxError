@@ -31,6 +31,7 @@
 #include <fstream>
 #include <functional>
 #include <map>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -39,6 +40,7 @@
 #include "emuhost.h"
 #include "core/machine_sounds.h"
 #include "gui_shell.h"
+#include "gui_widgets.h"
 #include "../core/monitor_model.h"
 #include "../core/monitor_renderer.h"
 #include "core/emulator.h"
@@ -59,7 +61,6 @@
 #include "core/fdc.h"
 #include "core/dsk.h"
 #include "core/disassembler.h"
-#include "core/z80_assembler.h"
 
 
 using namespace cpcse;
@@ -248,7 +249,7 @@ int main(int argc, char** argv) {
             if (!m4Folder.empty()) { host.m4Enabled = true; host.m4Folder = m4Folder; }
             if (sf2) host.symbifaceModule = "sf2";
             int mi = 0; for (int i = 0; i < (int)host.models.size(); i++) if (host.models[i].id == modelId) mi = i;
-            host.bootModel(mi, wantRam, wantCrtc);
+            if (!host.bootModel(mi, wantRam, wantCrtc)) { std::printf("[shot] %s\n", host.status.c_str()); return 2; }
             if (!snaPath.empty()) host.loadSnapshot(snaPath);
             if (wantCrtc >= 0 && host.emu && host.emu->crtc) host.emu->crtc->setType(wantCrtc);
             host.setBeamRenderer(beam);
@@ -266,7 +267,6 @@ int main(int argc, char** argv) {
                     if (!wavPath.empty()) wav.insert(wav.end(), host.audioOut.begin(), host.audioOut.end());
                 }
             };
-            auto tap = [&](const std::string& code) { if (kb) { kb->setKey(code, true); run(4); kb->setKey(code, false); run(4); } };
             if (!cartPath.empty()) { host.loadCartridgeFile(cartPath); if (wantCrtc >= 0 && host.emu && host.emu->crtc) host.emu->crtc->setType(wantCrtc); run(150); }
             if (!diskPath.empty()) { host.loadDiskFile(diskPath, 0); run(150); }  // let BASIC settle
             if (!tapePath.empty() && host.loadTapeFile(tapePath)) host.tapePlay();   // PLAY down: it moves when the firmware starts the motor
@@ -275,17 +275,9 @@ int main(int argc, char** argv) {
             if (!typeStr.empty() && diskPath.empty() && cartPath.empty()) run(150);
             // Type a BASIC line on the emulated keyboard (cpc_typing.h) -- "OUT &BC00,4:OUT
             // &BD00,36" -- so a register experiment can be driven from the command line.
-            auto shiftTap = [&](const std::string& code) {
-                if (!kb) return;
-                kb->setKey("ShiftLeft", true); kb->setKey(code, true); run(4);
-                kb->setKey(code, false); kb->setKey("ShiftLeft", false); run(4);
-            };
             auto typeText = [&](const std::string& text) {
-                for (char c : text) {
-                    std::string code; bool shift = false;
-                    if (!cpcKeyForChar(c, code, shift)) continue;
-                    if (shift) shiftTap(code); else tap(code);
-                }
+                for (char c : text)
+                    if (kb && cpcTypeKey(*kb, c, true)) { run(4); cpcTypeKey(*kb, c, false); run(4); }
             };
             typeText(typeStr);                              // type the boot command
             int last = 0;
@@ -522,7 +514,13 @@ int main(int argc, char** argv) {
     auto getf = [&](const char* k, double d) { auto it = ini.find(k); return it != ini.end() ? std::atof(it->second.c_str()) : d; };
     auto gets = [&](const char* k, const char* d) { auto it = ini.find(k); return it != ini.end() ? it->second : std::string(d); };
 
-    int winW = geti("winw", 1440), winH = geti("winh", 900);
+    // A hand-edited or damaged cpcse.ini must not stop the program starting: sizes held to
+    // what a window can be, levels to their range ("nan" is a number to atof).
+    int winW = std::clamp(geti("winw", 1440), 320, 16384), winH = std::clamp(geti("winh", 900), 240, 16384);
+    auto level = [&](const char* k, double d, double lo, double hi) {
+        const double v = getf(k, d);
+        return (float)(std::isfinite(v) ? std::clamp(v, lo, hi) : d);
+    };
 
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 0);
@@ -571,23 +569,23 @@ int main(int argc, char** argv) {
     host.setMonitorMode(gets("monitor", ""));
     host.setMonitorSet(gets("monitorset", ""));
     host.audioEnabled   = geti("audio", 1) != 0;
-    host.masterVolume   = (float)getf("volume", 0.6);
+    host.masterVolume   = level("volume", 0.6, 0.0, 1.0);
     host.driveSounds    = geti("drive_sounds", 1) != 0;
     host.keySounds      = geti("key_sounds", 0) != 0;
-    host.mechanicsVolume = (float)getf("noises_volume", 0.5);
+    host.mechanicsVolume = level("noises_volume", 0.5, 0.0, 1.0);
     host.dacType        = gets("dac", "none");
     host.keyboardRegion = gets("region", "uk");
     host.joystickEnabled = geti("joystick", 1) != 0;
-    host.speed          = (float)getf("speed", 1.0);
+    host.speed          = level("speed", 1.0, 0.25, 4.0);
     host.integerScale   = geti("integerscale", 0) != 0;
     host.maintainAspect = geti("aspect", 1) != 0;
     host.crtEffect      = geti("crt", 0) != 0;
-    host.crtScanline    = (float)getf("crtscanline", 0.5);
-    host.crtBloom       = (float)getf("crtbloom", 0.2);
+    host.crtScanline    = level("crtscanline", 0.5, 0.0, 1.0);
+    host.crtBloom       = level("crtbloom", 0.2, 0.0, 1.0);
     host.m4Folder       = gets("m4folder", "");
     host.m4Enabled      = geti("m4", 0) != 0;             // applied by applySettings during boot
     host.symbifaceModule = gets("symbiface", "none");
-    host.mouseSensitivity = (float)getf("mousesens", 1.0);
+    host.mouseSensitivity = level("mousesens", 1.0, 0.25, 4.0);
     host.lightgunType   = gets("lightgun", "none");       // these four are applied by applySettings
     host.v9990Enabled   = geti("v9990", 0) != 0;
     host.opl4Enabled    = geti("opl4", 0) != 0;
@@ -616,7 +614,8 @@ int main(int argc, char** argv) {
         if (!savedModel.empty()) pick = find(savedModel);
         if (pick < 0) { savedRam = -1; savedCrtc = -1; pick = find("cpc6128"); }
         for (int i = 0; pick < 0 && i < (int)host.models.size(); i++) if (host.models[i].available) pick = i;
-        if (pick >= 0) host.bootModel(pick, savedRam, savedCrtc);
+        // a RAM size or CRTC from the settings that cannot be fitted: the model's own instead
+        if (pick >= 0 && !host.bootModel(pick, savedRam, savedCrtc)) host.bootModel(pick);
     }
 
     // External development (devserver.h): the servers the settings ask for, then the
@@ -828,8 +827,10 @@ int main(int argc, char** argv) {
         int cw = winW, ch = winH;
         SDL_GetWindowSize(window, &cw, &ch);
         std::string defModel = host.currentModel >= 0 ? host.models[host.currentModel].id : savedModel;
-        std::ofstream f(iniFilePath());
-        if (f) {
+        // Gathered first and written whole (writeFileSafely): a full disc must not leave
+        // half a settings file behind.
+        std::ostringstream f;
+        {
             f << "# CPCSyntaxError settings\n";
             f << "romdir=" << host.romDir << "\n";
             f << "model=" << defModel << "\n";
@@ -872,6 +873,8 @@ int main(int argc, char** argv) {
             f << "winw=" << cw << "\n";
             f << "winh=" << ch << "\n";
         }
+        const std::string text = f.str();
+        writeFileSafely(iniFilePath(), text.data(), text.size());
     }
 
     if (audioDev) SDL_CloseAudioDevice(audioDev);

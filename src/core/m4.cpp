@@ -105,7 +105,6 @@ void M4Board::resp32(uint32_t v) { for (int i = 0; i < 4; i++) resp8((int)(v >> 
 void M4Board::respStr(const std::string& s) { for (char c : s) resp8((unsigned char)c); resp8(0); }
 void M4Board::respBytes(const uint8_t* p, size_t n) { for (size_t i = 0; i < n; i++) resp8(p[i]); }
 
-std::string M4Board::cardPath(const std::string& name) const { return storage ? storage->absolute(name) : "/"; }
 
 int M4Board::commitFd(int fd) {
     Fd& f = fds[fd];

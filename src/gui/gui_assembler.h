@@ -85,7 +85,6 @@ private:
 
     int gotoLine = -1;                          // move the editor's cursor here next frame
     static int editorCallback(ImGuiInputTextCallbackData* data);
-    int lineStartOffset(int line) const;
     std::string displayName() const;
 };
 

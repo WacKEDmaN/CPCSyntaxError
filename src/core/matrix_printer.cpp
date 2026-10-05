@@ -37,80 +37,6 @@ static std::string escapeXml(const std::string& value) {
     return out;
 }
 
-Bytes matrixPrinterSelfTestBytes() {
-    Bytes out;
-    auto push = [&](std::initializer_list<int> values) { for (int v : values) out.push_back((uint8_t)(v & 0xff)); };
-    auto text = [&](const std::string& value) { for (char ch : value) out.push_back((uint8_t)(ch & 0xff)); };
-    auto line = [&](const std::string& value = "") { text(value); push({ 13, 10 }); };
-    auto escc = [&](char c) { out.push_back(0x1b); out.push_back((uint8_t)c); };
-    auto resetModes = [&]() {
-        escc('F'); escc('H'); escc('5'); escc('-'); push({ 0 }); escc('W'); push({ 0 }); push({ 0x12 }); escc('P'); escc('x'); push({ 0 }); escc('T');
-    };
-    auto separator = [&]() { line(std::string(76, '-')); };
-    std::string charset; for (int i = 0; i < 95; i++) charset += (char)(32 + i);
-    struct ModeOpt { bool condensed = false, bold = false, italic = false, nlq = false, elite = false, halfHeight = false; };
-    auto applyMode = [&](const ModeOpt& o) {
-        if (o.elite) escc('M');
-        if (o.condensed) push({ 0x0f });
-        if (o.nlq) { escc('x'); push({ 1 }); }
-        if (o.bold) escc('E');
-        if (o.italic) escc('4');
-        if (o.halfHeight) { escc('S'); push({ 0 }); }
-    };
-    auto modeLabel = [&](const std::string& label) { resetModes(); line("MODE: " + label); };
-    auto charsetBlock = [&](const std::string& label, const ModeOpt& o) {
-        modeLabel(label);
-        applyMode(o);
-        bool wide = o.condensed || o.elite;
-        if (wide) { line(charset); line(charset); }
-        else { line(charset.substr(0, 66)); line(charset.substr(66)); }
-        resetModes();
-        separator();
-        line();
-    };
-    auto bitData = [&](int length, int seed) {
-        std::vector<int> d;
-        for (int i = 0; i < length; i++) { int p = (i + seed) & 15; d.push_back(p < 8 ? (0x80 >> p) : (0x01 << (p - 8))); }
-        return d;
-    };
-    auto bitImage = [&](char command, const std::vector<int>& data) { escc(command); push({ (int)data.size() & 0xff, ((int)data.size() >> 8) & 0xff }); for (int v : data) out.push_back((uint8_t)(v & 0xff)); push({ 13, 10 }); };
-    auto starImage = [&](int mode, const std::vector<int>& data) { escc('*'); push({ mode, (int)data.size() & 0xff, ((int)data.size() >> 8) & 0xff }); for (int v : data) out.push_back((uint8_t)(v & 0xff)); push({ 13, 10 }); };
-
-    escc('@');
-    line("CPCSyntaxError Matrix Printer");
-    line("SelfTest page");
-    line();
-    separator();
-    line();
-
-    charsetBlock("CONDENSED DRAFT / SI", { true, false, false, false, false, false });
-    charsetBlock("PICA NORMAL / 10 CPI", {});
-    charsetBlock("BOLD / EMPHASIZED / ESC E", { false, true, false, false, false, false });
-    charsetBlock("ITALIC / ESC 4", { false, false, true, false, false, false });
-    charsetBlock("BOLD + ITALIC + CONDENSED", { true, true, true, false, false, false });
-    charsetBlock("NLQ QUALITY / ESC x 1", { false, false, false, true, false, false });
-    charsetBlock("CONDENSED + NLQ QUALITY", { true, false, false, true, false, false });
-
-    modeLabel("CONDENSED + HALF HEIGHT / MINI PRINT");
-    applyMode({ true, false, false, false, false, true });
-    line("Condensed + half height sample 0123456789 ABCDEFGHIJKLMNOPQRSTUVWXYZ abcdefghijklmnopqrstuvwxyz");
-    resetModes();
-    separator();
-    line();
-
-    modeLabel("GRAPHICS / ESC-P BIT IMAGE");
-    text("ESC K 60 DPI  "); bitImage('K', bitData(44, 0));
-    text("ESC L 120 DPI "); bitImage('L', bitData(56, 2));
-    text("ESC Y HIGH    "); bitImage('Y', bitData(56, 4));
-    text("ESC Z 240 DPI "); bitImage('Z', bitData(72, 6));
-    text("ESC * MODE 0 "); starImage(0, bitData(44, 8));
-    text("ESC * MODE 1 "); starImage(1, bitData(56, 10));
-    text("ESC * MODE 3 "); starImage(3, bitData(72, 12));
-    separator();
-    line("END OF SELF TEST");
-    resetModes();
-    return out;
-}
 
 MatrixPrinter::MatrixPrinter(int width, int height) : width(width), height(height) {
     dpiX = width / A4_WIDTH_IN;
@@ -128,6 +54,7 @@ void MatrixPrinter::reset() {
     pages.assign(1, createBlankPage());
     dotPages.assign(1, {});
     activePageIndex = 0;
+    pagesDropped = 0;
     pendingNewPageSound = false;
     resetPrintState(true);
 }
@@ -164,12 +91,6 @@ std::vector<uint8_t> MatrixPrinter::createBlankPage() {
     }
     return page;
 }
-void MatrixPrinter::clearPage(int index, bool keepPosition) {
-    if (index < 0 || index >= (int)pages.size()) return;
-    pages[index] = createBlankPage();
-    dotPages[index] = {};
-    if (!keepPosition && index == activePageIndex) { x = leftMargin; y = topMargin; }
-}
 void MatrixPrinter::setPixelOn(std::vector<uint8_t>& page, double xf, double yf, const std::array<int, 4>& rgba) {
     int xi = jsRound(xf), yi = jsRound(yf);
     if (xi < 0 || yi < 0 || xi >= width || yi >= height) return;
@@ -195,7 +116,10 @@ void MatrixPrinter::dot(double xf, double yf, DotOptions options) {
             setPixel(xf + 1, yf + sy, SOFT_DOT);
         }
     }
-    if (options.record) {
+    // A dot off the paper is not kept, nor more than a page could hold: a hardcopy's head
+    // never wraps, and a program streaming its graphics would grow the list without end.
+    const bool onPaper = xf > -2 && yf > -2 && xf < width + 1 && yf < height + 1;
+    if (options.record && onPaper && dotPages[activePageIndex].size() < (size_t)width * height / 4) {
         PrinterDot d;
         if (stretch > 2) { d.x = jsRound(xf); d.y = jsRound(yf + (stretch - 1) / 2.0); d.r = 1.15; d.ry = std::max(1.15, stretch / 2.0); d.hasRy = true; d.opacity = 0.82; }
         else { d.x = jsRound(xf); d.y = jsRound(yf); d.r = 1.15; d.opacity = 0.82; }
@@ -220,6 +144,12 @@ void MatrixPrinter::lineFeed(double amount) {
 void MatrixPrinter::reverseLineFeed() { reverseLineFeed(lineSpacing); }
 void MatrixPrinter::reverseLineFeed(double amount) { y = std::max((double)topMargin, y - std::max(1.0, amount)); }
 void MatrixPrinter::formFeed() {
+    if ((int)pages.size() >= MAX_PAGES) {           // the oldest page goes
+        pages.erase(pages.begin());
+        dotPages.erase(dotPages.begin());
+        pagesDropped += 1;
+        activePageIndex -= 1;
+    }
     activePageIndex += 1;
     pages.push_back(createBlankPage());
     dotPages.push_back({});
@@ -402,8 +332,8 @@ void MatrixPrinter::printChar(int code) {
     x += cellWidth;
     if (x > rightMargin + 0.001) { carriageReturn(); lineFeed(); }
 }
-std::vector<uint8_t>& MatrixPrinter::pageData(int index) {
-    int idx = std::max(0, std::min((int)pages.size() - 1, index));
+std::vector<uint8_t>& MatrixPrinter::pageData(int index) {   // index: pageNumber() - 1
+    int idx = std::max(0, std::min((int)pages.size() - 1, index - pagesDropped));
     return pages[idx];
 }
 std::string MatrixPrinter::toSvg(int index) {

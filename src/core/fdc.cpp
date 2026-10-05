@@ -159,18 +159,6 @@ FdcDrive UPD765A::drive(int unit) {
         track = disk0->trackData[trackNum][head];
     return { head, valid, track, disk0, trackNum, driveIndex };
 }
-bool UPD765A::isDriveActive(int index) {
-    return motor && activeDriveIndex == (index & 3);
-}
-Sector* UPD765A::sectorFor() { return sectorFor(params); }
-Sector* UPD765A::sectorFor(const std::vector<int>& p) {
-    FdcDrive d = drive(p.empty() ? 0 : p[0]);
-    if (!d.valid || !d.track) return nullptr;
-    auto get = [&](int i) { return i < (int)p.size() ? p[i] : 0; };
-    for (auto& sector : d.track->sectors) if (sector.c == get(1) && sector.r == get(3) && sector.n == (get(4) & 7)) return &sector;
-    for (auto& sector : d.track->sectors) if (sector.c == get(1) && sector.r == get(3)) return &sector;
-    return nullptr;
-}
 std::vector<Sector*> UPD765A::sectorsForTransfer(bool readTrack) {
     FdcDrive d = drive(paramOr(0, 0));
     std::vector<Sector*> out;

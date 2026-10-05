@@ -211,7 +211,12 @@ private:
                 case 'f': out += '\f'; break;
                 case 'u': {
                     if (i + 4 > s.size()) fail("short \\u escape");
-                    unsigned cp = (unsigned)std::stoul(s.substr(i, 4), nullptr, 16);
+                    unsigned cp = 0;
+                    for (int k = 0; k < 4; k++) {   // exactly four hex digits ("-12f" and "12zz" are not)
+                        const char h = s[i + (size_t)k];
+                        if (!std::isxdigit((unsigned char)h)) fail("bad \\u escape");
+                        cp = cp << 4 | (unsigned)(h <= '9' ? h - '0' : (h | 0x20) - 'a' + 10);
+                    }
                     i += 4;
                     if (cp < 0x80) out += (char)cp;   // UTF-8 for the rest
                     else if (cp < 0x800) { out += (char)(0xc0 | cp >> 6); out += (char)(0x80 | (cp & 0x3f)); }

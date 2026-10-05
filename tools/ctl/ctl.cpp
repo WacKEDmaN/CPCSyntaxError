@@ -125,6 +125,7 @@ int main(int argc, char** argv) {
         else words.push_back(a);
     }
     if (words.empty()) { usage(); return 2; }
+    if (o.port < 1 || o.port > 65535) { std::fprintf(stderr, "cpcse-ctl: --port takes 1-65535\n"); return 2; }
 
     std::string err;
     net::Socket s = net::connectLocal(o.port, err);
@@ -141,7 +142,9 @@ int main(int argc, char** argv) {
             std::string req;
             std::vector<std::string> w = line[a] == '{' ? std::vector<std::string>{ line.substr(a) } : devSplitWords(line);
             // `type` takes the rest of the line as it stands, as the emulator's own text form does.
-            if (line[a] != '{' && !w.empty() && (w[0] == "type" || w[0] == "TYPE")) {
+            std::string first = w.empty() ? "" : w[0];
+            for (char& ch : first) ch = (char)std::tolower((unsigned char)ch);
+            if (line[a] != '{' && first == "type") {
                 const std::string raw = line.size() > a + 5 ? line.substr(a + 5) : "";
                 std::string text;
                 for (size_t k = 0; k < raw.size(); k++) {

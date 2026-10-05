@@ -12,7 +12,6 @@
 #include "ppi.h"
 #include "gamepad.h"
 #include "fdc.h"
-#include "cpcdos.h"
 #include "m4.h"
 #include "v9990.h"
 #include "opl4.h"
@@ -37,7 +36,6 @@ GX4000::GX4000() {
     memory->setTimingProvider([this](int offset, bool, int) { advanceHardwareToInstructionOffset(offset); });
     asic = new PlusAsic(memory);
     gateArray = new GateArray(memory, asic, true);
-    cpcDos = new CpcDos(this);
     m4 = new M4Board(this);
     v9990 = new V9990();
     opl4 = new Opl4Card();
@@ -273,7 +271,6 @@ GX4000::GX4000() {
     };
     ports.im0Address = [](int) { return 0x0038; };
     ports.acknowledge = [this]() { acknowledgeInterrupt(); };
-    ports.edff = [this](Z80& c) { return cpcDos ? cpcDos->handleEdff(&c) : false; };
     // ACCC §8 DISPLAY, Z80A & GATE ARRAY (p.44-45): a Z80A write into video RAM is
     // seen by the GATE ARRAY from the microsecond the write actually lands in, not
     // from the start of the instruction. §8.1's LD (HL),reg8 spanning C0vs 00-01 shows
@@ -320,7 +317,7 @@ GX4000::GX4000() {
 GX4000::~GX4000() {
     delete cpu; delete fdc; delete gamepad; delete ppi; delete tape; delete dac; delete ay; delete keyboard;
     delete crtc; delete monitorRenderer; delete sf3; delete sf2Rtc; delete symbifaceMouse; delete v9990; delete opl4; delete playcity; delete speech;
-    delete m4; delete cpcDos; delete gateArray; delete asic; delete memory;
+    delete m4; delete gateArray; delete asic; delete memory;
 }
 
 void GX4000::applyGunstickProbeBrightness(bool bright) {
@@ -1225,7 +1222,7 @@ void GX4000::reset() {
     memory->reset(); asic->reset(); gateArray->reset(); rasterCapture.clear(); rasterFrame.clear(); previousRasterFrame.clear();
     spritePatternSnapshot.clear(); spritePatternRevision = -1; crtc->reset();
     videoFrameRegisters = crtc->registers; videoCaptureRegisters = crtc->registers;
-    keyboard->reset(); ay->reset(); ppi->reset(); fdc->reset(); dac->reset(); tape->reset(); cpcDos->reset(); m4->reset(); v9990->reset(); opl4->reset(); playcity->reset(); speech->reset(); symbifaceMouse->reset(); sf2Rtc->reset(); sf3->reset(); cpu->reset();
+    keyboard->reset(); ay->reset(); ppi->reset(); fdc->reset(); dac->reset(); tape->reset(); m4->reset(); v9990->reset(); opl4->reset(); playcity->reset(); speech->reset(); symbifaceMouse->reset(); sf2Rtc->reset(); sf3->reset(); cpu->reset();
     cpu->sp = 0xbfff;
 }
 void GX4000::acknowledgeInterrupt() {

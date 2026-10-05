@@ -20,12 +20,7 @@ static Bytes readHost(const std::string& p, bool& ok) {
     ok = (bool)f;
     return ok ? Bytes((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>()) : Bytes{};
 }
-static bool writeHost(const std::string& p, const Bytes& data) {
-    std::ofstream f(p, std::ios::binary);
-    if (!f) return false;
-    f.write(reinterpret_cast<const char*>(data.data()), (std::streamsize)data.size());
-    return (bool)f;
-}
+static bool writeHost(const std::string& p, const Bytes& data) { return writeFileSafely(p, data.data(), data.size()); }
 static std::string interleaveText(const std::vector<int>& v) {
     std::string s;
     for (size_t i = 0; i < v.size(); i++) s += (i ? "," : "") + std::to_string(v[i]);

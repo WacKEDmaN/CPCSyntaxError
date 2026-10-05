@@ -9,7 +9,7 @@
 
 namespace cpcse {
 
-class GXMemory; class PlusAsic; class GateArray; class CpcDos; class M4Board; class V9990; class Opl4Card;
+class GXMemory; class PlusAsic; class GateArray; class M4Board; class V9990; class Opl4Card;
 class PlayCity;
 class SpeechSynth;
 class SymbifaceMouse; class Symbiface2Rtc; class Symbiface3; class CtmMonitor;
@@ -23,7 +23,6 @@ public:
     GXMemory* memory = nullptr;
     PlusAsic* asic = nullptr;
     GateArray* gateArray = nullptr;
-    CpcDos* cpcDos = nullptr;
     M4Board* m4 = nullptr;
     V9990* v9990 = nullptr;
     Opl4Card* opl4 = nullptr;          // an OPL4 card on the AMSDAP (&FFC4-7, &FF7E-F)
@@ -115,7 +114,6 @@ public:
     std::function<void()> onBreakpoint;
     // snapshot/debugger metadata sources (populated by the debugger, if present)
     std::unordered_map<int, std::string> breakpointSources;
-    DebugSymbolTable* debugSymbols = nullptr;
     std::vector<RemuWatchpoint> watchpoints;
 
     // lightgun samplers wired by the renderer (optional)

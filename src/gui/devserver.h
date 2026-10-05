@@ -76,9 +76,6 @@ public:
     int apiPort() const;
     std::string apiError;
 
-    // Loading. load() does it now; loadWhenReady() once the firmware has started (for
-    // --load on the command line, which arrives before the machine has run a frame).
-    bool load(const LoadRequest& request, std::string& error);
     void loadWhenReady(const LoadRequest& request);
     // Reloads the request's file whenever it changes on disc (an empty path stops).
     void watch(const LoadRequest& request);
@@ -89,10 +86,6 @@ public:
     // "&4000", "0x4000", "16384" or a label, as the debugger reads them; -1 if none.
     int address(const std::string& text) const;
 
-    // The keyboard, a key at a time as the firmware would see a person type.
-    void typeText(const std::string& text);
-    void tapKey(const std::string& code, bool shift = false);
-    bool typing() const;
 
     // The last thing that happened ("Reloaded game.bin", "DeZog connected"), for the UI.
     std::string lastEvent;

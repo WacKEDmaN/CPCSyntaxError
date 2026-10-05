@@ -56,7 +56,6 @@ public:
     // Called once per UI frame: hands the enabled breakpoints and watchpoints to the core.
     void attach();
 
-    bool hasBreakpoint(int address) const;
     void toggleBreakpoint(int address);
     void addBreakpoint(int address, const std::string& condition = "", bool fromAssembler = false);
     void setCondition(GuiBreakpoint& bp, const std::string& condition);
@@ -64,9 +63,6 @@ public:
     void clearAssemblerBreakpoints();
     void breakpointsChanged() { pcSetDirty = true; }   // after editing `breakpoints` directly
 
-    // Execution control. All of them leave the machine paused or running through the
-    // host's one `paused` flag.
-    bool running() const;
     void run();                            // continue (skips a breakpoint at the current PC)
     void pause();
     void stepInto();

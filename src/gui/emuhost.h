@@ -184,7 +184,6 @@ public:
     CPCTapeDrive* tapeDeck() const;           // null with no tape in
     bool tapePlaying() const;                 // PLAY down and not paused
     bool tapePaused() const;
-    void tapePlayToggle();
     void tapePlay();
     void tapePause();                         // toggles PAUSE
     void tapeStop();
@@ -297,7 +296,6 @@ public:
     void mouseScroll(float delta);
 
     bool saveScreenshotBmp(const std::string& path);
-    int  readMem(int addr) const;            // for the memory viewer
     bool loadByExtension(const std::string& path);   // drag-and-drop dispatch
 
     static Bytes readFile(const std::string& path, bool& ok);

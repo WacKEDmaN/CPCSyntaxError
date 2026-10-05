@@ -191,50 +191,6 @@ inline int monitorPhaseTaper(int pull, int distance16, bool early = false) {
 }
 inline constexpr int MONITOR_PHASE_NO_TIP = 1 << 24;
 
-// The plain state object returned by save()/consumed by restore().
-struct MonitorRendererState {
-    int character = 0;
-    int pixel = 0;
-    int hsyncLimit = MONITOR_HSYNC_MID;
-    int hsyncCount = 0;
-    int hsyncMatch = 0;
-    int lineOffset = 0;
-    int vsyncLimit = MONITOR_VSYNC_MID;
-    int vsyncCount = 0;
-    int vsyncMatch = 0;
-    bool vsyncPulse = false;
-    bool verticalFrameEdge = false;
-    int verticalOffset = 0;
-    int verticalPhase = 0;
-    int lastVsyncPeriod = 0;
-    int verticalHalfLine = 0;
-    int lockedLines = MONITOR_VSYNC_MID / 2;
-    bool csyncLast = false;
-    int pulseWidth = 0;
-    int preTipMatch = 0;
-    bool tipRetriggered = false;
-    int lastPulseWidth = 4;
-    long long lineSyncAt = -1;
-    long long tipStartAt = 0;
-    int measuredPeriod = MONITOR_HSYNC_MID;
-    int sinceLastSync = 0;
-    int separator = 0;
-    bool vsyncSeparated = false;
-    int curN = 0;
-    std::array<int, MONITOR_PHASE_TIPS> curErr{};
-    bool pendActive = false;
-    int pendSince = 0, pendN = 0;
-    std::array<int, MONITOR_PHASE_TIPS> pendErr{};
-    int pendStable = 0, pendPhase = 0;
-    std::array<long long, MONITOR_PHASE_TIPS> curAt{}, pendAt{};
-    long long pixelClock = 0, lastLineSyncAt = -1;
-    long long fieldPeriodSum = 0;
-    int fieldPeriodCount = 0;
-    std::array<int, MONITOR_PHASE_TIPS> curWid{}, pendWid{};
-    int widthSlot = -1;
-    bool widthSlotPend = false;
-};
-
 class CtmMonitor {
 public:
     // WHICH SET THIS IS (monitor_model.h). A monitor model is not a rendering option: ACCC
@@ -399,8 +355,6 @@ public:
     // that falls part-way through one -- and §14.4 says every edge below R3l=6 does.
     bool clockPixel(bool csyncActive);
     bool consumeVerticalFrameEdge();
-    MonitorRendererState save() const;
-    void restore(const MonitorRendererState& state);
 
 private:
     static void addTip(int err, long long when, std::array<int, MONITOR_PHASE_TIPS>& at,

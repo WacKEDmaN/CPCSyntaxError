@@ -23,14 +23,12 @@ public:
     SymbifaceMouse();
     void setEnabled(bool enabled = false);
     void setSensitivity(double value = 1);
-    void setProtocol(const std::string& protocol = "sf2");
     void reset();
     bool handlesPort(int port);
     bool handlesWritePort(int port) { (void)port; return false; }
     void move(double dx, double dy);
     void scroll(double delta);
     void button(int index, bool pressed);
-    void releaseButtons();
     void beginBurst();
     int readPort(int port);
     bool writePort(int port, int value) { (void)port; (void)value; return false; }

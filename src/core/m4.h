@@ -74,7 +74,6 @@ private:
     void closeFd(int fd);
     int commitFd(int fd);
     int openFile(int mode, const std::string& name, int& fdOut);
-    std::string cardPath(const std::string& name) const;
     long long now() const;
 };
 

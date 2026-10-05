@@ -46,9 +46,6 @@ void Symbiface3::button(int index, bool pressed) {
     buttons[index] = next;
     buttonChanged = true;
 }
-void Symbiface3::releaseButtons() {
-    for (int i = 0; i < 3; i += 1) if (buttons[i]) button(i, false);
-}
 int Symbiface3::readPort(int port) {
     if (!handlesPort(port)) return 0xff;
     port &= 0xffff;

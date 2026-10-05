@@ -177,6 +177,12 @@ private:
     GX4000* e;
     const std::string& s;
     size_t i = 0;
+    int depth = 0;
+    struct Nest {   // "((((((..." or "------...": 200 deep at most, not the stack's limit
+        Expr& x;
+        explicit Nest(Expr& x) : x(x) { if (++x.depth > 200) throw std::runtime_error("nested too deeply"); }
+        ~Nest() { x.depth--; }
+    };
     void space() { while (i < s.size() && std::isspace((unsigned char)s[i])) i++; }
     bool take(const char* op) {
         space();
@@ -194,8 +200,9 @@ private:
     long shiftExpr() {
         long v = addExpr();
         for (;;) {
-            if (take("<<")) v <<= addExpr();
-            else if (take(">>")) v >>= addExpr();
+            // A shift by a negative count or by the whole width is undefined: 0 bits out.
+            if (take("<<")) { long n = addExpr(); v = n < 0 || n >= 63 ? 0 : (long)((unsigned long)v << n); }
+            else if (take(">>")) { long n = addExpr(); v = n < 0 || n >= 63 ? (v < 0 ? -1 : 0) : v >> n; }
             else return v;
         }
     }
@@ -211,18 +218,21 @@ private:
         long v = unary();
         for (;;) {
             if (take("*")) v *= unary();
-            else if (take("/")) { long d = unary(); if (!d) throw std::runtime_error("division by zero"); v /= d; }
-            else if (take("%")) { long d = unary(); if (!d) throw std::runtime_error("division by zero"); v %= d; }
+            // x / -1 and x % -1 apart: the smallest long divided by -1 traps the CPU
+            else if (take("/")) { long d = unary(); if (!d) throw std::runtime_error("division by zero"); v = d == -1 ? (long)(0UL - (unsigned long)v) : v / d; }
+            else if (take("%")) { long d = unary(); if (!d) throw std::runtime_error("division by zero"); v = d == -1 ? 0 : v % d; }
             else return v;
         }
     }
     long unary() {
-        if (take("-")) return -unary();
+        Nest nest(*this);
+        if (take("-")) return (long)(0UL - (unsigned long)unary());
         if (take("~")) return ~unary();
         if (take("!")) return !unary();
         return primary();
     }
     long primary() {
+        Nest nest(*this);
         space();
         if (i >= s.size()) throw std::runtime_error("missing value");
         if (take("(")) { long v = orExpr(); if (!take(")")) throw std::runtime_error("missing ')'"); return v; }
@@ -289,6 +299,28 @@ AmsdosInfo amsdosHeader(const std::vector<uint8_t>& d) {
 
 std::string fileName(const std::string& path) { return std::filesystem::path(path).filename().string(); }
 
+// A web page can have the browser send an HTTP request to a port on this computer, and a
+// POST's body could then carry API commands or GDB packets (a cross-protocol attack: the
+// page needs no permission for it). Neither server speaks HTTP, so a connection that
+// opens with an HTTP request line is closed before anything in it runs.
+// 1: it is one; 0: it is not; -1: too little has come to tell.
+int httpRequestStart(const std::string& in) {
+    static const char* const methods[] = { "GET ", "POST ", "PUT ", "HEAD ", "OPTIONS ", "DELETE ", "PATCH ", "CONNECT ", "TRACE " };
+    for (const char* m : methods) {
+        const size_t n = std::strlen(m), k = std::min(n, in.size());
+        if (in.compare(0, k, m, k) == 0) return k == n ? 1 : -1;
+    }
+    return 0;
+}
+
+// A JSON number as a whole number, held in range: converting a double outside the target
+// type (1e300, from any client) is undefined.
+long wholeNumber(double d, long lo, long hi) {
+    if (!(d >= (double)lo)) return lo;   // NaN too
+    if (d >= (double)hi) return hi;
+    return (long)d;
+}
+
 } // namespace
 
 // ==================================================================== state
@@ -303,6 +335,8 @@ struct DevServer::Impl {
         net::Socket listener = net::NO_SOCKET, client = net::NO_SOCKET;
         int port = 0;
         std::string in, out;
+        net::Socket candidate = net::NO_SOCKET;   // a new connection not yet vetted (pollGdb)
+        std::string candidateIn;
         bool noAck = false;
         bool running = false;     // the client sent c (or s ran on) and waits for a stop report
         int nextBpId = 1;
@@ -320,6 +354,7 @@ struct DevServer::Impl {
         net::Socket sock = net::NO_SOCKET;
         std::string in;
         std::vector<Waiting> waiting;
+        bool vetted = false;       // its first bytes are not an HTTP request (httpRequestStart)
         bool closing = false;
     };
     net::Socket apiListener = net::NO_SOCKET;
@@ -327,7 +362,8 @@ struct DevServer::Impl {
     std::vector<ApiClient> apiClients;
 
     // ---------------------------------------------------------------- typing
-    struct Key { std::string code; bool shift = false; int waitFrames = 0; };   // no code: a pause
+    // no code: a pause; ch: a typed character (cpcTypeKey), else the key `code` itself
+    struct Key { std::string code; bool shift = false; int waitFrames = 0; char ch = 0; };
     std::deque<Key> keys;
     int keyPhase = 0;              // 0 idle, 1 held, 2 released (the gap)
     uint64_t keyUntil = 0;
@@ -369,7 +405,7 @@ struct DevServer::Impl {
     int parseAddr(const json::Value& req, const char* key, int otherwise) {
         const json::Value* v = req.find(key);
         if (!v) return otherwise;
-        if (v->type == json::Value::Number) return (int)v->number;
+        if (v->type == json::Value::Number) return (int)wholeNumber(v->number, -1, 0x7fffffffL);
         if (v->type != json::Value::String) return otherwise;
         int a = dbg.parseAddress(v->text);
         if (a < 0) throw std::runtime_error(std::string("'") + key + "': not an address or a label: " + v->text);
@@ -379,11 +415,14 @@ struct DevServer::Impl {
     long parseCount(const json::Value& req, const char* key, long otherwise) {
         const json::Value* v = req.find(key);
         if (!v) return otherwise;
-        if (v->type == json::Value::Number) return (long)v->number;
+        if (v->type == json::Value::Number) return wholeNumber(v->number, -0x7fffffffL, 0x7fffffffL);
         if (v->type != json::Value::String) return otherwise;
         const std::string& t = v->text;
         if (!t.empty() && std::all_of(t.begin(), t.end(), [](char c) { return std::isdigit((unsigned char)c) != 0; }))
-            return std::stol(t);
+        {
+            const size_t lead = std::min(t.find_first_not_of('0'), t.size());
+            return t.size() - lead > 9 ? 0x7fffffffL : std::stol(t);   // past a long on Windows: as large as it gets
+        }
         int a = dbg.parseAddress(t);
         if (a < 0) throw std::runtime_error(std::string("'") + key + "': not a number: " + t);
         return a;
@@ -393,6 +432,7 @@ struct DevServer::Impl {
     void queueText(const std::string& text) {
         for (char c : text) {
             Key k;
+            k.ch = c;
             if (cpcKeyForChar(c, k.code, k.shift)) keys.push_back(k);
         }
     }
@@ -404,8 +444,11 @@ struct DevServer::Impl {
         // Held 4 frames and released 4, as the headless --type does: the firmware scans
         // the keyboard once a frame and wants to see a key up before it counts it again.
         if (keyPhase == 1 && f >= keyUntil) {
-            kb->setKey(keyNow.code, false);
-            if (keyNow.shift) kb->setKey("ShiftLeft", false);
+            if (keyNow.ch) cpcTypeKey(*kb, keyNow.ch, false);
+            else {
+                kb->setKey(keyNow.code, false);
+                if (keyNow.shift) kb->setKey("ShiftLeft", false);
+            }
             keyPhase = 2;
             keyUntil = f + 4;
         }
@@ -418,8 +461,12 @@ struct DevServer::Impl {
                 keyUntil = f + (uint64_t)keyNow.waitFrames;
                 return;
             }
-            if (keyNow.shift) kb->setKey("ShiftLeft", true);
-            kb->setKey(keyNow.code, true);
+            if (keyNow.ch) {
+                if (!cpcTypeKey(*kb, keyNow.ch, true)) return;   // not on this keyboard: skipped
+            } else {
+                if (keyNow.shift) kb->setKey("ShiftLeft", true);
+                kb->setKey(keyNow.code, true);
+            }
             keyPhase = 1;
             keyUntil = f + 4;
         }
@@ -434,8 +481,19 @@ struct DevServer::Impl {
         std::stringstream ss;
         ss << f.rdbuf();
         // sjasmplus writes "name: EQU 0x00001234"; the core's reader takes "name EQU $1234".
-        std::string text = std::regex_replace(ss.str(), std::regex("^([A-Za-z_.@?][\\w.@?]*):[ \\t]", std::regex::multiline), "$1 ");
-        text = std::regex_replace(text, std::regex("\\b0[xX]([0-9A-Fa-f]+)"), "$$$1");
+        // A line at a time, and only short ones: std::regex recurses once a character, and
+        // a long line (a binary named as the symbol file) overflowed the stack. The core's
+        // reader passes over long lines too.
+        static const std::regex colon("^([A-Za-z_.@?][\\w.@?]*):[ \\t]"), hex("\\b0[xX]([0-9A-Fa-f]+)");
+        std::string text;
+        {
+            std::istringstream in(ss.str());
+            for (std::string line; std::getline(in, line);) {
+                if (line.size() > 512) continue;
+                line = std::regex_replace(line, colon, "$1 ");
+                text += std::regex_replace(line, hex, "$$$1") + "\n";
+            }
+        }
         ParseSymbolOptions opt;
         opt.fileName = fileName(path);
         std::vector<RemuSymbol> parsed = parseSymbolText(text, opt);
@@ -761,12 +819,16 @@ struct DevServer::Impl {
             reply(r);
             return;
         }
+        // A register's value: four hex digits, low byte first; -1 if any is not hex.
+        auto word = [](const char* h) {
+            for (int k = 0; k < 4; k++) if (hexDigit(h[k]) < 0) return -1;
+            return hexDigit(h[2]) << 12 | hexDigit(h[3]) << 8 | hexDigit(h[0]) << 4 | hexDigit(h[1]);
+        };
         if (p[0] == 'G') {
-            for (int k = 0; k < GDB_REG_COUNT && 1 + k * 4 + 4 <= (int)p.size(); k++) {
-                std::string h = p.substr(1 + (size_t)k * 4, 4);
-                int lo = hexDigit(h[0]) << 4 | hexDigit(h[1]), hi = hexDigit(h[2]) << 4 | hexDigit(h[3]);
-                setRegister(e, GDB_REGS[k], hi << 8 | lo);
-            }
+            for (int k = 0; k < GDB_REG_COUNT && 1 + k * 4 + 4 <= (int)p.size(); k++)
+                if (word(p.c_str() + 1 + k * 4) < 0) { reply("E01"); return; }
+            for (int k = 0; k < GDB_REG_COUNT && 1 + k * 4 + 4 <= (int)p.size(); k++)
+                setRegister(e, GDB_REGS[k], word(p.c_str() + 1 + k * 4));
             reply("OK");
             return;
         }
@@ -782,9 +844,9 @@ struct DevServer::Impl {
             size_t eq = p.find('=');
             int n = (int)std::strtol(p.c_str() + 1, nullptr, 16);
             if (eq == std::string::npos || n < 0 || n >= GDB_REG_COUNT || p.size() < eq + 5) { reply("E01"); return; }
-            const char* h = p.c_str() + eq + 1;
-            int lo = hexDigit(h[0]) << 4 | hexDigit(h[1]), hi = hexDigit(h[2]) << 4 | hexDigit(h[3]);
-            setRegister(e, GDB_REGS[n], hi << 8 | lo);
+            const int v = word(p.c_str() + eq + 1);
+            if (v < 0) { reply("E01"); return; }
+            setRegister(e, GDB_REGS[n], v);
             reply("OK");
             return;
         }
@@ -805,7 +867,9 @@ struct DevServer::Impl {
             unsigned long n = end && *end == ',' ? std::strtoul(end + 1, &end, 16) : 0;
             if (!end || *end != ':') { reply("E01"); return; }
             const char* h = end + 1;
-            if (std::strlen(h) < n * 2) { reply("E01"); return; }
+            // n first: a huge n made n * 2 wrap round to a small number that passed, and the
+            // writes then read far past the packet
+            if (n > 0x10000UL || std::strlen(h) < n * 2) { reply("E01"); return; }
             for (unsigned long k = 0; k < n * 2; k++) if (hexDigit(h[k]) < 0) { reply("E01"); return; }
             for (unsigned long k = 0; k < n; k++, h += 2)
                 e->memory->write((int)((a + k) & 0xffff), hexDigit(h[0]) << 4 | hexDigit(h[1]));
@@ -829,7 +893,7 @@ struct DevServer::Impl {
             const int type = p[1] - '0';
             char* end = nullptr;
             int a = (int)(std::strtoul(p.c_str() + 3, &end, 16) & 0xffff);
-            int len = end && *end == ',' ? (int)std::strtoul(end + 1, nullptr, 16) : 1;
+            int len = end && *end == ',' ? (int)std::min(std::strtoul(end + 1, nullptr, 16), 0x10000UL) : 1;
             if (type == 0 || type == 1) {
                 if (add) {
                     GuiBreakpoint bp;
@@ -880,24 +944,46 @@ struct DevServer::Impl {
 
     void pollGdb() {
         if (gdb.listener == net::NO_SOCKET) return;
+        // A new connection waits as the candidate until its first bytes show it is not an
+        // HTTP request (httpRequestStart); only then does it take over from the client --
+        // so a web page cannot even knock DeZog off.
         net::Socket c = net::acceptClient(gdb.listener);
         if (c != net::NO_SOCKET) {
-            if (gdb.client != net::NO_SOCKET) gdbDisconnect("replaced by a new connection");
-            gdb.client = c;
-            gdb.noAck = false;
-            gdb.running = false;
-            // A debugger that attaches finds the machine stopped, as MAME's does.
-            if (machine(host)) dbg.pause();
-            self.lastEvent = "GDB client connected (port " + std::to_string(gdb.port) + ")";
-            host.status = self.lastEvent;
+            if (gdb.candidate != net::NO_SOCKET) net::closeSocket(gdb.candidate);
+            gdb.candidate = c;
+            gdb.candidateIn.clear();
+        }
+        char buf[4096];
+        if (gdb.candidate != net::NO_SOCKET) {
+            int n = 0;
+            while (gdb.candidateIn.size() < 4096 && (n = net::receiveSome(gdb.candidate, buf, sizeof(buf))) > 0)
+                gdb.candidateIn.append(buf, (size_t)n);
+            const int http = n < 0 ? 1 : httpRequestStart(gdb.candidateIn);   // gone again: dropped too
+            if (http > 0) {
+                net::closeSocket(gdb.candidate);
+                gdb.candidate = net::NO_SOCKET;
+                if (n >= 0) self.lastEvent = "GDB server: refused an HTTP request (a web page?)";
+            } else if (http == 0) {
+                if (gdb.client != net::NO_SOCKET) gdbDisconnect("replaced by a new connection");
+                gdb.client = gdb.candidate;
+                gdb.in = gdb.candidateIn;
+                gdb.candidate = net::NO_SOCKET;
+                gdb.candidateIn.clear();
+                gdb.noAck = false;
+                gdb.running = false;
+                // A debugger that attaches finds the machine stopped, as MAME's does.
+                if (machine(host)) dbg.pause();
+                self.lastEvent = "GDB client connected (port " + std::to_string(gdb.port) + ")";
+                host.status = self.lastEvent;
+            }
         }
         if (gdb.client == net::NO_SOCKET) return;
-        char buf[4096];
         for (;;) {
             int n = net::receiveSome(gdb.client, buf, sizeof(buf));
             if (n < 0) { gdbDisconnect("disconnected"); return; }
             if (n == 0) break;
             gdb.in.append(buf, (size_t)n);
+            if (gdb.in.size() > (1u << 22)) { gdbDisconnect("sent 4 MB that is not a packet"); return; }
         }
         while (!gdb.in.empty() && gdb.client != net::NO_SOCKET) {
             char c0 = gdb.in[0];
@@ -915,7 +1001,8 @@ struct DevServer::Impl {
             size_t hash = gdb.in.find('#');
             if (hash == std::string::npos || hash + 2 >= gdb.in.size()) break;   // the rest is still coming
             std::string data = gdb.in.substr(1, hash - 1);
-            int want = hexDigit(gdb.in[hash + 1]) << 4 | hexDigit(gdb.in[hash + 2]);
+            const int sumHi = hexDigit(gdb.in[hash + 1]), sumLo = hexDigit(gdb.in[hash + 2]);
+            const int want = sumHi < 0 || sumLo < 0 ? -1 : sumHi << 4 | sumLo;
             gdb.in.erase(0, hash + 3);
             unsigned sum = 0;
             for (unsigned char ch : data) sum += ch;
@@ -1352,6 +1439,12 @@ struct DevServer::Impl {
                 c.in.append(buf, (size_t)n);
                 if (c.in.size() > (1u << 22)) { c.closing = true; break; }   // 4 MB without a newline
             }
+            if (!c.vetted && !c.closing) {
+                const int http = httpRequestStart(c.in);
+                if (http > 0) { c.closing = true; self.lastEvent = "Command API: refused an HTTP request (a web page?)"; }
+                else if (http == 0) c.vetted = true;
+                else continue;   // too little to tell yet
+            }
             size_t nl;
             while (!c.closing && (nl = c.in.find('\n')) != std::string::npos) {
                 std::string line = c.in.substr(0, nl);
@@ -1419,6 +1512,9 @@ bool DevServer::startGdb(int port) {
 
 void DevServer::stopGdb() {
     impl->gdbDisconnect("closed");
+    if (impl->gdb.candidate != net::NO_SOCKET) net::closeSocket(impl->gdb.candidate);
+    impl->gdb.candidate = net::NO_SOCKET;
+    impl->gdb.candidateIn.clear();
     if (impl->gdb.listener != net::NO_SOCKET) net::closeSocket(impl->gdb.listener);
     impl->gdb.listener = net::NO_SOCKET;
 }
@@ -1448,7 +1544,6 @@ bool DevServer::apiListening() const { return impl->apiListener != net::NO_SOCKE
 int DevServer::apiClients() const { return (int)impl->apiClients.size(); }
 int DevServer::apiPort() const { return impl->apiPortNow; }
 
-bool DevServer::load(const LoadRequest& request, std::string& error) { return impl->load(request, error); }
 
 void DevServer::loadWhenReady(const LoadRequest& request) {
     impl->pending = request;
@@ -1471,9 +1566,6 @@ int DevServer::reloads() const { return impl->reloadCount; }
 
 int DevServer::loadSymbols(const std::string& path, std::string& error) { return impl->loadSymbols(path, error); }
 
-void DevServer::typeText(const std::string& text) { impl->queueText(text); }
-void DevServer::tapKey(const std::string& code, bool shift) { impl->keys.push_back(Impl::Key{ code, shift }); }
-bool DevServer::typing() const { return impl->typing(); }
 
 void DevServer::loadSettings(const std::map<std::string, std::string>& ini) {
     auto num = [&](const char* k, int d) { auto i = ini.find(k); return i == ini.end() ? d : std::atoi(i->second.c_str()); };

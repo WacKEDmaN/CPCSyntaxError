@@ -79,15 +79,6 @@ static double cpcLumDisplayed(int rgb) {
     return std::pow(lum, tubeGamma());
 }
 
-// The luminance matrix of a television's video stage. Kept for callers that ARE a
-// television (the ZX side); the CPC's own green and mono sets use cpcLumDisplayed.
-int rgbToLuma(int rgb) {
-    int r = (rgb >> 16) & 0xff;
-    int g = (rgb >> 8) & 0xff;
-    int b = rgb & 0xff;
-    long v = std::lround(r * 0.299 + g * 0.587 + b * 0.114);
-    return (int)std::max(0L, std::min(255L, v));
-}
 
 static int mix(int a, int b, double t) { return (int)std::lround(a + (b - a) * std::max(0.0, std::min(1.0, t))); }
 static int pack(int r, int g, int b) { return (r << 16) | (g << 8) | b; }
@@ -106,19 +97,5 @@ int monitorTransformRgb(int rgb, const std::string& mode) {
 
 int monitorLumLevel(int rgb) { return (int)std::lround(cpcLumDisplayed(rgb) * 255.0); }
 
-// The ZX side's entry point. A Spectrum is not wired to the CPC's LUM network, so its
-// green and mono transforms keep the television matrix they always had.
-std::array<int, 3> monitorTransformTuple(const std::array<int, 3>& rgb, const std::string& mode) {
-    const int packedIn = (rgb[0] << 16) | (rgb[1] << 8) | rgb[2];
-    std::string m = normaliseMonitorMode(mode);
-    int packed = packedIn & 0xffffff;
-    if (m != MONITOR_MODE_COLOUR) {
-        double y = rgbToLuma(packedIn) / 255.0;
-        packed = m == MONITOR_MODE_GREEN
-            ? pack(mix(0x00, 0x6c, y), mix(0x10, 0xd7, y), mix(0x00, 0x61, y))
-            : pack((int)std::lround(y * 255), (int)std::lround(y * 255), (int)std::lround(y * 255));
-    }
-    return { (packed >> 16) & 0xff, (packed >> 8) & 0xff, packed & 0xff };
-}
 
 } // namespace cpcse

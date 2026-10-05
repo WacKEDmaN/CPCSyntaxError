@@ -152,7 +152,9 @@ bool parseNumber(const std::string& s, double& v) {
     if (t[0] == '&' || t[0] == '#') v = (double)std::strtol(t.c_str() + 1, &e, 16);
     else if (t.size() > 2 && t[0] == '0' && (t[1] == 'x' || t[1] == 'X')) v = (double)std::strtol(t.c_str() + 2, &e, 16);
     else v = std::strtod(t.c_str(), &e);
-    return e && *e == 0;
+    // "1e999", "inf" and "nan" are numbers to strtod; as a time or a model they would be
+    // converted to whole numbers that cannot hold them (undefined). 1e15 usec is 31 years.
+    return e && *e == 0 && std::isfinite(v) && std::fabs(v) <= 1e15;
 }
 
 // The CSL annex's special keys, on the CPC's matrix (row, bit).
@@ -252,6 +254,7 @@ bool writeVideoBmp(const std::string& path, const std::vector<uint32_t>& px, int
         }
         f.write((char*)row.data(), (std::streamsize)row.size());
     }
+    f.close();   // the last of it is written here
     return (bool)f;
 }
 
@@ -333,6 +336,7 @@ bool CslPlayer::runFile(const std::string& pathIn) {
         }
         cap = waits / 1e6 * 2.0 + 60.0 + 60.0 * openEnded;
     }
+    cap = std::min(cap, 1e9);   // held where cap x 4 MHz still fits a long long (a script of huge waits)
     const long long savedCap = capAt;
     capAt = emu.machineCycles + (long long)(cap * 4000000.0);
 
@@ -348,7 +352,10 @@ bool CslPlayer::runFile(const std::string& pathIn) {
         stack.back().line = (int)n + 1;
         stack.back().instruction = text;
         std::string why;
-        ok = execute(instruction, args, text, why);
+        // The readers throw for a file they cannot take (a disc, tape, snapshot or cartridge
+        // the script names): that is the script's error, not the end of the program.
+        try { ok = execute(instruction, args, text, why); }
+        catch (const std::exception& ex) { ok = false; why = ex.what(); }
         if (!ok && report.empty()) {
             const Script& s = stack.back();
             report = "CSL error\n"
@@ -450,7 +457,11 @@ bool CslPlayer::execute(const std::string& ins, const std::vector<std::string>& 
     // Where a script SAVES: a folder below the one it is run in, never an absolute path or
     // one climbing out with '..' -- a script from elsewhere must not write over files
     // anywhere the user can write.
-    auto staysInside = [&](const std::string& p) {
+    auto staysInside = [&](const std::string& pIn) {
+        // '\' as a separator everywhere: joinPrefix turns it into '/' on Linux, where
+        // fs::path would otherwise read "..\..\x" as one name and let it through
+        std::string p = pIn;
+        std::replace(p.begin(), p.end(), '\\', '/');
         const fs::path path(p);
         if (path.has_root_path() || path.has_root_name()) { why = "a script may not save to an absolute path: " + p; return false; }
         for (const auto& part : path) if (part == "..") { why = "a script may not save outside its folder ('..'): " + p; return false; }
@@ -1018,6 +1029,8 @@ bool CslPlayer::takeSnapshot(const std::string& path, std::string& why) {
     std::ofstream f(path, std::ios::binary);
     if (!f) { why = "cannot write " + path; return false; }
     f.write((const char*)data.data(), (std::streamsize)data.size());
+    f.close();
+    if (!f) { why = "could not write all of " + path + " (disc full?)"; return false; }
     snapCount++;
     say("  [snapshot v%d] -> %s  t=%.3fs", snapshotVersion, path.c_str(), seconds());
     return true;

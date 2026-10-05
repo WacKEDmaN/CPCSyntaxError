@@ -24,6 +24,7 @@
 #include "core/m4.h"
 #include "core/symbiface_mouse.h"
 #include "core/sf3.h"
+#include "core/sf2_rtc.h"
 #include "core/matrix_printer.h"
 #include "core/dac.h"
 #include "core/ppi.h"
@@ -102,7 +103,6 @@ void EmuHost::applyAudioRate() {
     if (emu && emu->playcity) emu->playcity->setOutputSampleRate((double)sampleRate);
     if (emu && emu->speech) emu->speech->setOutputSampleRate((double)sampleRate);
     if (emu && emu->dac) emu->dac->setOutputSampleRate((double)sampleRate);
-    if (emu && emu->tape) emu->tape->setOutputSampleRate((double)sampleRate);
 }
 
 Bytes EmuHost::readFile(const std::string& path, bool& ok) {
@@ -111,6 +111,9 @@ Bytes EmuHost::readFile(const std::string& path, bool& ok) {
     f.seekg(0, std::ios::end);
     std::streamoff n = f.tellg();
     f.seekg(0, std::ios::beg);
+    // Nothing the machine takes is near 1 GB (an hour's WAV tape is about 600 MB); a bigger
+    // file dropped on the window by mistake would only exhaust memory and end the program.
+    if (n > ((std::streamoff)1 << 30)) { ok = false; return {}; }
     Bytes data((size_t)std::max<std::streamoff>(0, n));
     if (n > 0) f.read(reinterpret_cast<char*>(data.data()), n);
     ok = (bool)f || f.eof();
@@ -187,6 +190,14 @@ std::string EmuHost::findCart(const std::string& keyword) const {
 
 bool EmuHost::bootModel(int index, int ram, int crtc) {
     if (index < 0 || index >= (int)models.size()) { status = "Invalid model."; return false; }
+    // A RAM size or CRTC type the core refuses (a hand-edited cpcse.ini, --ram 100) is a
+    // message here: the core throws for them, and that would end the program -- at every
+    // start, for a value read from the settings.
+    if (crtc > 5) { status = "CRTC type " + std::to_string(crtc) + " does not exist (0-4, or 5 for CRTC 1-B)."; return false; }
+    if (ram > 0) {
+        try { emu->memory->validateRamSize(ram); }
+        catch (const std::exception& ex) { status = ex.what(); return false; }
+    }
     ModelProfile& m = models[index];
     if (index != currentModel) { osRomPath.clear(); basicRomPath.clear(); amsdosRomPath.clear(); }  // different model → different firmware
 
@@ -332,6 +343,7 @@ void EmuHost::applySymbiface() {
     if (!emu) return;
     bool sf2 = symbifaceModule == "sf2", sf3 = symbifaceModule == "sf3";
     if (emu->symbifaceMouse) { emu->symbifaceMouse->setEnabled(sf2); emu->symbifaceMouse->setSensitivity(mouseSensitivity); }
+    if (emu->sf2Rtc) emu->sf2Rtc->setEnabled(sf2);       // its DS12887 clock at &FD14/&FD15
     if (emu->sf3) { emu->sf3->setEnabled(sf3); emu->sf3->setSensitivity(mouseSensitivity); }
 }
 
@@ -442,6 +454,7 @@ bool EmuHost::savePrinterText(const std::string& path) const {
     std::ofstream f(path, std::ios::binary);
     if (!f) return false;
     f << printerText;
+    f.close();   // a full disc shows at the close, where the last of it is written
     return (bool)f;
 }
 bool EmuHost::savePrinterPageBmp(const std::string& path) const {
@@ -457,6 +470,7 @@ bool EmuHost::savePrinterPageSvg(const std::string& path) const {
     std::ofstream f(path, std::ios::binary);
     if (!f) return false;
     f << matrixPrinter->toSvg();
+    f.close();
     return (bool)f;
 }
 
@@ -618,10 +632,6 @@ void EmuHost::setAnalogue(int channel, int value) {
     emu->asic->analogueInput[channel] = (uint8_t)std::clamp(value, 0, 63);
 }
 
-int EmuHost::readMem(int addr) const {
-    if (!emu || !emu->memory) return 0;
-    return emu->memory->read(addr & 0xffff) & 0xff;
-}
 
 bool EmuHost::loadByExtension(const std::string& path) {
     std::string ext;
@@ -660,6 +670,8 @@ bool EmuHost::saveScreenshotBmp(const std::string& path) {
         }
         f.write((const char*)row.data(), rowBytes);
     }
+    f.close();
+    if (!f) { status = "Could not write screenshot (disc full?)"; return false; }
     status = "Saved screenshot " + std::filesystem::path(path).filename().string();
     return true;
 }
@@ -756,12 +768,6 @@ CPCTapeDrive* EmuHost::tapeDeck() const { return emu && emu->tape && !tapeName.e
 bool EmuHost::tapePlaying() const { CPCTapeDrive* d = tapeDeck(); return d && d->playing && !d->paused; }
 bool EmuHost::tapePaused() const { CPCTapeDrive* d = tapeDeck(); return d && d->playing && d->paused; }
 
-void EmuHost::tapePlayToggle() {
-    CPCTapeDrive* d = tapeDeck();
-    if (!d) return;
-    if (d->playing) d->stop(); else d->play();
-    status = d->playing ? "Tape playing" : "Tape stopped";
-}
 
 void EmuHost::tapePlay() {
     if (CPCTapeDrive* d = tapeDeck()) { d->play(); status = d->playing ? "Tape playing" : "The tape is at its end: rewind it"; }
@@ -814,6 +820,8 @@ bool EmuHost::saveSnapshot(const std::string& path) {
     std::ofstream f(path, std::ios::binary);
     if (!f) { status = "Could not write snapshot."; return false; }
     f.write(reinterpret_cast<const char*>(data.data()), (std::streamsize)data.size());
+    f.close();
+    if (!f) { status = "Could not write snapshot (disc full?)"; return false; }
     status = "Saved snapshot " + std::filesystem::path(path).filename().string();
     return true;
 }
@@ -976,8 +984,10 @@ void EmuHost::drainAudio() {
             l += opl->samples[k * 2] * oplGain;
             r += opl->samples[k * 2 + 1] * oplGain;
         }
-        audioOut.push_back((int16_t)std::clamp((int)l, -32768, 32767));
-        audioOut.push_back((int16_t)std::clamp((int)r, -32768, 32767));
+        // clamped as doubles before the cast: (int) of a NaN or of 1e12 is undefined
+        auto s16 = [](double v) { return v == v ? (int16_t)std::clamp(v, -32768.0, 32767.0) : (int16_t)0; };
+        audioOut.push_back(s16(l));
+        audioOut.push_back(s16(r));
     }
     if (opl) opl->samples.clear();
     // The drive and the keys, at the device's rate, one sample per output sample.

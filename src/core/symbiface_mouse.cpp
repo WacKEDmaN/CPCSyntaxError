@@ -16,10 +16,6 @@ void SymbifaceMouse::setEnabled(bool enabled_) {
 void SymbifaceMouse::setSensitivity(double value) {
     sensitivity = std::isfinite(value) ? std::max(0.25, std::min(4.0, value)) : 1;
 }
-void SymbifaceMouse::setProtocol(const std::string&) {
-    protocol = "sf2";
-    state = 0; snapshot.reset();
-}
 void SymbifaceMouse::reset() {
     dx = dy = dz = 0;
     buttons = { false, false, false };
@@ -47,9 +43,6 @@ void SymbifaceMouse::button(int index, bool pressed) {
     if (buttons[index] == next) return;
     buttons[index] = next;
     buttonChanged = true;
-}
-void SymbifaceMouse::releaseButtons() {
-    for (int i = 0; i < 3; i += 1) if (buttons[i]) button(i, false);
 }
 void SymbifaceMouse::beginBurst() {
     MouseBurst b;

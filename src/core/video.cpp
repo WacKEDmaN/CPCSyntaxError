@@ -503,13 +503,6 @@ int CpcVideo::monitorCalibration16() const {
     // identity and a renderer that kept its own would be able to disagree with it.
     return monitor ? monitor->calibration16() : 0;
 }
-std::optional<bool> CpcVideo::lightgunBrightnessAt(double x, double y) {
-    int px = (int)std::floor(x), py = (int)std::floor(y);
-    if (px < 0 || py < 0 || px >= width || py >= height) return std::nullopt;
-    uint32_t packed = pixels[(size_t)py * width + px];
-    int r = packed & 0xff, g = (unsigned)packed >> 8 & 0xff, b = (unsigned)packed >> 16 & 0xff;
-    return r * 0.299 + g * 0.587 + b * 0.114 >= 140;
-}
 bool CpcVideo::lightgunRgbBright(int rgb) {
     int r = (unsigned)rgb >> 16 & 255, g = (unsigned)rgb >> 8 & 255, b = rgb & 255;
     return r * 0.299 + g * 0.587 + b * 0.114 >= 140;

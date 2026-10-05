@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<!-- CPCSyntaxError's Windows manifest. activeCodePage UTF-8 (Windows 10 1903 and later)
+     makes the program's narrow strings UTF-8 everywhere: the names SDL hands over (a dropped
+     file, the program's own folder), std::filesystem, ImGui's text and the C library's
+     fopen/fstream then all agree, so a file or folder named Café or 漢字 opens. Without
+     it fopen read such a name in the ANSI code page and could not find the file. -->
+<assembly manifestVersion="1.0" xmlns="urn:schemas-microsoft-com:asm.v1">
+  <assemblyIdentity type="win32" name="CPCSyntaxError" version="1.0.0.0"/>
+  <application xmlns="urn:schemas-microsoft-com:asm.v3">
+    <windowsSettings>
+      <activeCodePage xmlns="http://schemas.microsoft.com/SMI/2019/WindowsSettings">UTF-8</activeCodePage>
+    </windowsSettings>
+  </application>
+</assembly>

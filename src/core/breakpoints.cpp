@@ -75,11 +75,20 @@ struct Node {
 
 struct Parser {
     std::vector<Token> tokens; int index = 0;
+    // "((((..." or "------..." nests the parse (and the tree it builds): 200 deep at most,
+    // not the stack's limit -- conditions also come from the GDB and API clients.
+    int depth = 0;
+    struct Nest {
+        Parser& p;
+        explicit Nest(Parser& p) : p(p) { if (++p.depth > 200) throw std::runtime_error("Condition nested too deeply"); }
+        ~Nest() { p.depth--; }
+    };
     const Token& current() { return tokens[index]; }
     bool take(const std::string& value) { if (current().value == value) { index++; return true; } return false; }
     void expect(const std::string& value) { if (!take(value)) throw std::runtime_error("Expected " + value + ", found " + (current().value.empty() ? std::string("end of expression") : current().value)); }
 
     std::shared_ptr<Node> primary() {
+        Nest nest(*this);
         const Token& token = current();
         if (token.type == "number") { long long v = token.number; index += 1; auto nd = std::make_shared<Node>(); nd->type = "number"; nd->value = v; return nd; }
         if (take("(")) { auto node = expression(0); expect(")"); return node; }
@@ -97,6 +106,7 @@ struct Parser {
         throw std::runtime_error("Expected a number, register or sub-expression, found " + (token.value.empty() ? std::string("end of expression") : token.value));
     }
     std::shared_ptr<Node> unary() {
+        Nest nest(*this);
         const Token& token = current();
         if (token.type == "op" && (token.value == "!" || token.value == "NOT" || token.value == "~" || token.value == "+" || token.value == "-")) {
             index += 1; auto nd = std::make_shared<Node>(); nd->type = "unary"; nd->op = token.value; nd->child = unary(); return nd;
@@ -162,13 +172,13 @@ static long long valueOf(const std::shared_ptr<Node>& node, const BreakpointCont
         if (op == "<=") return left <= right ? 1 : 0;
         if (op == ">") return left > right ? 1 : 0;
         if (op == ">=") return left >= right ? 1 : 0;
-        if (op == "<<") return left << (right & 31);
+        if (op == "<<") return (long long)((unsigned long long)left << (right & 31));   // a negative left is undefined
         if (op == ">>") return left >> (right & 31);
         if (op == "+") return left + right;
         if (op == "-") return left - right;
         if (op == "*") return left * right;
         if (op == "/") return right == 0 ? 0 : (long long)std::trunc((double)left / right);
-        if (op == "%") return right == 0 ? 0 : left % right;
+        if (op == "%") return right == 0 || right == -1 ? 0 : left % right;   // the smallest by -1 traps the CPU
         throw std::runtime_error("Unsupported operator " + op);
     }
     throw std::runtime_error("Unsupported expression node " + node->type);

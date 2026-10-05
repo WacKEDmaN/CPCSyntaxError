@@ -45,7 +45,6 @@ struct Z80Ports {
     std::function<int(int port, int instructionOffset, bool write)> ioWait;
     std::function<int(int vector)> im0Address;
     std::function<void()> acknowledge;
-    std::function<bool(Z80&)> edff;
 };
 
 class Z80 {
@@ -170,7 +169,6 @@ public:
     int nmi();
 
     int step();
-    int run(int tStates);
 
 private:
     int pair(int code, int* index = nullptr);

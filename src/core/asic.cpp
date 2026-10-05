@@ -195,10 +195,6 @@ void PlusAsic::setDmaStatus(int value) {
     }
     updateDmaStatusRam();
 }
-void PlusAsic::onHsync(AY38912* ay, int rasterLine, int hsyncWidth) {
-    onHsyncStart(ay, rasterLine, hsyncWidth);
-    for (int character = 0; character < 64; character += 1) onCharacter();
-}
 void PlusAsic::onHsyncStart(AY38912* ay, int rasterLine, int hsyncWidth) {
     dmaAy = ay; dmaCycle = DMA_DEAD; dmaCycleDelay = 0;
     legacyDmaPauseTiming = rasterLine == -1 && hsyncWidth == -1;
@@ -369,6 +365,5 @@ void PlusAsic::acknowledgeInterrupt() {
     updateDmaStatusRam();
     triggerAsicInterrupt();
 }
-void PlusAsic::onScanline(int /*line*/) {}
 
 } // namespace cpcse

@@ -274,7 +274,6 @@ int Z80::executeCB(int opcode, int* index, int address) {
 }
 
 int Z80::executeED(int opcode) {
-    if (opcode == 0xff && ports.edff && ports.edff(*this)) return 8;
     int rr = opcode >> 4 & 3;
     if ((opcode & 0xc7) == 0x40) { int value = portRead(bc(), "in-c"); if ((opcode >> 3 & 7) != 6) setReg(opcode >> 3 & 7, value); f = (f & C) | szp(value); return 12; }
     if ((opcode & 0xc7) == 0x41) { portWrite(bc(), (opcode >> 3 & 7) == 6 ? 0 : reg(opcode >> 3 & 7), "out-c"); return 12; }
@@ -498,6 +497,5 @@ int Z80::step() {
     tStates += cycles; return cycles;
 }
 
-int Z80::run(int tStatesTarget) { int elapsed = 0; while (elapsed < tStatesTarget) elapsed += step(); return elapsed; }
 
 } // namespace cpcse

@@ -4,6 +4,12 @@
 
 namespace cpcse {
 
+// std::regex (libstdc++) matches a repetition by recursing once a character: a line of a few
+// thousand characters overflows the stack (measured: 5000 crash the program). No symbol
+// line or REMU record is long, so a longer one -- a binary given as a symbol file -- is
+// passed over before any expression sees it.
+static constexpr size_t MAX_SYMBOL_LINE = 512;
+
 static std::string trimStr(const std::string& s) { size_t a = 0, b = s.size(); while (a < b && std::isspace((unsigned char)s[a])) a++; while (b > a && std::isspace((unsigned char)s[b - 1])) b--; return s.substr(a, b - a); }
 static std::string upperStr(const std::string& s) { std::string r = s; for (auto& c : r) c = (char)std::toupper((unsigned char)c); return r; }
 static std::string lowerStr(const std::string& s) { std::string r = s; for (auto& c : r) c = (char)std::tolower((unsigned char)c); return r; }
@@ -39,6 +45,7 @@ RemuData parseRemu(const std::string& text) {
     std::vector<std::string> records = splitRemuRecords(text);
     RemuData result; result.text = text; result.records = records;
     for (const std::string& raw : records) {
+        if (raw.size() > MAX_SYMBOL_LINE) { result.unknown.push_back(raw.substr(0, 64)); continue; }
         std::smatch head;
         if (!std::regex_search(raw, head, std::regex("^([A-Za-z]+)\\s*(.*)$"))) { result.unknown.push_back(raw); continue; }
         std::string tag = lowerStr(head[1].str());
@@ -144,6 +151,7 @@ std::vector<RemuSymbol> parseSymbolText(const std::string& text, const ParseSymb
     }
     std::vector<std::string> lines; { std::string cur; for (char c : input) { if (c == '\n') { std::string l = cur; if (!l.empty() && l.back() == '\r') l.pop_back(); lines.push_back(l); cur.clear(); } else cur += c; } lines.push_back(cur); }
     for (const std::string& original : lines) {
+        if (original.size() > MAX_SYMBOL_LINE) continue;
         std::string line = std::regex_replace(original, std::regex(";.*"), "");
         line = std::regex_replace(line, std::regex("//.*$"), "");
         line = trimStr(line);
@@ -171,76 +179,6 @@ std::vector<RemuSymbol> parseSymbolText(const std::string& text, const ParseSymb
         }
     }
     return symbols;
-}
-
-static bool identityMatches(const RemuSymbol& entry, const SymbolIdentity* identity) {
-    if (!identity || !entry.bank || entry.kind == "logical" || entry.kind == "alias") return true;
-    if (entry.kind == "rom") return identity->kind == "rom" && identity->bank == *entry.bank;
-    return identity->kind == "ram" && identity->bank == *entry.bank;
-}
-static bool identityMatchesC(const RemuComment& entry, const SymbolIdentity* identity) {
-    if (!identity || !entry.bank || entry.kind == "logical" || entry.kind == "alias") return true;
-    if (entry.kind == "rom") return identity->kind == "rom" && identity->bank == *entry.bank;
-    return identity->kind == "ram" && identity->bank == *entry.bank;
-}
-
-DebugSymbolTable::DebugSymbolTable(const std::vector<RemuSymbol>& entries0, const std::vector<RemuComment>& comments0) {
-    addMany(entries0);
-    addComments(comments0);
-}
-void DebugSymbolTable::clear() { entries.clear(); comments.clear(); }
-void DebugSymbolTable::clear(const std::string& source) {
-    entries.erase(std::remove_if(entries.begin(), entries.end(), [&](const RemuSymbol& e) { return e.source == source; }), entries.end());
-    comments.erase(std::remove_if(comments.begin(), comments.end(), [&](const RemuComment& e) { return e.source == source; }), comments.end());
-}
-void DebugSymbolTable::addMany(const std::vector<RemuSymbol>& newEntries) {
-    for (const RemuSymbol& entry : newEntries) {
-        if (entry.name.empty()) continue;
-        RemuSymbol normalized = entry; normalized.name = cleanName(entry.name); normalized.address = entry.address & 0xffff;
-        int duplicate = -1;
-        for (int i = 0; i < (int)entries.size(); i++) {
-            if (upperStr(entries[i].name) == upperStr(normalized.name) && entries[i].address == normalized.address && entries[i].bank == normalized.bank && entries[i].kind == normalized.kind) { duplicate = i; break; }
-        }
-        if (duplicate >= 0) entries[duplicate] = normalized; else entries.push_back(normalized);
-    }
-    std::sort(entries.begin(), entries.end(), [](const RemuSymbol& a, const RemuSymbol& b) { return a.address != b.address ? a.address < b.address : a.name < b.name; });
-}
-void DebugSymbolTable::addComments(const std::vector<RemuComment>& newComments) {
-    for (const RemuComment& comment : newComments) {
-        RemuComment c = comment; c.address = comment.address & 0xffff;
-        comments.push_back(c);
-    }
-}
-SymbolLookup DebugSymbolTable::lookup(int address, const SymbolIdentity* identity, bool nearest) {
-    int target = address & 0xffff;
-    const RemuSymbol* best = nullptr;
-    for (const RemuSymbol& entry : entries) {
-        if (!identityMatches(entry, identity)) continue;
-        if (entry.address == target) { SymbolLookup r; r.entry = entry; r.offset = 0; r.found = true; return r; }
-        if (entry.kind == "alias") continue;
-        if (nearest && entry.address <= target && (!best || entry.address > best->address)) best = &entry;
-    }
-    if (best) { SymbolLookup r; r.entry = *best; r.offset = (target - best->address) & 0xffff; r.found = true; return r; }
-    return {};
-}
-const RemuComment* DebugSymbolTable::commentAt(int address, const SymbolIdentity* identity) {
-    int target = address & 0xffff;
-    for (const RemuComment& comment : comments) if (comment.address == target && identityMatchesC(comment, identity)) return &comment;
-    return nullptr;
-}
-const RemuSymbol* DebugSymbolTable::resolve(const std::string& name, const SymbolIdentity* identity) {
-    std::string key = upperStr(trimStr(name));
-    for (const RemuSymbol& entry : entries) if (upperStr(entry.name) == key && identityMatches(entry, identity)) return &entry;
-    return nullptr;
-}
-std::unordered_map<std::string, int> DebugSymbolTable::contextValues(const SymbolIdentity* identity) {
-    std::unordered_map<std::string, int> values;
-    for (const RemuSymbol& entry : entries) {
-        if (!identityMatches(entry, identity)) continue;
-        std::string name = upperStr(entry.name);
-        if (std::regex_match(name, std::regex("^[A-Z_][A-Z0-9_]*$"))) values[name] = entry.address;
-    }
-    return values;
 }
 
 static std::string remuRecord(const std::string& record) {

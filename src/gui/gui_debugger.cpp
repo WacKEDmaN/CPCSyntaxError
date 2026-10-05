@@ -69,10 +69,6 @@ void Debugger::attach() {
     };
 }
 
-bool Debugger::hasBreakpoint(int address) const {
-    for (const auto& bp : breakpoints) if ((bp.address & 0xffff) == (address & 0xffff)) return true;
-    return false;
-}
 
 void Debugger::addBreakpoint(int address, const std::string& condition, bool fromAssembler) {
     GuiBreakpoint bp;
@@ -110,8 +106,6 @@ void Debugger::clearAssemblerBreakpoints() {
     pcSetDirty = true;
 }
 
-// ------------------------------------------------------------------ execution
-bool Debugger::running() const { return host.booted() && !host.paused; }
 
 void Debugger::resumeFrom() {
     if (!host.booted() || !host.emu) return;

@@ -528,15 +528,21 @@ void GuiShell::tapeDeckControls(bool asMenu) {
         char preview[160];
         std::snprintf(preview, sizeof preview, "%s", deck->getBlockDescription(std::max(0, block)).c_str());
         ImGui::SetNextItemWidth(-1);
-        if (ImGui::BeginCombo("##tapeblock", preview)) {
-            for (int i = 0; i < blocks; i++) {
-                const long long at = i < (int)deck->blockStartCycles.size() ? deck->blockStartCycles[(size_t)i] : 0;
-                char label[200];
-                std::snprintf(label, sizeof label, "%s  %s", clock(at / deck->cyclesPerSecond()).c_str(), deck->getBlockDescription(i).c_str());
-                ImGui::PushID(i);
-                if (ImGui::Selectable(label, i == block)) host.tapeSeekBlock(i);
-                ImGui::PopID();
-            }
+        if (ImGui::BeginCombo("##tapeblock", preview, ImGuiComboFlags_HeightLarge)) {
+            // only the rows in view: a tape can have a million blocks
+            ImGuiListClipper clip;
+            clip.Begin(blocks);
+            if (block >= 0 && ImGui::IsWindowAppearing()) clip.IncludeItemByIndex(block);
+            while (clip.Step())
+                for (int i = clip.DisplayStart; i < clip.DisplayEnd; i++) {
+                    const long long at = i < (int)deck->blockStartCycles.size() ? deck->blockStartCycles[(size_t)i] : 0;
+                    char label[200];
+                    std::snprintf(label, sizeof label, "%s  %s", clock(at / deck->cyclesPerSecond()).c_str(), deck->getBlockDescription(i).c_str());
+                    ImGui::PushID(i);
+                    if (ImGui::Selectable(label, i == block)) host.tapeSeekBlock(i);
+                    if (i == block && ImGui::IsWindowAppearing()) ImGui::SetScrollHereY();
+                    ImGui::PopID();
+                }
             ImGui::EndCombo();
         }
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("Go to any block");

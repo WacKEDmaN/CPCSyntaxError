@@ -4,6 +4,8 @@
 #pragma once
 #include <string>
 
+#include "core/keyboard.h"
+
 namespace cpcse {
 
 // The KeyboardMatrix code for `c` and whether SHIFT goes with it. false: no key types it.
@@ -37,8 +39,17 @@ inline bool cpcKeyForChar(char c, std::string& code, bool& shift) {
         case '-': code = "Minus"; return true;
         case '/': code = "Slash"; return true;
         case '\\': code = "Backslash"; return true;
-        case '[': code = "BracketLeft"; return true;
+        case '`': code = "Backslash"; shift = true; return true;   // the "\ `" key (no ~ on a CPC)
+        case '~': return false;   // keyboard.cpp's host map sends a PC's ~ to that key, as `
+        // The "[ {" key is matrix {2,1}: no PC key code of its own (AltRight reaches it, but
+        // is also joystick fire 2), so these two go only through the character map
+        // (cpcTypeKey); BracketLeft is the "@ |" key.
+        case '[': code = "IntlBracket"; return true;
+        case '{': code = "IntlBracket"; shift = true; return true;
         case ']': code = "BracketRight"; return true;
+        case '}': code = "BracketRight"; shift = true; return true;
+        case '!': code = "Digit1"; shift = true; return true;
+        case '\'': code = "Digit7"; shift = true; return true;
         case ' ': code = "Space"; return true;
         default:
             if (c >= 'A' && c <= 'Z') { code = std::string("Key") + c; shift = true; }   // as typed: "Q" is not "q"
@@ -46,6 +57,30 @@ inline bool cpcKeyForChar(char c, std::string& code, bool& shift) {
             else if (c >= '0' && c <= '9') code = std::string("Digit") + c;
             return !code.empty();
     }
+}
+
+// Presses (down) or lets go of the key that types `c` on this keyboard. A character the
+// keyboard's own map knows (keyboard.cpp: the CPC's symbols, letters with their SHIFT, the
+// French and Spanish layouts) goes through it -- the key it names, SHIFT only when it says
+// so; the rest (Enter, Space, the - = key) is the key cpcKeyForChar names. false: no key on
+// this keyboard types it.
+inline bool cpcTypeKey(KeyboardMatrix& kb, char c, bool down) {
+    std::string code;
+    bool shift = false;
+    if (!cpcKeyForChar(c, code, shift)) return false;
+    const std::string ch(1, c);
+    if (c != '\n' && c != ' ') {
+        if (cpcCharacterMapping(ch, code, kb.region)) { kb.setKey(code, down, ch); return true; }
+        if (normalizeCpcKeyboardRegion(kb.region) != "uk") return false;   // not on this keyboard
+    }
+    if (down) {
+        if (shift) kb.setKey("ShiftLeft", true);
+        kb.setKey(code, true);
+    } else {
+        kb.setKey(code, false);
+        if (shift) kb.setKey("ShiftLeft", false);
+    }
+    return true;
 }
 
 } // namespace cpcse
