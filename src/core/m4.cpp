@@ -29,6 +29,7 @@ static const int FA_READ = 1, FA_WRITE = 2, FA_CREATE_NEW = 4, FA_CREATE_ALWAYS 
 M4Board::M4Board(GX4000* emulator) : emulator(emulator) {
     rom.assign(0x4000, 0xff);
     hackRom.assign(0x4000, 0xff);
+    net = std::make_unique<M4Network>();
     powerOn();
 }
 M4Board::~M4Board() { flush(); }
@@ -63,12 +64,68 @@ void M4Board::powerOn() {
     for (Fd& f : fds) f = Fd{};
     dirRows.clear(); dirShort.clear(); dirIndex = 0;
     if (storage) storage->cwd = "/";
+    net->closeAll();
+    net->wifiOn = true;
+    heldFor = 0;
+    httpBuffer.clear();
 }
 
 void M4Board::reset() {
-    // Only the half-sent command is lost; the ESP was not reset.
+    // Only the half-sent command is lost; the ESP was not reset. A download the Z80 was
+    // held for finishes unread.
     cmd.clear();
+    heldFor = 0;
     flush();
+}
+
+void M4Board::netTick() {
+    if (!enabled) return;
+    // Sockets every emulated millisecond; a download the Z80 waits on, every call.
+    if (!heldFor && now() - lastNetTick < 4000 && now() >= lastNetTick) return;
+    lastNetTick = now();
+    net->poll();
+    M4Network::HttpResult r;
+    if (net->httpTake(r) && heldFor) completeDownload(r);
+    net->sockInfo(&at(0xfe00));
+}
+
+void M4Board::completeDownload(M4Network::HttpResult& r) {
+    const int command = heldFor;
+    heldFor = 0;
+    std::fill(rom.begin() + (RESP_BASE - 0xc000), rom.begin() + (RESP_BASE - 0xc000) + RESP_SIZE, 0);
+    respOff = 3;
+    if (command == C_HTTPGETMEM) {
+        // m4info: data[0..1] = downloaded size, into the internal buffer.
+        httpBuffer = r.ok ? r.body : Bytes{};
+        resp16((int)httpBuffer.size());
+    } else {
+        std::string text;
+        if (!r.ok) text = r.error;
+        else if (!storage) text = "No SD card";
+        else {
+            // ">name" first, then the attachment filename, then the URL's own (m4info v2.0.x).
+            std::string fileName = getTarget;
+            if (fileName.empty()) {
+                // The server's name is only a name: never a path out of the current folder.
+                std::string served = r.fileName;
+                for (char& c : served) if (c == '\\') c = '/';
+                fileName = M4Storage::leafOf("/" + served);
+                if (fileName == "." || fileName == "..") fileName.clear();
+            }
+            if (fileName.empty()) {
+                std::string host, path; int port = 80;
+                if (M4Network::splitUrl(r.request, host, port, path)) fileName = M4Storage::leafOf(path.substr(0, path.find('?')));
+            }
+            if (fileName.empty()) fileName = "INDEX.HTM";
+            std::string to;
+            int err = storage->readOnly ? M4_FR_WRITE_PROTECTED : storage->resolveForCreate(fileName, to);
+            if (!err) err = storage->writeFile(to, r.body);
+            text = err ? std::string("Can't save ") + fileName + ": " + m4ErrorText(err)
+                       : "Downloaded " + fileName + " (" + std::to_string(r.body.size()) + " bytes)";
+        }
+        respStr(silentGet ? "" : "\r\n" + text + "\r\n");
+    }
+    finishResponse(command, {});
 }
 
 void M4Board::flush() {
@@ -190,7 +247,10 @@ bool M4Board::ack(Z80* cpu) {
     std::fill(rom.begin() + (RESP_BASE - 0xc000), rom.begin() + (RESP_BASE - 0xc000) + RESP_SIZE, 0);
     respOff = 3;
     int err = 0;
-    const bool storageCommand = command != C_TIME && command != C_CONFIG && command != C_VERSION && command != C_SDREAD && command != C_SDWRITE;
+    const bool networkCommand = (command >= C_NETSOCKET && command <= C_WIFIPOW) || command == C_NETSTAT ||
+                                command == C_SETNETWORK || command == C_HTTPGETMEM || command == C_COPYBUF;
+    const bool storageCommand = command != C_TIME && command != C_CONFIG && command != C_VERSION && command != C_SDREAD &&
+                                command != C_SDWRITE && !networkCommand;
     if (storageCommand) flush();                     // file commands see what raw writes did
     poll();
 
@@ -206,7 +266,7 @@ bool M4Board::ack(Z80* cpu) {
             break;
         }
         case C_ROMCP: case C_ROMSUPDATE: case C_ROMLOW: case C_ROMSOFF: case C_RAMDISOFF: case C_NMIOFF:
-        case C_M4OFF: case C_WIFIPOW: case C_SETNETWORK:
+        case C_M4OFF:
             break;
         case C_VERSION: respStr("M4 board v2.0.8 (CPCSyntaxError)"); break;
         case C_TIME: {
@@ -465,20 +525,61 @@ bool M4Board::ack(Z80* cpu) {
         case C_READSECTOR: case C_WRITESECTOR: case C_FORMATTRACK:
             resp8(M4_FR_NOT_READY);                  // no DSK image mounted on the board
             break;
-        // ---------------------------------------------------------- network (no WiFi here)
-        case C_NETSTAT: respStr("WiFi not connected (emulator)"); resp8(0); break;
-        case C_NETRSSI: resp8(31); break;            // m4info: 31 = fail
-        case C_GETNETWORK: for (int i = 0; i < 196; i++) resp8(0); break;
-        case C_NETSOCKET: resp8(0xff); break;
-        case C_HTTPGET: respStr("No network in the emulator"); break;
-        case C_HTTPGETMEM: resp16(0); break;
-        case C_UPGRADE: respStr("No network in the emulator"); break;
-        case C_ROMLIST: break;
-        default:
-            if (command >= 0x4332 && command <= 0x433a) { resp8(0xff); break; }   // socket calls: error
+        // ---------------------------------------------------------- network (the host's)
+        case C_HTTPGET: {
+            // "[@]host[:port]/file[>name]": @ = print nothing, >name = save as (m4info v2.0.x)
+            std::string url = str(0);
+            silentGet = !url.empty() && url[0] == '@';
+            if (silentGet) url.erase(url.begin());
+            getTarget.clear();
+            const size_t gt = url.rfind('>');
+            if (gt != std::string::npos) { getTarget = url.substr(gt + 1); url = url.substr(0, gt); }
+            while (!getTarget.empty() && getTarget.front() == ' ') getTarget.erase(getTarget.begin());
+            net->startHttp(url, 0, 64u << 20);
+            heldFor = command;
+            return false;
+        }
+        case C_HTTPGETMEM: {
+            // data[0..1] = size (at most the 16K buffer), data[2] = "url[, offset=n]"
+            const size_t size = std::min<size_t>(p.size() >= 2 ? (size_t)(p[0] | p[1] << 8) : 0, 0x4000);
+            std::string url = str(2);
+            size_t offset = 0;
+            const size_t o = M4Storage::lower(url).find("offset=");
+            if (o != std::string::npos) {
+                std::string n = url.substr(o + 7);
+                while (!n.empty() && n.front() == ' ') n.erase(n.begin());
+                int base = 10;
+                if (n.size() > 2 && n[0] == '0' && (n[1] == 'x' || n[1] == 'X')) { n = n.substr(2); base = 16; }
+                else if (!n.empty() && (n[0] == '&' || n[0] == '#' || n[0] == '$')) { n = n.substr(1); base = 16; }
+                offset = (size_t)std::strtoull(n.c_str(), nullptr, base) & 0xffffffffu;
+                url = url.substr(0, o);
+                while (!url.empty() && (url.back() == ' ' || url.back() == ',')) url.pop_back();
+            }
+            if (size == 0) { httpBuffer.clear(); resp16(0); break; }
+            net->startHttp(url, offset, size);
+            heldFor = command;
+            return false;
+        }
+        case C_COPYBUF: {                            // data[0..1] offset, data[2..3] size
+            const size_t from = p.size() >= 2 ? (size_t)(p[0] | p[1] << 8) : 0;
+            const size_t n = std::min<size_t>(p.size() >= 4 ? (size_t)(p[2] | p[3] << 8) : 0, RESP_SIZE - 3);
+            for (size_t i = 0; i < n; i++) resp8(from + i < httpBuffer.size() ? httpBuffer[from + i] : 0);
             break;
+        }
+        case C_UPGRADE: respStr("\r\nThe emulator's M4 firmware is built in: nothing to upgrade.\r\n"); break;
+        case C_ROMLIST: break;
+        default: {
+            std::vector<uint8_t> out;
+            if (net->command(command, p, out)) respBytes(out.data(), out.size());
+            break;
+        }
     }
+    finishResponse(command, p);
+    return false;
+}
 
+void M4Board::finishResponse(int command, const std::vector<int>& p) {
+    net->sockInfo(&at(0xfe00));
     static const bool trace = std::getenv("CPCSE_TRACE_M4") != nullptr;
     if (trace) {
         std::fprintf(stderr, "M4 %04x resp=%d p=[", command, respOff - 3);
@@ -493,7 +594,6 @@ bool M4Board::ack(Z80* cpu) {
     at(RESP_BASE) = (uint8_t)(respOff - 1);
     at(RESP_BASE + 1) = (uint8_t)command;
     at(RESP_BASE + 2) = (uint8_t)(command >> 8);
-    return false;
 }
 
 } // namespace cpcse

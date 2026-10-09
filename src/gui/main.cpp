@@ -209,7 +209,7 @@ int main(int argc, char** argv) {
     // uses, with no window. --shot out.bmp [--model id] [--sna f] [--crtc N] [--gate-array 40007|40008|40010]
     // [--frames N] [--beam] [--gfx9000] [--v9990-shot out.bmp] (the GFX9000's own monitor).
     {
-        std::string shot, modelId, snaPath, saveSnaPath, dumpRamPath, diskPath, cartPath, tapePath, typeStr, keysStr; int wantCrtc = -1, wantGa = 0, frames = 200, f1at = -1, wantRam = -1, seq = 0; bool beam = false, diag = false, gfx9000 = false, opl4 = false, playcity = false; std::string v9990Shot, video9000Shot, m4Folder, mouseScript, wavPath, speechKind, mp3Card, dacType; bool sf2 = false;
+        std::string shot, modelId, snaPath, saveSnaPath, dumpRamPath, diskPath, cartPath, tapePath, typeStr, keysStr; int wantCrtc = -1, wantGa = 0, frames = 200, f1at = -1, wantRam = -1, seq = 0; bool beam = false, diag = false, gfx9000 = false, opl4 = false, playcity = false; std::string v9990Shot, video9000Shot, m4Folder, ideFolder, mouseScript, wavPath, speechKind, mp3Card, dacType; bool sf2 = false, sf3 = false; std::vector<std::string> xroms;
         for (int i = 1; i < argc; i++) { std::string a = argv[i];
             if (a == "--shot" && i + 1 < argc) shot = argv[++i];
             else if (a == "--ram" && i + 1 < argc) wantRam = std::atoi(argv[++i]);
@@ -238,6 +238,9 @@ int main(int argc, char** argv) {
             else if (a == "--wav" && i + 1 < argc) wavPath = argv[++i];        // the sound of the whole run
             else if (a == "--m4" && i + 1 < argc) m4Folder = argv[++i];   // an M4 board, this folder its SD card
             else if (a == "--sf2") sf2 = true;                                // a Symbiface II (its PS/2 mouse)
+            else if (a == "--ide" && i + 1 < argc) { ideFolder = argv[++i]; sf2 = true; }   // its IDE, this folder the disc
+            else if (a == "--sf3") sf3 = true;                                // a Symbiface III instead (with --ide too)
+            else if (a == "--xrom" && i + 1 < argc) xroms.push_back(argv[++i]);   // <slot>=<file>: an expansion ROM
             else if (a == "--mouse" && i + 1 < argc) { mouseScript = argv[++i]; sf2 = true; }
             else if (a == "--v9990-shot" && i + 1 < argc) { v9990Shot = argv[++i]; gfx9000 = true; }
             else if (a == "--video9000-shot" && i + 1 < argc) { video9000Shot = argv[++i]; gfx9000 = true; } }
@@ -248,6 +251,13 @@ int main(int argc, char** argv) {
             host.gateArrayPart = wantGa;
             if (!m4Folder.empty()) { host.m4Enabled = true; host.m4Folder = m4Folder; }
             if (sf2) host.symbifaceModule = "sf2";
+            if (sf3) host.symbifaceModule = "sf3";
+            for (const std::string& x : xroms) {
+                const size_t eq = x.find('=');
+                const int slot = eq == std::string::npos ? -1 : std::atoi(x.substr(0, eq).c_str());
+                if (slot < 0 || !host.fitExpansionRom(slot, x.substr(eq + 1))) { std::printf("[shot] --xrom %s: %s\n", x.c_str(), host.status.c_str()); return 2; }
+            }
+            if (!ideFolder.empty()) host.ideFolder = ideFolder;
             int mi = 0; for (int i = 0; i < (int)host.models.size(); i++) if (host.models[i].id == modelId) mi = i;
             if (!host.bootModel(mi, wantRam, wantCrtc)) { std::printf("[shot] %s\n", host.status.c_str()); return 2; }
             if (!snaPath.empty()) host.loadSnapshot(snaPath);
@@ -607,7 +617,14 @@ int main(int argc, char** argv) {
     host.crtBloom       = level("crtbloom", 0.2, 0.0, 1.0);
     host.m4Folder       = gets("m4folder", "");
     host.m4Enabled      = geti("m4", 0) != 0;             // applied by applySettings during boot
+    host.m4Network      = geti("m4net", 1) != 0;
+    host.m4NetworkLan   = geti("m4netlan", 0) != 0;
     host.symbifaceModule = gets("symbiface", "none");
+    {
+        char* b = SDL_GetBasePath();
+        host.ideFolder = gets("idefolder", (std::string(b ? b : "") + "symide").c_str());   // the IDE's disc
+        if (b) SDL_free(b);
+    }
     host.mouseSensitivity = level("mousesens", 1.0, 0.25, 4.0);
     host.lightgunType   = gets("lightgun", "none");       // these four are applied by applySettings
     host.v9990Enabled   = geti("v9990", 0) != 0;
@@ -879,7 +896,10 @@ int main(int argc, char** argv) {
             f << "aspect=" << (host.maintainAspect ? 1 : 0) << "\n";
             f << "m4=" << (host.m4Enabled ? 1 : 0) << "\n";
             f << "m4folder=" << host.m4Folder << "\n";
+            f << "m4net=" << (host.m4Network ? 1 : 0) << "\n";
+            f << "m4netlan=" << (host.m4NetworkLan ? 1 : 0) << "\n";
             f << "symbiface=" << host.symbifaceModule << "\n";
+            f << "idefolder=" << host.ideFolder << "\n";
             f << "mousesens=" << host.mouseSensitivity << "\n";
             f << "lightgun=" << host.lightgunType << "\n";
             f << "v9990=" << (host.v9990Enabled ? 1 : 0) << "\n";

@@ -323,16 +323,44 @@ void GuiShell::sectionExpansions(bool asMenu) {
         if (host.m4Enabled) { if (after().smallButton("Rescan")) host.rescanM4(); }
         if (!host.m4Folder.empty()) ImGui::TextDisabled("  %s", host.m4Folder.c_str());
     }
+    if (asMenu) { if (ImGui::MenuItem("M4 WiFi: the PC's network", nullptr, &host.m4Network)) host.applyM4Network(); }
+    else if (ImGui::Checkbox("WiFi: the PC's network", &host.m4Network)) host.applyM4Network();
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("The M4's sockets, |HTTPGET and |HTTPMEM reach the internet through this computer.\n"
+                          "Off: the board has no network.");
+    if (host.m4Network) {
+        if (asMenu) { if (ImGui::MenuItem("M4 servers: accept other computers", nullptr, &host.m4NetworkLan)) host.applyM4Network(); }
+        else if (ImGui::Checkbox("Servers: accept other computers", &host.m4NetworkLan)) host.applyM4Network();
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("A CPC program that listens (C_NETBIND) is reachable from your network.\n"
+                              "Off: only from this computer (127.0.0.1).");
+    }
 
-    static const Choice sf[] = { { "Off", "none", nullptr }, { "SF2", "sf2", "Symbiface II: PS/2 mouse, RTC, IDE" },
-                                 { "SF3", "sf3", "Symbiface III: USB mouse, RTC" } };
+    static const Choice sf[] = { { "Off", "none", nullptr }, { "SF2", "sf2", "Symbiface II: PS/2 mouse, RTC, IDE/CF" },
+                                 { "SF3", "sf3", "Symbiface III: USB mouse, RTC, IDE/CF" } };
     auto pickSf = [this](const char* v) { host.setSymbiface(v); };
+    auto pickIde = [this]() {
+        browser.openDir("Symbiface IDE folder", host.ideFolder.empty() ? host.romDir : host.ideFolder,
+                        [this](const std::string& dir) { host.setIdeFolder(dir); });
+    };
+    const bool sfOn = host.symbifaceModule != "none";
     if (asMenu) {
         ImGui::Separator();
-        if (ImGui::BeginMenu("Symbiface")) { choiceRow(true, sf, host.symbifaceModule, pickSf); ImGui::EndMenu(); }
+        if (ImGui::BeginMenu("Symbiface")) {
+            choiceRow(true, sf, host.symbifaceModule, pickSf);
+            ImGui::Separator();
+            if (ImGui::MenuItem("IDE folder...")) pickIde();
+            if (ImGui::MenuItem("Rescan IDE folder", nullptr, false, sfOn)) host.rescanIde();
+            ImGui::EndMenu();
+        }
     } else {
-        sectionHeading("Symbiface (mouse + RTC)");
+        sectionHeading("Symbiface (mouse, RTC, IDE/CF)");
         choiceRow(false, sf, host.symbifaceModule, pickSf);
+        ImGui::TextUnformatted("IDE disc");
+        if (after().smallButton("Folder...##ide")) pickIde();
+        if (sfOn) { if (after().smallButton("Rescan##ide")) host.rescanIde(); }
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("The IDE/CF drive is this folder, as one FAT16 partition:\nwhat SymbOS writes there goes back into the folder.");
+        if (!host.ideFolder.empty()) ImGui::TextDisabled("  %s", host.ideFolder.c_str());
     }
 
     if (asMenu) {

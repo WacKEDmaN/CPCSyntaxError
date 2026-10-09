@@ -11,10 +11,15 @@
 //   - the ESP's FatFs over a microSD card -- here a host folder (m4_storage.h) -- both
 //     as files and as raw sectors.
 // The ESP keeps running through a CPC reset: open files, current directory and config
-// area survive it ("config area, reset only by power cycle").
+// area survive it ("config area, reset only by power cycle"), and so do open sockets.
+//
+// The WiFi is the host's own network (m4_net.h). The two commands that wait for the
+// internet -- C_HTTPGET and C_HTTPGETMEM -- hold the Z80 until the download is done,
+// as the board does: the ROM reads their answer the instruction after the kick.
 #pragma once
 #include "common.h"
 #include "m4_storage.h"
+#include "m4_net.h"
 
 namespace cpcse {
 
@@ -50,6 +55,15 @@ public:
     void flush();
     void rescan();                   // the folder changed from outside
 
+    std::unique_ptr<M4Network> net;
+    // A download the Z80 is held for (C_HTTPGET / C_HTTPGETMEM), 0 when none.
+    int heldFor = 0;
+    bool holdsCpu() const { return heldFor != 0; }
+    bool networkActive() const { return enabled && (heldFor || net->active()); }
+    // Called as the machine runs: moves socket data, ends a download. Cheap between
+    // its millisecond steps.
+    void netTick();
+
     struct Fd {
         bool used = false, canRead = false, canWrite = false, dirty = false;
         std::string path;            // real path on the card
@@ -63,7 +77,13 @@ private:
     std::vector<std::string> dirShort;
     size_t dirIndex = 0;
     long long lastSdWrite = -1;
+    long long lastNetTick = 0;
     int respOff = 3;
+    bool silentGet = false;          // |HTTPGET,"@..." prints nothing
+    std::string getTarget;           // |HTTPGET,"...>name"
+    Bytes httpBuffer;                // C_HTTPGETMEM's internal buffer, read by C_COPYBUF
+    void finishResponse(int command, const std::vector<int>& p);
+    void completeDownload(M4Network::HttpResult& r);
 
     void resp8(int v);
     void resp16(int v);

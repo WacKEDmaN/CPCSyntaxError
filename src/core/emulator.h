@@ -9,7 +9,7 @@
 
 namespace cpcse {
 
-class GXMemory; class PlusAsic; class GateArray; class M4Board; class V9990; class Opl4Card;
+class GXMemory; class PlusAsic; class GateArray; class M4Board; class SymbifaceIde; class V9990; class Opl4Card;
 class PlayCity;
 class SpeechSynth;
 class SymbifaceMouse; class Symbiface2Rtc; class Symbiface3; class CtmMonitor;
@@ -31,6 +31,7 @@ public:
     SymbifaceMouse* symbifaceMouse = nullptr;
     Symbiface2Rtc* sf2Rtc = nullptr;
     Symbiface3* sf3 = nullptr;
+    SymbifaceIde* ide = nullptr;     // the SYMBiFACE II / III IDE, a host folder its disc
     CtmMonitor* monitorRenderer = nullptr;
     // WHICH MONITOR IS PLUGGED IN (monitor_model.h). The machine needs to know because
     // ACCC 15.1 (p.146) makes the horizontal calibration a property of the PAIRING: the

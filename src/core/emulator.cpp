@@ -20,6 +20,7 @@
 #include "symbiface_mouse.h"
 #include "sf2_rtc.h"
 #include "sf3.h"
+#include "symbiface_ide.h"
 #include "monitor_model.h"
 #include "monitor_renderer.h"
 #include "lightgun.h"
@@ -44,6 +45,7 @@ GX4000::GX4000() {
     symbifaceMouse = new SymbifaceMouse();
     sf2Rtc = new Symbiface2Rtc();
     sf3 = new Symbiface3();
+    ide = new SymbifaceIde();
     memory->setUpperRomReadHandler([this](int address, int rom) { return m4 ? m4->readMemory(address, rom) : -1; });
     classicMonitorCharacter = 0; classicMonitorLine = 0; classicMonitorFrame = 0;
     classicMonitorLineCharacters = 64; classicMonitorHsyncLimit = 64 * 16; classicMonitorHsyncCount = 0;
@@ -316,7 +318,7 @@ GX4000::GX4000() {
 
 GX4000::~GX4000() {
     delete cpu; delete fdc; delete gamepad; delete ppi; delete tape; delete dac; delete ay; delete keyboard;
-    delete crtc; delete monitorRenderer; delete sf3; delete sf2Rtc; delete symbifaceMouse; delete v9990; delete opl4; delete playcity; delete speech;
+    delete crtc; delete monitorRenderer; delete sf3; delete ide; delete sf2Rtc; delete symbifaceMouse; delete v9990; delete opl4; delete playcity; delete speech;
     delete m4; delete gateArray; delete asic; delete memory;
 }
 
@@ -844,6 +846,7 @@ void GX4000::writePort(int port, int value) {
     if (symbifaceMouse->handlesWritePort(port)) { symbifaceMouse->writePort(port, value); return; }
     if (sf2Rtc->handlesWritePort(port)) { sf2Rtc->writePort(port, value); return; }
     if (sf3->handlesWritePort(port)) { sf3->writePort(port, value); return; }
+    if (ide->handlesPort(port)) { ide->writePort(port, value); return; }
     // M4: DATAPORT &FExx takes the command, ACKPORT &FCxx starts it (M4ROM.s)
     if (m4->enabled && high == 0xfe) { m4->dataPortWrite(value); return; }
     if (m4->enabled && high == 0xfc) { m4->ack(cpu); return; }
@@ -916,6 +919,7 @@ int GX4000::readPortUntraced(int port) {
     if (symbifaceMouse->handlesPort(port)) return symbifaceMouse->readPort(port);
     if (sf2Rtc->handlesPort(port)) return sf2Rtc->readPort(port);
     if (sf3->handlesPort(port)) return sf3->readPort(port);
+    if (ide->handlesPort(port)) return ide->readPort(port);
     if (m4->enabled && high == 0xfe) return m4->dataPortRead();
     bool crtcSelected = (port & 0x4000) == 0;
     int crtcPort = (unsigned)port >> 8 & 3;
@@ -1023,6 +1027,19 @@ int GX4000::stepInstruction() {
     cpuIoAccessed = false;
     timingInstructionActive = true;
     hardwareCyclesAdvanced = 0;
+    // The M4 holds the Z80 while it fetches from the internet (|HTTPGET, |HTTPMEM), and
+    // LambdaSpeak 3 while it speaks in blocking mode (its READY line): the
+    // rest of the machine runs on, a microsecond at a time, until the answer is in.
+    if (m4->holdsCpu() || speech->holdsCpu()) {
+        advanceHardwareToInstructionOffset(4);
+        machineCycles += 4;
+        timingInstructionActive = false;
+        lastInstructionSlackT = 0;
+        m4->netTick();
+        if (v9990->enabled) v9990->advanceTo(machineCycles);
+        if (opl4->enabled) opl4->tick(machineCycles);
+        return 4;
+    }
     // ACCC §27.7.2 (p.290): "If the CRTC activates the end of HSYNC during the LAST CYCLE
     // T of an instruction (0.25 usec), the delay is very short to allow the Gate Array to
     // activate the INT signal early so that the Z80A consider it. If the end of HSYNC
@@ -1142,6 +1159,7 @@ int GX4000::stepInstruction() {
     }
     machineCycles += cycles;
     timingInstructionActive = false;
+    if (m4->networkActive()) m4->netTick();
     // The GFX9000 runs its own raster; its /INT is a level on the CPC's /INT, held while a
     // flag it enables is set, so the Z80A is asked again after each acknowledge until the
     // program clears the flag (V9990 manual p.76, p.82).
@@ -1205,6 +1223,7 @@ int GX4000::runFrame() {
         elapsed += stepInstruction();
         if (debuggerPaused) break;
     }
+    if (ide->enabled) ide->poll(machineCycles);   // the disc's write-back once idle
     return elapsed;
 }
 void GX4000::reset() {
@@ -1222,7 +1241,7 @@ void GX4000::reset() {
     memory->reset(); asic->reset(); gateArray->reset(); rasterCapture.clear(); rasterFrame.clear(); previousRasterFrame.clear();
     spritePatternSnapshot.clear(); spritePatternRevision = -1; crtc->reset();
     videoFrameRegisters = crtc->registers; videoCaptureRegisters = crtc->registers;
-    keyboard->reset(); ay->reset(); ppi->reset(); fdc->reset(); dac->reset(); tape->reset(); m4->reset(); v9990->reset(); opl4->reset(); playcity->reset(); speech->reset(); symbifaceMouse->reset(); sf2Rtc->reset(); sf3->reset(); cpu->reset();
+    keyboard->reset(); ay->reset(); ppi->reset(); fdc->reset(); dac->reset(); tape->reset(); m4->reset(); v9990->reset(); opl4->reset(); playcity->reset(); speech->reset(); symbifaceMouse->reset(); sf2Rtc->reset(); sf3->reset(); ide->reset(); cpu->reset();
     cpu->sp = 0xbfff;
 }
 void GX4000::acknowledgeInterrupt() {

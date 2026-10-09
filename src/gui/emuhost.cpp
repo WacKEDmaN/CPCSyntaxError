@@ -24,6 +24,7 @@
 #include "core/m4.h"
 #include "core/symbiface_mouse.h"
 #include "core/sf3.h"
+#include "core/symbiface_ide.h"
 #include "core/sf2_rtc.h"
 #include "core/matrix_printer.h"
 #include "core/dac.h"
@@ -296,7 +297,15 @@ void EmuHost::applySettings() {
     applyAudioRate();
 }
 
+void EmuHost::applyM4Network() {
+    if (!emu || !emu->m4) return;
+    emu->m4->net->linked = m4Network;
+    emu->m4->net->allowLan = m4NetworkLan;
+    if (!m4Network) emu->m4->net->closeAll();
+}
+
 void EmuHost::applyM4() {
+    applyM4Network();
     if (!m4Enabled || !emu || !emu->m4 || !emu->memory) return;
     if (emu->plusHardware) return;                 // M4 is a classic-CPC device
     std::string romPath = findRom("m4rom");
@@ -321,6 +330,7 @@ bool EmuHost::setM4(bool enabled, const std::string& folder) {
         emu->m4->setRom(rom);
         emu->memory->setUpperRom(emu->m4->romSlot, rom);
         emu->m4->setEnabled(true);
+        applyM4Network();
         m4Enabled = true; m4Folder = folder;
         emu->reset();   // let the firmware re-scan ROMs and register the M4 RSX (|CD, |DIR…)
         status = "M4 enabled — " + folder;
@@ -345,6 +355,27 @@ void EmuHost::applySymbiface() {
     if (emu->symbifaceMouse) { emu->symbifaceMouse->setEnabled(sf2); emu->symbifaceMouse->setSensitivity(mouseSensitivity); }
     if (emu->sf2Rtc) emu->sf2Rtc->setEnabled(sf2);       // its DS12887 clock at &FD14/&FD15
     if (emu->sf3) { emu->sf3->setEnabled(sf3); emu->sf3->setSensitivity(mouseSensitivity); }
+    if (emu->ide) {
+        // Both cards carry the IDE/CF interface at &FD06-&FD0F.
+        if ((sf2 || sf3) && !ideFolder.empty()) {
+            namespace fs = std::filesystem;
+            std::error_code ec;
+            const fs::path p = fs::u8path(ideFolder);
+            if (!fs::exists(p, ec)) fs::create_directories(p, ec);
+            emu->ide->setFolder(ideFolder);
+            emu->ide->setEnabled(true);
+        } else emu->ide->setEnabled(false);
+    }
+}
+
+void EmuHost::setIdeFolder(const std::string& folder) {
+    ideFolder = folder;
+    applySymbiface();
+    status = "Symbiface IDE: " + folder;
+}
+
+void EmuHost::rescanIde() {
+    if (emu && emu->ide && emu->ide->enabled) { emu->ide->rescan(); status = "IDE folder rescanned"; }
 }
 
 void EmuHost::setSymbiface(const std::string& module) {

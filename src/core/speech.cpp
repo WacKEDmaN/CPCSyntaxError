@@ -30,6 +30,7 @@ void SpeechSynth::reset() {
     serialMode = false; escape = 0; pendingResult = -1; directMode = true;
     txBuffer.clear(); rxBuffer.clear(); rxCursor = 0;
     mp3.reset();
+    ls3Reset();
 }
 
 bool SpeechSynth::handlesPort(int port) const {
@@ -82,28 +83,15 @@ void SpeechSynth::serialWrite(int value) {
 
 void SpeechSynth::writePort(int, int value) {
     value &= 0xff;
-    if (kind == Kind::LambdaSpeak3) {
-        if (serialMode) { serialWrite(value); return; }
-        // SSA-1 emulation: content below &80, control bytes above.
-        if (value >= 0x80) {
-            if (value == 0xf1) { serialMode = true; escape = 0; pendingResult = -1; }
-            else if (value == 0xff) { chip.reset(); }
-            return;
-        }
-        if (hasRom) chip.ald_w((uint8_t)value);
-        return;
-    }
+    if (kind == Kind::LambdaSpeak3) { ls3Write(value); return; }   // speech_ls3.cpp
     if (!hasRom) return;
     chip.ald_w((uint8_t)(kind == Kind::DkTronics ? (value & 0x3f) : (value & 0xff)));
 }
 
 int SpeechSynth::readPort(int) {
     int value = 0xff;
-    if (kind == Kind::LambdaSpeak3 && serialMode) {
-        if (pendingResult >= 0) { const int r = pendingResult; pendingResult = -1; return r; }
-        return 16;                                            // serial mode: ready
-    }
-    if (kind == Kind::Ssa1 || kind == Kind::LambdaSpeak3) {
+    if (kind == Kind::LambdaSpeak3) return ls3Read();
+    if (kind == Kind::Ssa1) {
         if (!chip.sby_r()) value &= ~0x80;
         if (chip.lrq_r()) value &= ~0x40;
     } else if (kind == Kind::DkTronics) {
@@ -123,8 +111,10 @@ void SpeechSynth::advanceMicrosecond() {
         previous = current;
         current = (float)s / 8192.0f;     // MAME's HIGH_QUALITY output is 14 bits
     }
-    // LambdaSpeak 3's MP3 module, and what it says back over the UART.
+    // LambdaSpeak 3's own work (its Epson speech), its MP3 module, and what that says back
+    // over the UART.
     if (kind == Kind::LambdaSpeak3) {
+        ls3Advance();
         mp3.advanceMicrosecond(outputRate);
         while (!mp3.transmit.empty()) {
             if (rxBuffer.size() < 768) rxBuffer.push_back(mp3.transmit.front());
@@ -136,7 +126,7 @@ void SpeechSynth::advanceMicrosecond() {
     while (outPhase >= 1.0) {
         outPhase -= 1.0;
         const float t = (float)chipPhase;
-        last = previous + (current - previous) * t;
+        last = previous + (current - previous) * t + ttsSample * 0.8f;
         queue.push_back(last);
     }
     if (readIndex > 4096) { queue.erase(queue.begin(), queue.begin() + (long)readIndex); readIndex = 0; }

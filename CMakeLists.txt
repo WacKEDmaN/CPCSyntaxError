@@ -1,7 +1,7 @@
 # CPCSyntaxError — an Amstrad CPC / CPC Plus / GX4000 emulator.
 #
 # Targets:
-#   cpcse-core   the emulation core (static library, no host dependencies)
+#   cpcse-core   the emulation core (static library; the host's sockets and voices only)
 #   imgui        Dear ImGui, docking branch (third_party/imgui)
 #   rasm         the RASM assembler, built in (third_party/rasm)
 #   cpcse        the desktop emulator (SDL2 + OpenGL + Dear ImGui)
@@ -70,6 +70,14 @@ add_library(minimp3 STATIC third_party/minimp3/minimp3_impl.cpp)
 target_include_directories(minimp3 PUBLIC third_party/minimp3)
 target_compile_options(minimp3 PRIVATE -w)
 target_link_libraries(cpcse-core PUBLIC minimp3)
+
+# The M4's WiFi is the host's network (its sockets; DNS and downloads on threads), and
+# LambdaSpeak 3's Epson / DECtalk speech is the host's voices (SAPI on Windows).
+find_package(Threads REQUIRED)
+target_link_libraries(cpcse-core PUBLIC Threads::Threads)
+if(WIN32)
+  target_link_libraries(cpcse-core PUBLIC ws2_32 sapi ole32 uuid)
+endif()
 
 # --------------------------------------------------------------- SDL2
 # cpcse-sdl carries SDL2 + OpenGL for every target that needs them.

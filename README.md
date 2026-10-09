@@ -32,6 +32,9 @@ built around a cycle-level model of the machine's video chips.
     files, directories and long names work from BASIC (`|CD`, `CAT`, `|LS`, `|ERA`,
     `|REN`, `|COPYF`...), and programs with their own file system -- **SymbOS** -- read and
     write the card sector by sector, their changes written back to the folder.
+    Its **WiFi** is your PC's internet connection: CPC programs open TCP sockets, look up
+    names, and run servers (Duke's telnet and TCP examples work); `|HTTPGET` and `|HTTPMEM`
+    download (plain HTTP, as the real board), and `|NETSTAT` shows your PC's address.
   - **GFX9000** (Yamaha V9990 at `&FF60`): every screen mode, sprites, cursors, the
     blitter commands -- taking their real time, with the chip's **/WAIT** holding the Z80
     while it is busy -- raster timing and interrupts, and the behaviour measured on a
@@ -45,11 +48,18 @@ built around a cycle-level model of the machine's video chips.
   - **PlayCity** (TotO's two YMZ294 + Z80 CTC at `&F880`-`&F988`): six more AY channels
     in stereo, the CTC's programmable clock, raster NMIs and IM2 timer interrupts.
   - **Speech synthesisers**: the Amstrad **SSA-1** (`&FBEE`) and **dk'tronics** (`&FBFE`),
-    both General Instrument's SP0256-AL2 (MAME's SP0256 core), and **LambdaSpeak 3** with its
-    serial **MP3 module** (a Catalex YX5300): MP3 files from a folder on your PC, laid out
-    as its micro-SD card (`01/001xxx.mp3`...). The SP0256-AL2's own ROM is not included:
-    choosing a speech board without it opens a prompt to download it or choose a copy.
-  - Symbiface II/III mouse and clock, lightguns (Trojan Light Phazer, Gunstick,
+    both General Instrument's SP0256-AL2 (MAME's SP0256 core), and **LambdaSpeak 3**: its
+    **Epson** and **DECtalk** text-to-speech modes, spoken with your computer's own voices
+    (Windows' speech voices, `say` on macOS, `espeak-ng` on Linux) with the Epson parser's and
+    DECtalk's voice, pitch, speed and whisper commands; its getters, confirmations and
+    blocking speech as the board does them; and its serial **MP3 module** (a Catalex
+    YX5300): MP3 files from a folder on your PC, laid out as its micro-SD card
+    (`01/001xxx.mp3`...). The SP0256-AL2's own ROM is not included: choosing a speech board
+    without it opens a prompt to download it or choose a copy.
+  - **Symbiface II / III**: mouse, clock and the **IDE/CF interface** -- its drive is a
+    folder on your PC (`symide` beside the program, or one you choose), one FAT16 partition
+    that SymbOS reads and writes, its changes written back to the folder.
+  - Lightguns (Trojan Light Phazer, Gunstick,
     West Phaser), a printer or dot-matrix printer on the printer port, DigiBlaster /
     AmDrum, the Plus analogue port.
 - **Disc drive and keyboard sounds** (Audio): the drive's motor, head steps, disc insert and
@@ -160,7 +170,8 @@ cpcse.exe --shot out.bmp --model cpc6128 --frames 200 [--disk game.dsk] [--type 
           [--gate-array 40007|40008|40010] [--beam] [--ram 64-4160]
           [--m4 <folder>] [--gfx9000] [--v9990-shot gfx.bmp] [--video9000-shot mixed.bmp]
           [--opl4] [--playcity] [--speech ssa1|dktronics|lambdaspeak3] [--mp3card <folder>]
-          [--dac digiblaster|amdrum] [--wav out.wav] [--sf2]
+          [--dac digiblaster|amdrum] [--wav out.wav] [--sf2] [--sf3] [--ide <folder>]
+          [--xrom <slot>=<rom file>]
           [--mouse "w120;j5,60;j16,2;tDIR;kEnter;s<file.bmp>"]
 ```
 
@@ -312,14 +323,14 @@ third_party/   Dear ImGui (docking branch), RASM, ymfm, the SP0256 core, minimp3
 | CSL / SSM | Complete (CSL 1.5, SSM 1.1) |
 | User interface | Every option exposed, grouped by Machine / Media / Video / Audio / Input / Expansions / Tools / Debug; still being refined |
 | DSK editor | Working: new discs, files and sectors of standard and extended images; its filesystem checked against AMSDOS itself (LOAD, SAVE, ERA, read-only) |
-| M4 board | Working: files and raw SD sectors over a host folder, checked against the M4's own ROM source. Not yet: mounting DSK images through the M4, its ROM board, WiFi/network |
+| M4 board | Working: files and raw SD sectors over a host folder, checked against the M4's own ROM source; its WiFi through the host's network (sockets, DNS, servers, `|HTTPGET`). Not yet: mounting DSK images through the M4, its ROM board |
 | GFX9000 (V9990) + Video9000 | Working, from Yamaha's application manual and tests of a real V9990 on a CPC; the blitter at openMSX's measured speeds (LMMC, LMCM and CMMC estimated), /WAIT on the bus |
 | OPL4 (YMF278B) | Working (ymfm core); needs `yrw801*.rom` for the General MIDI samples |
 | PlayCity | Working: both YMZ294s and the CTC's clock measured; its NMI / IM2 timers follow the Z80 CTC manual but are not yet tested with PlayCity software |
 | SSA-1 / dk'tronics speech | Working (MAME's SP0256 core); needs `sp0256-al2.bin` |
-| LambdaSpeak 3 | Its SSA-1 mode and its serial mode with the Catalex MP3 module. **Not emulated:** the DECtalk / Epson speech modes (the Epson chip's firmware) |
+| LambdaSpeak 3 | Working: its control bytes, Epson and DECtalk modes (with the host's voices -- the Epson chip's own DECtalk firmware is not public, so it sounds like your computer, not DECtalk), the SP0 SSA-1 / dk'tronics modes, serial mode with the Catalex MP3 module. Not yet: the DECtalk-based SSA-1 emulation without an SP0256 ROM, the EEPROM sampler, its Amdrum mode |
 | Drive / keyboard sounds | Working, from recordings (an Amiga 600 drive and a PC keyboard -- no licence-clear Amstrad recordings were found; drop your own in `sounds/`) |
-| **Symbiface II / III** | **Incomplete** -- mouse and RTC only; the IDE/CF interface is not emulated |
+| Symbiface II / III | Working: mouse, RTC and the IDE/CF interface (a host folder as the drive), checked against the ATA standard and with SymbOS |
 | DigiBlaster / AmDrum DACs | Working -- they were silent before 0.2.2 (never mixed in); now measured |
 | **Lightguns, printers** | Working, lightly tested |
 

@@ -150,9 +150,16 @@ public:
     // M4 board (SD storage backed by a host folder) — classic CPC only.
     bool m4Enabled = false;
     std::string m4Folder;
-    // Symbiface mouse + RTC. NOTE: the Symbiface hard-disk/CF interface is not
-    // emulated — only the SF2/SF3 mouse and RTC. There is no HDD image to load.
+    bool m4Network = true;       // its WiFi is the host's network (off: no network at all)
+    bool m4NetworkLan = false;   // programs that listen take connections from other computers
+    void applyM4Network();
+    // Symbiface II / III: mouse, RTC and the IDE/CF interface.
     std::string symbifaceModule = "none";   // none / sf2 / sf3
+    // Both cards' IDE/CF interface: this folder is its disc ("symide" beside the program,
+    // set by main). Made when the card is turned on and the folder is not there yet.
+    std::string ideFolder;
+    void setIdeFolder(const std::string& folder);
+    void rescanIde();
     float mouseSensitivity = 1.0f;
 
     // last operation status line for the UI

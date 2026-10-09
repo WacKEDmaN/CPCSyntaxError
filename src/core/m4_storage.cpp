@@ -100,9 +100,33 @@ std::string M4Storage::absolute(const std::string& nameIn) const {
     return out.empty() ? "/" : out;
 }
 
+// A CPC name is bytes; the host's paths are UTF-8, and std::filesystem throws on anything
+// else -- so "CAF\xE9" from a CPC program stopped the emulator. Bytes that are not UTF-8
+// are taken as Latin-1.
+static std::string asUtf8(const std::string& s) {
+    bool valid = true;
+    for (size_t i = 0; i < s.size() && valid;) {
+        const unsigned char c = (unsigned char)s[i];
+        const size_t n = c < 0x80 ? 1 : (c >> 5) == 6 ? 2 : (c >> 4) == 14 ? 3 : (c >> 3) == 30 ? 4 : 0;
+        if (n == 0 || i + n > s.size()) { valid = false; break; }
+        for (size_t k = 1; k < n; k++) if (((unsigned char)s[i + k] >> 6) != 2) valid = false;
+        const unsigned char d = n > 1 ? (unsigned char)s[i + 1] : 0;
+        if ((n == 2 && c < 0xc2) || (c == 0xe0 && d < 0xa0) || (c == 0xf0 && d < 0x90)) valid = false;   // overlong
+        if ((c == 0xed && d >= 0xa0) || c > 0xf4 || (c == 0xf4 && d >= 0x90)) valid = false;            // surrogates, past U+10FFFF
+        i += n;
+    }
+    if (valid) return s;
+    std::string out;
+    for (unsigned char c : s) {
+        if (c < 0x80) out += (char)c;
+        else { out += (char)(0xc0 | c >> 6); out += (char)(0x80 | (c & 0x3f)); }
+    }
+    return out;
+}
+
 fs::path M4Storage::host(const std::string& realPath) const {
     fs::path p(root);
-    if (realPath.size() > 1) p /= fs::path(realPath.substr(1));
+    if (realPath.size() > 1) p /= fs::u8path(asUtf8(realPath.substr(1)));
     return p;
 }
 
