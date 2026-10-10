@@ -16,10 +16,17 @@
 // The WiFi is the host's own network (m4_net.h). The two commands that wait for the
 // internet -- C_HTTPGET and C_HTTPGETMEM -- hold the Z80 until the download is done,
 // as the board does: the ROM reads their answer the instruction after the kick.
+//
+// A .dsk on the card is a folder too (m4info: "|cd,"robocop.dsk" and it takes you inside
+// the DSK file as it was a folder"): while one is mounted the file commands list and read
+// its CP/M files (read-only, as the M4's are), and the ROM's BIOS read/write-sector
+// replacements reach its sectors by track and sector ID (C_READSECTOR / C_WRITESECTOR),
+// written back into the .dsk on the card.
 #pragma once
 #include "common.h"
 #include "m4_storage.h"
 #include "m4_net.h"
+#include "dsk_edit.h"
 
 namespace cpcse {
 
@@ -72,6 +79,17 @@ public:
     };
     std::array<Fd, 13> fds;          // 1-2 AMSDOS in/out, 3-12 FA_REALMODE
 
+    // The .dsk the current directory is inside, if any.
+    struct MountedDsk {
+        std::string real;            // its path on the card
+        std::shared_ptr<Disk> disk;
+        DskGeometry geometry;
+        bool dirty = false;          // sectors written, not yet back in the .dsk
+    };
+    std::optional<MountedDsk> dsk;
+    bool mountDsk(const std::string& realPath);
+    void unmountDsk();
+
 private:
     std::vector<M4Entry> dirRows;
     std::vector<std::string> dirShort;
@@ -83,6 +101,14 @@ private:
     std::string getTarget;           // |HTTPGET,"...>name"
     Bytes httpBuffer;                // C_HTTPGETMEM's internal buffer, read by C_COPYBUF
     void finishResponse(int command, const std::vector<int>& p);
+    std::vector<DskFsFile> dskFiles(bool listing = false) const;   // the mounted image's files (a listing hides system files)
+    const DskFsFile* dskFind(const std::vector<DskFsFile>& files, const std::string& name) const;
+    void flushDsk();
+    bool dskCommand(int command, const std::vector<int>& p);
+    // |DSKX: the files still to extract, one a call
+    std::string extractKey;
+    std::vector<std::pair<std::string, Bytes>> extractQueue;
+    size_t extractIndex = 0;
     void completeDownload(M4Network::HttpResult& r);
 
     void resp8(int v);

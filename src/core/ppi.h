@@ -30,6 +30,11 @@ public:
     int portIndex(int port) { return (unsigned)port >> 8 & 3; }
     void write(int port, int value);
     void applyAyBus();
+    // What port C's pins carry: the latch where a half is an output, and where it is an
+    // input, high impedance -- which the devices on it see as 1s (Kevin Thacker, "8255 PPI":
+    // "A device connected to a port of the 8255 will see &FF on the port outputs").
+    int portCPins() const { return portC | (portCHighInput ? 0xf0 : 0) | (portCLowInput ? 0x0f : 0); }
+    void applyPortC();                 // the motor, the cassette write line, the keyboard and the PSG
     int read(int port);
 };
 

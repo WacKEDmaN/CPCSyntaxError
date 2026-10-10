@@ -12,6 +12,7 @@
 
 #include "gui_assembler.h"
 #include "gui_dsk_editor.h"
+#include "gui_cheats.h"
 #include "devserver.h"
 
 // DejaVu Sans Mono (Bitstream Vera licence: third_party/dejavu/LICENSE.txt)
@@ -48,6 +49,7 @@ GuiShell::GuiShell(EmuHost& h) : host(h), debugger(h) {
         { "GFX9000", "win_gfx9000", false, false },
         { "Assembler", "win_asm", false, false },
         { "DSK editor", "win_dsk_editor", false, false },
+        { "Cheats", "win_cheats", false, false },
         { "CSL scripts", "win_csl", false, false },
         { "Printer", "win_printer", false, false },
         { "Settings", "win_settings", false, false },
@@ -55,6 +57,7 @@ GuiShell::GuiShell(EmuHost& h) : host(h), debugger(h) {
     assembler = std::make_unique<AssemblerWindow>(host, debugger, browser, saver);
     assembler->showInDisassembly = [this](int a) { showInDisassembly(a); };
     dskEditor = std::make_unique<DskEditorWindow>(host, browser, saver);
+    cheats = std::make_unique<CheatsWindow>(host, browser, saver);
     dev = std::make_unique<DevServer>(host, debugger);
     dev->onQuit = [this]() { quitRequested = true; };
 }
@@ -189,6 +192,10 @@ void GuiShell::draw(const ShellFrameInfo& info) {
         dskEditor->draw(&panelOpen("DSK editor"));
         if (dskEditor->focused) toolFocusedNow = true;
     }
+    if (panelOpen("Cheats")) {
+        cheats->draw(&panelOpen("Cheats"));
+        if (cheats->focused) toolFocusedNow = true;
+    }
     windowAbout();
     if (showImGuiDemo) ImGui::ShowDemoWindow(&showImGuiDemo);
 
@@ -221,7 +228,7 @@ void GuiShell::placeNewlyOpened(unsigned dockspaceId) {
     struct Group { std::vector<const char*> titles; ImGuiDir dir; float ratio; };
     static const Group groups[] = {
         { { "Debugger", "Chips", "Memory", "GFX9000" }, ImGuiDir_Right, 0.42f },
-        { { "Assembler", "DSK editor", "CSL scripts", "Printer", "Settings" }, ImGuiDir_Down, 0.42f },
+        { { "Assembler", "DSK editor", "CSL scripts", "Printer", "Settings", "Cheats" }, ImGuiDir_Down, 0.42f },
     };
     auto placed = [&](const char* t) { return std::find(placedThisSession.begin(), placedThisSession.end(), t) != placedThisSession.end(); };
     bool changed = false;
@@ -347,7 +354,7 @@ void GuiShell::drawStatusBar(const ShellFrameInfo& info) {
     ImGui::PopStyleVar();
     if (open) {
         ImGui::PushStyleColor(ImGuiCol_Text, kAccent);
-        ImGui::TextUnformatted(host.paused ? "PAUSED" : (host.turbo ? "TURBO" : "RUNNING"));
+        ImGui::TextUnformatted(host.paused ? "PAUSED" : (host.turbo ? "TURBO" : host.tapeTurboActive() ? "TAPE TURBO" : "RUNNING"));
         if (host.mouseCaptured) { after().text("  MOUSE CAPTURED (F12 or middle button releases)"); }
         else if (host.symbifaceMouseActive()) { after().textDisabled("  click the picture to use the mouse"); }
         ImGui::PopStyleColor();
@@ -509,8 +516,8 @@ void GuiShell::drawMenuBar() {
 void GuiShell::menuFile() {
     if (!ImGui::BeginMenu("File")) return;
     if (ImGui::BeginMenu("Open")) {
-        if (ImGui::MenuItem("Disk into drive A...")) browser.open("Insert disk A", host.romDir, { ".dsk", ".edsk" }, [this](const std::string& p) { host.loadDiskFile(p, 0); });
-        if (ImGui::MenuItem("Disk into drive B...")) browser.open("Insert disk B", host.romDir, { ".dsk", ".edsk" }, [this](const std::string& p) { host.loadDiskFile(p, 1); });
+        if (ImGui::MenuItem("Disk into drive A...")) browser.open("Insert disk A", host.romDir, { ".dsk", ".edsk", ".hfe", ".ipf" }, [this](const std::string& p) { host.loadDiskFile(p, 0); });
+        if (ImGui::MenuItem("Disk into drive B...")) browser.open("Insert disk B", host.romDir, { ".dsk", ".edsk", ".hfe", ".ipf" }, [this](const std::string& p) { host.loadDiskFile(p, 1); });
         if (ImGui::MenuItem("Tape...")) browser.open("Insert tape", host.romDir, { ".cdt", ".tzx", ".tap", ".wav" }, [this](const std::string& p) { host.loadTapeFile(p); });
         if (ImGui::MenuItem("Cartridge (.cpr)...")) browser.open("Load cartridge", host.romDir, { ".cpr", ".bin" }, [this](const std::string& p) { host.loadCartridgeFile(p); });
         if (ImGui::MenuItem("Snapshot (.sna)...")) browser.open("Load snapshot", host.romDir, { ".sna" }, [this](const std::string& p) { host.loadSnapshot(p); });
@@ -559,11 +566,14 @@ void GuiShell::menuMachine() {
 
 void GuiShell::menuMedia() {
     if (!ImGui::BeginMenu("Media")) return;
+    ImGui::MenuItem("Save disc and tape writes to their files", nullptr, &host.diskWriteBack);
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("What a program writes to a disc goes back into its image file.\nOff: the changes stay in memory (save them from the DSK editor).");
+    ImGui::Separator();
     for (int d = 0; d < 2; d++) {
         char label[32]; std::snprintf(label, sizeof(label), "Drive %c", 'A' + d);
         if (ImGui::BeginMenu(label)) {
             ImGui::TextDisabled("%s", host.diskName[d].empty() ? "(empty)" : host.diskName[d].c_str());
-            if (ImGui::MenuItem("Insert...")) browser.open(std::string("Insert disk ") + char('A' + d), host.romDir, { ".dsk", ".edsk" }, [this, d](const std::string& p) { host.loadDiskFile(p, d); });
+            if (ImGui::MenuItem("Insert...")) browser.open(std::string("Insert disk ") + char('A' + d), host.romDir, { ".dsk", ".edsk", ".hfe", ".ipf" }, [this, d](const std::string& p) { host.loadDiskFile(p, d); });
             if (ImGui::MenuItem("Eject", nullptr, false, !host.diskName[d].empty())) host.ejectDisk(d);
             if (ImGui::MenuItem("Open in the DSK editor", nullptr, false, !host.diskName[d].empty())) {
                 dskEditor->takeFromDrive(d);
@@ -605,6 +615,7 @@ void GuiShell::menuSection(const char* title, void (GuiShell::*section)(bool)) {
 void GuiShell::menuTools() {
     if (!ImGui::BeginMenu("Tools")) return;
     ImGui::MenuItem("DSK editor", nullptr, &panelOpen("DSK editor"));
+    ImGui::MenuItem("Cheats (POKE finder)", nullptr, &panelOpen("Cheats"));
     ImGui::MenuItem("CSL scripts", nullptr, &panelOpen("CSL scripts"));
     ImGui::MenuItem("Printer output", nullptr, &panelOpen("Printer"));
     ImGui::MenuItem("GFX9000", nullptr, &panelOpen("GFX9000"));
@@ -647,7 +658,7 @@ void GuiShell::menuWindow() {
     ImGui::Separator();
     for (const char* w : { "Debugger", "Chips", "Memory", "GFX9000" }) ImGui::MenuItem(w, nullptr, &panelOpen(w));
     ImGui::Separator();
-    for (const char* w : { "Assembler", "DSK editor", "CSL scripts", "Printer" }) ImGui::MenuItem(w, nullptr, &panelOpen(w));
+    for (const char* w : { "Assembler", "DSK editor", "Cheats", "CSL scripts", "Printer" }) ImGui::MenuItem(w, nullptr, &panelOpen(w));
     ImGui::Separator();
     if (ImGui::BeginMenu("Interface size")) {
         for (int pct : { 90, 100, 110, 125, 150, 175, 200 }) {
@@ -786,7 +797,7 @@ void GuiShell::windowMedia() {
                 loaded(host.diskName[d], "(empty)");
                 FlowRow row;
                 if (row.smallButton("Insert..."))
-                    browser.open(std::string("Insert disk ") + char('A' + d), host.romDir, { ".dsk", ".edsk" }, [this, d](const std::string& p) { host.loadDiskFile(p, d); });
+                    browser.open(std::string("Insert disk ") + char('A' + d), host.romDir, { ".dsk", ".edsk", ".hfe", ".ipf" }, [this, d](const std::string& p) { host.loadDiskFile(p, d); });
                 ImGui::BeginDisabled(host.diskName[d].empty());
                 if (row.smallButton("Eject")) host.ejectDisk(d);
                 if (row.smallButton("Edit")) { dskEditor->takeFromDrive(d); panelOpen("DSK editor") = true; }
@@ -795,6 +806,9 @@ void GuiShell::windowMedia() {
                 ImGui::PopID();
             }
             textWrappedDisabled("Drop a .DSK or .EDSK onto the window");
+            ImGui::Checkbox("Save disc and tape writes to their files", &host.diskWriteBack);
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("What a program writes to a disc goes back into its image file.\nOff: the changes stay in memory (save them from the DSK editor).");
+            if (!host.diskWriteError.empty()) textWrappedDisabled("Not saved: %s", host.diskWriteError.c_str());
         }
         if (ImGui::CollapsingHeader("Tape", ImGuiTreeNodeFlags_DefaultOpen)) {
             loaded(host.tapeName, "(no tape)");

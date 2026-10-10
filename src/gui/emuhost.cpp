@@ -11,6 +11,7 @@
 #include "core/tape.h"
 #include "core/fdc.h"
 #include "core/dsk.h"
+#include "core/hfe.h"
 #include "core/cpr_loader.h"
 #include "core/sna.h"
 #include "core/memory.h"
@@ -25,6 +26,9 @@
 #include "core/symbiface_mouse.h"
 #include "core/sf3.h"
 #include "core/symbiface_ide.h"
+#include "core/multiface.h"
+#include "core/rs232.h"
+#include "core/host_serial.h"
 #include "core/sf2_rtc.h"
 #include "core/matrix_printer.h"
 #include "core/dac.h"
@@ -69,6 +73,9 @@ void EmuHost::setBeamRenderer(bool on) {
 
 EmuHost::EmuHost() {
     emu = new GX4000();
+    if (emu->fdc) emu->fdc->onDiskModified = [this](std::shared_ptr<Disk> disk, int drive) {
+        if (drive >= 0 && drive < 2 && disk && disk == emu->fdc->drives[(size_t)drive]) { diskDirty[drive] = true; diskLastWrite[drive] = framesRun; }
+    };
     video = new CpcVideo(SCREEN_W, SCREEN_H, emu->memory, emu->asic, emu->crtc, emu->gateArray);
     video->monitor = emu->monitorRenderer;   // where the field sits vertically is the set's answer
     applyMonitorSet();                    // the set the machine shipped with, and its tube
@@ -94,6 +101,8 @@ EmuHost::EmuHost() {
 }
 
 EmuHost::~EmuHost() {
+    flushDisks();
+    flushTape();
     delete video;
     delete emu;
     delete matrixPrinter;
@@ -199,6 +208,7 @@ bool EmuHost::bootModel(int index, int ram, int crtc) {
         try { emu->memory->validateRamSize(ram); }
         catch (const std::exception& ex) { status = ex.what(); return false; }
     }
+    flushDisks();
     ModelProfile& m = models[index];
     if (index != currentModel) { osRomPath.clear(); basicRomPath.clear(); amsdosRomPath.clear(); }  // different model → different firmware
 
@@ -287,6 +297,8 @@ void EmuHost::applySettings() {
     applyPrinter();
     applyExpansionRoms();
     applyM4();
+    applyMultiface();
+    applySerial();
     applySymbiface();
     applyLightgun();
     applyTapeOptions();
@@ -295,6 +307,80 @@ void EmuHost::applySettings() {
     applyPlayCity();
     applySpeech();
     applyAudioRate();
+}
+
+// The Multiface II's ROM: Romantic Robot's, not shipped -- found in roms/ by name, the
+// 1988 revision (the one MAME knows, CRC F36086DE) first.
+std::string EmuHost::multifaceRom() const {
+    for (const char* key : { "multiface 0e", "multiface", "mface", "multface" }) {
+        const std::string p = findRom(key);
+        if (!p.empty()) return p;
+    }
+    return "";
+}
+
+void EmuHost::applyMultiface() {
+    if (!emu || !emu->multiface) return;
+    if (!multifaceEnabled || emu->plusHardware) { emu->multiface->setEnabled(false); return; }
+    bool ok = false;
+    const Bytes rom = readFile(multifaceRom(), ok);
+    if (!ok || !emu->multiface->setRom(rom)) { emu->multiface->setEnabled(false); return; }
+    emu->multiface->setEnabled(true);
+}
+
+bool EmuHost::setMultiface(bool on) {
+    if (on && emu && emu->plusHardware) { status = "The Multiface II is for a classic CPC (not Plus/GX4000)."; return false; }
+    if (on && multifaceRom().empty()) { status = "No Multiface II ROM in " + romDir + " (a file with \"multiface\" in its name)"; return false; }
+    multifaceEnabled = on;
+    applyMultiface();
+    status = on ? "Multiface II fitted: F10 is its STOP button" : "Multiface II removed";
+    return true;
+}
+
+void EmuHost::multifaceStop() {
+    if (emu && emu->multiface && emu->multiface->enabled) { emu->multiface->stop(); status = "Multiface II: STOP"; }
+}
+
+// The serial card's line lives in the host, so a reboot (a new machine) keeps it connected.
+void EmuHost::applySerial() {
+    if (!emu || !emu->serial) return;
+    if (!serialLink) serialLink = std::make_shared<HostSerial>();
+    emu->serial->link = serialLink;
+    emu->serial->enabled = serialEnabled && !emu->plusHardware;
+}
+
+bool EmuHost::connectSerial() {
+    if (!serialLink) serialLink = std::make_shared<HostSerial>();
+    HostSerial::Kind kind = HostSerial::Kind::None;
+    if (serialKind == "tcp") kind = HostSerial::Kind::Tcp;
+    else if (serialKind == "listen") kind = HostSerial::Kind::Listen;
+    else if (serialKind == "com") kind = HostSerial::Kind::Com;
+    else if (serialKind == "loopback") kind = HostSerial::Kind::Loopback;
+    serialLink->allowLan = serialLan;
+    std::string error;
+    if (!serialLink->open(kind, serialTarget, error)) { status = "Serial line: " + error; return false; }
+    status = "Serial line: " + serialLink->describe();
+    return true;
+}
+
+bool EmuHost::setSerial(bool on) {
+    if (on && emu && emu->plusHardware) { status = "The RS232C interface is for a classic CPC (not Plus/GX4000)."; return false; }
+    serialEnabled = on;
+    bool ok = true;
+    if (on) ok = connectSerial();
+    else if (serialLink) serialLink->close();
+    applySerial();
+    if (on && ok) status = "RS232C interface fitted; its line: " + serialLink->describe();
+    if (!on) status = "RS232C interface removed";
+    return ok;
+}
+
+std::string EmuHost::serialStatus() const {
+    if (!serialEnabled) return "not fitted";
+    if (!serialLink) return "no line";
+    std::string s = serialLink->describe();
+    if (emu && emu->serial && emu->serial->baud() > 0) s += ", " + std::to_string(emu->serial->baud()) + " baud";
+    return s;
 }
 
 void EmuHost::applyM4Network() {
@@ -668,7 +754,7 @@ bool EmuHost::loadByExtension(const std::string& path) {
     std::string ext;
     { auto e = std::filesystem::path(path).extension().string(); for (char c : e) ext += (char)std::tolower((unsigned char)c); }
     if (ext == ".cpr") return loadCartridgeFile(path);
-    if (ext == ".dsk" || ext == ".edsk") return loadDiskFile(path, 0);
+    if (ext == ".dsk" || ext == ".edsk" || ext == ".hfe" || ext == ".ipf") return loadDiskFile(path, 0);
     if (ext == ".cdt" || ext == ".tzx" || ext == ".tap" || ext == ".wav") return loadTapeFile(path);
     if (ext == ".sna") return loadSnapshot(path);
     status = "Unrecognised file type: " + ext;
@@ -736,31 +822,67 @@ bool EmuHost::loadCartridgeFile(const std::string& path) {
     applySettings();
     applyMonitorSet();
     cartName = std::filesystem::path(path).filename().string();
+    loadCheatsBeside(path);
     snapshotName.clear();
     paused = false;
     status = "Loaded " + cartName + " into " + m.label;
     return true;
 }
 
+// A disc's writes, back into the file it came from -- in its own format (standard or
+// extended DSK, HFE), written beside it and renamed over it, so a failure leaves the old one.
+void EmuHost::flushDisk(int unit) {
+    if (unit < 0 || unit > 1 || !diskDirty[unit]) return;
+    diskDirty[unit] = false;
+    if (!diskWriteBack || diskPath[unit].empty() || !emu || !emu->fdc || !emu->fdc->drives[(size_t)unit]) return;
+    const Disk& disk = *emu->fdc->drives[(size_t)unit];
+    if (disk.writeProtected) return;
+    Bytes image;
+    try { image = serializeDiskImage(disk); }
+    catch (const std::exception& ex) { diskWriteError = ex.what(); status = "Could not save drive " + std::string(unit ? "B" : "A") + ": " + diskWriteError; return; }
+    namespace fs = std::filesystem;
+    const fs::path target = fs::u8path(diskPath[unit]);
+    fs::path temp = target;
+    temp += ".cpcse-tmp";
+    bool ok = false;
+    {
+        std::ofstream f(temp, std::ios::binary | std::ios::trunc);
+        if (f) { f.write((const char*)image.data(), (std::streamsize)image.size()); f.close(); ok = !f.fail(); }
+    }
+    std::error_code ec;
+    if (ok) { fs::rename(temp, target, ec); ok = !ec; }
+    if (!ok) {
+        fs::remove(temp, ec);
+        diskWriteError = "cannot write " + diskPath[unit];
+        status = "Could not save drive " + std::string(unit ? "B" : "A") + " back to its file (read-only?)";
+        return;
+    }
+    diskWriteError.clear();
+}
+
 bool EmuHost::loadDiskFile(const std::string& path, int unit) {
     if (unit < 0 || unit > 1) return false;
+    flushDisk(unit);
     bool ok = false;
     Bytes data = readFile(path, ok);
     if (!ok || data.empty()) { status = "Could not read disk image."; return false; }
     if (!emu->fdc) { status = "No floppy controller."; return false; }
     std::shared_ptr<Disk> disk;
     try { disk = emu->fdc->mount(data, unit); }
-    catch (const std::exception& ex) { status = std::string("Not a valid .DSK/.EDSK image: ") + ex.what(); return false; }
-    if (!disk) { status = "Not a valid .DSK/.EDSK image."; return false; }
+    catch (const std::exception& ex) { status = std::string("Not a disc image this can read: ") + ex.what(); return false; }
+    if (!disk) { status = "Not a disc image this can read."; return false; }
     emu->hasFdc = true;
     diskName[unit] = std::filesystem::path(path).filename().string();
     diskPath[unit] = path;
+    if (unit == 0) loadCheatsBeside(path);
     status = "Inserted " + diskName[unit] + " into drive " + std::string(unit == 0 ? "A" : "B");
     return true;
 }
 
 bool EmuHost::insertDisk(std::shared_ptr<Disk> disk, int unit, const std::string& name) {
     if (unit < 0 || unit > 1 || !emu || !emu->fdc || !disk) return false;
+    flushDisk(unit);
+    diskPath[unit].clear();               // no file of its own: the DSK editor saves it
     emu->fdc->insert(disk, unit);
     emu->hasFdc = true;
     diskName[unit] = name;
@@ -775,6 +897,7 @@ std::shared_ptr<Disk> EmuHost::driveDisk(int unit) const {
 
 void EmuHost::ejectDisk(int unit) {
     if (unit < 0 || unit > 1 || !emu->fdc) return;
+    flushDisk(unit);
     emu->fdc->eject(unit);
     diskName[unit].clear();
     diskPath[unit].clear();
@@ -782,6 +905,7 @@ void EmuHost::ejectDisk(int unit) {
 }
 
 bool EmuHost::loadTapeFile(const std::string& path) {
+    flushTape();                              // a recording on the tape going out: into its file
     bool ok = false;
     Bytes data = readFile(path, ok);
     if (!ok || data.empty()) { status = "Could not read tape image."; return false; }
@@ -791,6 +915,8 @@ bool EmuHost::loadTapeFile(const std::string& path) {
         if (!emu->tape->load(data, name)) { status = "Not a valid .CDT/.TZX tape."; return false; }
     } catch (const std::exception& ex) { status = std::string("Not a valid .CDT/.TZX tape: ") + ex.what(); return false; }
     tapeName = name;
+    tapePath = path;
+    loadCheatsBeside(path);
     status = "Inserted tape " + tapeName + "  (press Play)";
     return true;
 }
@@ -809,10 +935,6 @@ void EmuHost::tapePause() {
     if (!d || !d->playing) return;
     d->setPaused(!d->paused);
     status = d->paused ? "Tape paused" : "Tape playing";
-}
-
-void EmuHost::tapeStop() {
-    if (CPCTapeDrive* d = tapeDeck()) { d->stop(); status = "Tape stopped"; }
 }
 
 void EmuHost::tapeRewind() {
@@ -836,9 +958,132 @@ void EmuHost::tapeSeekBlock(int index) {
 
 void EmuHost::tapeEject() {
     if (!emu || !emu->tape) return;
+    flushTape();
     emu->tape->eject();
     status = tapeName.empty() ? "No tape" : "Ejected " + tapeName;
     tapeName.clear();
+    tapePath.clear();
+}
+
+Bytes* EmuHost::ram() { return emu && emu->memory ? &emu->memory->ram : nullptr; }
+
+void EmuHost::loadCheatsBeside(const std::string& mediaPath) {
+    namespace fs = std::filesystem;
+    fs::path p = fs::u8path(mediaPath);
+    p.replace_extension(".pok");
+    cheatsPath = p.u8string();
+    std::error_code ec;
+    if (fs::exists(p, ec)) loadCheats(cheatsPath);
+}
+
+bool EmuHost::loadCheats(const std::string& path) {
+    bool ok = false;
+    const Bytes text = readFile(path, ok);
+    if (!ok) { status = "Could not read " + path; return false; }
+    std::vector<Cheat> found;
+    std::string error;
+    if (!CheatList::parse(std::string(text.begin(), text.end()), found, error)) { status = "Cheats: " + error; return false; }
+    cheatList.cheats = found;                 // switched off until asked for
+    cheatsPath = path;
+    status = "Cheats: " + std::to_string(found.size()) + " from " + std::filesystem::u8path(path).filename().u8string();
+    return true;
+}
+
+bool EmuHost::saveCheats(const std::string& path) {
+    const std::string target = path.empty() ? cheatsPath : path;
+    if (target.empty()) { status = "Cheats: no file to save to (load a game, or use Save as)"; return false; }
+    std::ofstream f(std::filesystem::u8path(target), std::ios::binary | std::ios::trunc);
+    const std::string text = CheatList::serialize(cheatList.cheats);
+    if (f) f.write(text.data(), (std::streamsize)text.size());
+    if (!f) { status = "Could not write " + target; return false; }
+    cheatsPath = target;
+    status = "Cheats saved to " + std::filesystem::u8path(target).filename().u8string();
+    return true;
+}
+
+void EmuHost::enableCheat(size_t index, bool on) {
+    if (index >= cheatList.cheats.size()) return;
+    Cheat& c = cheatList.cheats[index];
+    c.enabled = on;
+    if (on && !c.freeze) if (Bytes* r = ram()) CheatList::poke(*r, c);
+}
+
+bool EmuHost::tapeTurboActive() const {
+    CPCTapeDrive* d = tapeDeck();
+    return tapeTurbo > 1 && d && d->playing && !d->paused && d->isMotorActive();
+}
+
+bool EmuHost::tapeRecording() const { CPCTapeDrive* d = tapeDeck(); return d && d->recording; }
+
+void EmuHost::tapeNewBlank() {
+    if (!emu || !emu->tape) return;
+    flushTape();
+    emu->tape->newBlank("blank.cdt");
+    tapeName = "blank.cdt";
+    tapePath.clear();
+    status = "A blank tape in the deck: press Record, then SAVE";
+}
+
+void EmuHost::tapeRecord() {
+    if (!emu || !emu->tape) return;
+    if (!tapeDeck()) tapeNewBlank();
+    CPCTapeDrive* d = tapeDeck();
+    if (!d) return;
+    if (!d->startRecording()) { status = "This tape cannot be recorded on (a .TAP): start a blank one"; return; }
+    status = "Recording: REC and PLAY down -- SAVE, then Stop";
+}
+
+void EmuHost::tapeStop() {
+    CPCTapeDrive* d = tapeDeck();
+    if (!d) return;
+    const bool wasRecording = d->recording;
+    d->stop();
+    if (wasRecording) {
+        d->stopRecording();
+        flushTape();
+        if (status.rfind("Could not", 0) != 0)
+            status = d->modified ? "Recorded onto " + tapeName + (tapePath.empty() ? " (not saved yet: Save tape as)" : "") : "Recording stopped: nothing was written";
+        return;
+    }
+    status = "Tape stopped";
+}
+
+// A recording into the tape's file, in its own format (TZX; a .cdt is one), written beside
+// it and renamed over it -- only with the write-back setting on, and only a .cdt/.tzx file
+// (a .wav or .tap stays as it was).
+void EmuHost::flushTape() {
+    if (!emu || !emu->tape || !emu->tape->loaded) return;
+    CPCTapeDrive& d = *emu->tape;
+    if (d.recording) d.stopRecording();
+    if (!d.modified || !diskWriteBack || tapePath.empty()) return;
+    std::string ext;
+    for (char c : std::filesystem::path(tapePath).extension().string()) ext += (char)std::tolower((unsigned char)c);
+    if (ext != ".cdt" && ext != ".tzx") return;
+    if (tapeSaveAs(tapePath)) d.modified = false;
+}
+
+bool EmuHost::tapeSaveAs(const std::string& path) {
+    if (!emu || !emu->tape || !emu->tape->loaded) { status = "No tape to save."; return false; }
+    CPCTapeDrive& d = *emu->tape;
+    if (d.recording) d.stopRecording();
+    namespace fs = std::filesystem;
+    const fs::path target = fs::u8path(path);
+    fs::path temp = target;
+    temp += ".cpcse-tmp";
+    bool ok = false;
+    {
+        std::ofstream f(temp, std::ios::binary | std::ios::trunc);
+        if (f) { f.write((const char*)d.data.data(), (std::streamsize)d.data.size()); f.close(); ok = !f.fail(); }
+    }
+    std::error_code ec;
+    if (ok) { fs::rename(temp, target, ec); ok = !ec; }
+    if (!ok) { fs::remove(temp, ec); status = "Could not write " + path; return false; }
+    tapePath = path;
+    tapeName = target.filename().string();
+    d.name = tapeName;
+    d.modified = false;
+    status = "Saved the tape as " + tapeName;
+    return true;
 }
 
 void EmuHost::tapeResetCounter() {
@@ -869,6 +1114,7 @@ bool EmuHost::loadSnapshot(const std::string& path) {
     applyAudioRate();
     paused = false;
     snapshotName = std::filesystem::path(path).filename().string();
+    loadCheatsBeside(path);
     status = "Loaded snapshot " + snapshotName;
     return true;
 }
@@ -910,6 +1156,8 @@ void EmuHost::stepInstruction(bool redraw) {
 void EmuHost::runFrame() {
     if (!booted() || paused) { audioOut.clear(); return; }
     framesRun++;
+    for (int u = 0; u < 2; u++) if (diskDirty[u] && framesRun - diskLastWrite[u] > 50) flushDisk(u);   // a second idle
+    if (!cheatList.cheats.empty()) cheatList.apply(emu->memory->ram);   // the freezes, every frame
     emu->memory->watchArmed = watchArmed;
     int elapsedTStates;
     if (!stopAfter && !watchArmed) {

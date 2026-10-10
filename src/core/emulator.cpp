@@ -16,11 +16,13 @@
 #include "v9990.h"
 #include "opl4.h"
 #include "playcity.h"
+#include "rs232.h"
 #include "speech.h"
 #include "symbiface_mouse.h"
 #include "sf2_rtc.h"
 #include "sf3.h"
 #include "symbiface_ide.h"
+#include "multiface.h"
 #include "monitor_model.h"
 #include "monitor_renderer.h"
 #include "lightgun.h"
@@ -41,11 +43,13 @@ GX4000::GX4000() {
     v9990 = new V9990();
     opl4 = new Opl4Card();
     playcity = new PlayCity();
+    serial = new AmstradSerial();
     speech = new SpeechSynth();
     symbifaceMouse = new SymbifaceMouse();
     sf2Rtc = new Symbiface2Rtc();
     sf3 = new Symbiface3();
     ide = new SymbifaceIde();
+    multiface = new Multiface2();
     memory->setUpperRomReadHandler([this](int address, int rom) { return m4 ? m4->readMemory(address, rom) : -1; });
     classicMonitorCharacter = 0; classicMonitorLine = 0; classicMonitorFrame = 0;
     classicMonitorLineCharacters = 64; classicMonitorHsyncLimit = 64 * 16; classicMonitorHsyncCount = 0;
@@ -161,6 +165,7 @@ GX4000::GX4000() {
         ay->advanceTStates(4); dac->advanceTStates(4); ppi->advanceTStates(4); fdc->advanceCycles(1); tape->advanceCycles(1);
         if (playcity->enabled) { playcity->advanceMicrosecond(); playcity->cursorPin(crtc->cursorOutput()); }
         speech->advanceMicrosecond();
+        if (serial->enabled) serial->advanceMicrosecond();
     };
     o.onVsyncStart = [this]() {
         gateArray->onVsyncStart(crtc->hsync,
@@ -286,6 +291,8 @@ GX4000::GX4000() {
         if (write) advanceHardwareToInstructionOffset(offset & ~3);
     });
     cpu = new Z80(memory, ports);
+    multiface->attach(memory, cpu);
+    cpu->onLowM1 = [this](int address) { if (multiface->enabled) multiface->opcodeFetch(address); };
     // The GATE ARRAY stretches every M-cycle out to a whole microsecond, so a bus
     // access starts on a microsecond boundary and never inside one.
     cpu->alignBusToMicroseconds = true;
@@ -318,7 +325,7 @@ GX4000::GX4000() {
 
 GX4000::~GX4000() {
     delete cpu; delete fdc; delete gamepad; delete ppi; delete tape; delete dac; delete ay; delete keyboard;
-    delete crtc; delete monitorRenderer; delete sf3; delete ide; delete sf2Rtc; delete symbifaceMouse; delete v9990; delete opl4; delete playcity; delete speech;
+    delete crtc; delete monitorRenderer; delete sf3; delete ide; delete multiface; delete sf2Rtc; delete symbifaceMouse; delete v9990; delete opl4; delete playcity; delete serial; delete speech;
     delete m4; delete gateArray; delete asic; delete memory;
 }
 
@@ -837,11 +844,13 @@ void GX4000::writePort(int port, int value) {
     if (machineCycles >= traceIoFrom() && traceIoPort(port))
         std::fprintf(stderr, "IO OUT %04x <- %02x @%lld pc %04x\n", port & 0xffff, value & 0xff, machineCycles + hardwareCyclesAdvanced, cpu->instructionStartPc & 0xffff);
     int high = (unsigned)port >> 8 & 0xff;
+    if (multiface->enabled && multiface->ioWrite(port, value)) return;   // it also notes GA/CRTC/PPI writes
     if (v9990->writePort(port, value, machineCycles + hardwareCyclesAdvanced)) return;
     if (opl4->handlesPort(port)) { opl4->writePort(port, value, machineCycles + hardwareCyclesAdvanced); return; }
     // &F8FF is the expansion bus's peripheral reset: every board on it hears it.
     if ((port & 0xffff) == 0xf8ff && playcity->enabled) playcity->reset();
     if (playcity->handlesPort(port)) { playcity->writePort(port, value); return; }
+    if (serial->handlesPort(port)) { serial->writePort(port, value); return; }
     if (speech->handlesPort(port)) { speech->writePort(port, value); return; }
     if (symbifaceMouse->handlesWritePort(port)) { symbifaceMouse->writePort(port, value); return; }
     if (sf2Rtc->handlesWritePort(port)) { sf2Rtc->writePort(port, value); return; }
@@ -915,6 +924,7 @@ int GX4000::readPortUntraced(int port) {
     if (v9990->handlesPort(port)) return v9990->readPort(port, machineCycles + hardwareCyclesAdvanced);
     if (opl4->handlesPort(port)) return opl4->readPort(port, machineCycles + hardwareCyclesAdvanced);
     if (playcity->handlesPort(port)) return playcity->readPort(port);
+    if (serial->handlesPort(port)) return serial->readPort(port);
     if (speech->handlesPort(port)) return speech->readPort(port);
     if (symbifaceMouse->handlesPort(port)) return symbifaceMouse->readPort(port);
     if (sf2Rtc->handlesPort(port)) return sf2Rtc->readPort(port);
@@ -1241,7 +1251,7 @@ void GX4000::reset() {
     memory->reset(); asic->reset(); gateArray->reset(); rasterCapture.clear(); rasterFrame.clear(); previousRasterFrame.clear();
     spritePatternSnapshot.clear(); spritePatternRevision = -1; crtc->reset();
     videoFrameRegisters = crtc->registers; videoCaptureRegisters = crtc->registers;
-    keyboard->reset(); ay->reset(); ppi->reset(); fdc->reset(); dac->reset(); tape->reset(); m4->reset(); v9990->reset(); opl4->reset(); playcity->reset(); speech->reset(); symbifaceMouse->reset(); sf2Rtc->reset(); sf3->reset(); ide->reset(); cpu->reset();
+    keyboard->reset(); ay->reset(); ppi->reset(); fdc->reset(); dac->reset(); tape->reset(); m4->reset(); v9990->reset(); opl4->reset(); playcity->reset(); serial->reset(); speech->reset(); symbifaceMouse->reset(); sf2Rtc->reset(); sf3->reset(); ide->reset(); multiface->reset(); cpu->reset();
     cpu->sp = 0xbfff;
 }
 void GX4000::acknowledgeInterrupt() {

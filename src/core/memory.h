@@ -46,6 +46,10 @@ public:
     std::function<int(int address)> asicRamReadHandler;
     std::function<void(int offset, bool write, int address)> timingProvider;
     std::function<int(int address, int rom)> upperRomReadHandler;
+    // A card over &0000-&3FFF (the Multiface II while paged in): reads of &0000-&1FFF
+    // from overlayLow, reads and writes of &2000-&3FFF to overlayRam. null = none.
+    const uint8_t* overlayLow = nullptr;
+    uint8_t* overlayRam = nullptr;
 
     explicit GXMemory(int ramKiB = 128);
 

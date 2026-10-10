@@ -18,10 +18,10 @@ AY38912::AY38912(KeyboardMatrix* keyboard, int clockRate, int tStatesPerTick)
 
 void AY38912::reset() {
     registers.fill(0); registers[7] = 0x3f; registers[11] = 0x0d; registers[13] = 0x18;
-    selected = 0;
+    selected = 0; active = true;
     toneCounter.fill(0); toneState.fill(0);
     noiseCounter = 0; noiseState = 1;
-    lfsr = 0x7fffff;
+    lfsr = 1;
     envelopeCounter = 0; envelopeStep = 0; envelopeVolume = 0; envelopeHolding = false;
     ayTStateRemainder = 0; outputSamplePhase = 0;
     // outputSampleRate persists across reset.
@@ -53,7 +53,7 @@ std::array<double, 2> AY38912::readSample() {
     return lastOutputSample;
 }
 void AY38912::write(int value) {
-    if (selected > 14) return;
+    if (!active) return;
     int reg = selected;
     registers[reg] = (uint8_t)(value & MASKS[reg]);
     if (reg <= 5) {
@@ -67,17 +67,26 @@ void AY38912::write(int value) {
     if (reg == 13) reloadEnvelope();
 }
 void AY38912::writeRegister(int index, int value) {
-    int savedSelected = selected;
-    selected = index & 0x1f; write(value); selected = savedSelected;
+    const int savedSelected = selected;
+    const bool savedActive = active;
+    select(index); write(value); selected = savedSelected; active = savedActive;
 }
 int AY38912::read() {
-    if (selected > 14) return 0xff;
-    if (selected != 14) return registers[selected];
-    int kb = keyboard ? keyboard->read() : 0xff;
-    return registers[7] & 0x40 ? registers[14] & kb : kb;
+    if (!active) return 0xff;                    // off the bus: DA7-DA0 high impedance
+    // The I/O ports (Kevin Thacker's measurements, "AY-3-8912 Additional information"):
+    // as input, a read is the pins alone; as output, the output register ANDed with them.
+    // Port B (R15) is inside the 8912 with no pins, so its inputs read high.
+    if (selected == 14) {
+        const int kb = keyboard ? keyboard->read() : 0xff;
+        return registers[7] & 0x40 ? registers[14] & kb : kb;
+    }
+    if (selected == 15) return registers[7] & 0x80 ? registers[15] : 0xff;
+    return registers[selected];
 }
 int AY38912::tonePeriod(int channel) { return std::max(1, registers[channel * 2] | (registers[channel * 2 + 1] & 0x0f) << 8); }
-int AY38912::noisePeriod() { int period = registers[6] & 0x1f; return period ? period * 2 : 1; }
+// Period 0 is period 1 for the tone and noise counters, but half of 1 for the envelope's
+// (MAME's ay8910.cpp, from the die).
+int AY38912::noisePeriod() { return std::max(1, registers[6] & 0x1f) * 2; }
 int AY38912::envelopePeriod() { int period = registers[11] | registers[12] << 8; return period ? period * 2 : 1; }
 void AY38912::reloadEnvelope() {
     int shape = registers[13] & 0x0f;
@@ -107,9 +116,11 @@ void AY38912::tick() {
     noiseCounter += 1;
     if (noiseCounter >= noisePeriod()) {
         noiseCounter = 0;
+        // A 17-bit shift register: bit 0 is the output, bits 0 and 3 XORed go in at bit 16,
+        // so the noise repeats every 131071 steps (MAME's ay8910.cpp, from the die).
+        lfsr ^= ((lfsr & 1) ^ (lfsr >> 3 & 1)) << 17;
+        lfsr >>= 1;
         noiseState = lfsr & 1;
-        int feedback = (((unsigned)lfsr >> 22) ^ ((unsigned)lfsr >> 17)) & 1;
-        lfsr = (lfsr << 1 & 0x7fffff) | feedback;
     }
     envelopeCounter += 1;
     if (envelopeCounter >= envelopePeriod()) { envelopeCounter = 0; tickEnvelope(); }

@@ -19,13 +19,31 @@ built around a cycle-level model of the machine's video chips.
   Array really produces.
 - **CPC Plus ASIC**: sprites, DMA sound, 4096-colour palette, raster interrupts,
   split screen, soft scroll.
-- Disc (DSK/EDSK), tape (CDT/TZX/WAV), cartridge (CPR) and snapshot (SNA) loading,
-  each with an **Eject**; joysticks and game controllers; RAM expansions up to 4 MB (in
-  512K steps past 576K).
+- Disc (DSK/EDSK, **HFE** -- the Gotek's -- and **IPF**), tape (CDT/TZX/WAV), cartridge (CPR)
+  and snapshot (SNA) loading, each with an **Eject**; joysticks and game controllers; RAM
+  expansions up to 4 MB (in 512K steps past 576K).
+- **What a program writes to a disc or tape goes back into its file** (Media: "Save disc and
+  tape writes to their files"), in the image's own format -- an HFE keeps every track the CPC
+  did not touch bit for bit. IPF originals are write-protected.
+- The **disc drive in real time**: the disc turns at 300 rpm under a 250 kbit/s head, sectors
+  come round where they lie (from the bitstream of an HFE or IPF image), seeks take the step
+  rate the program sets, the drive is ready once the disc is up to speed, and a program too
+  slow for the bytes gets an overrun -- as on the CPC's own uPD765A, wired as Amstrad wired it.
 - A **tape deck** (Media window, Media > Tape, Debug > Chips > Tape): a tape counter
   with its reset, the time and block the tape is at, **rewind to the start, back a
-  block, play, pause, stop, fast forward, eject**, and a list of the tape's blocks to
-  jump to.
+  block, play, record, pause, stop, fast forward, eject**, and a list of the tape's blocks to
+  jump to. **REC** records what the CPC SAVEs -- as standard turbo blocks (TZX &11) when
+  it is the firmware's format, as the raw signal otherwise -- onto the tape from where it
+  is, or onto a **new blank tape**, and **Save tape as** writes a .cdt. **Turbo** loads
+  faster: while the tape moves the whole CPC runs up to 20x or as fast as your computer
+  goes, so every loader, protected ones too, works as it always does.
+- **Cheats** (Tools > Cheats): a **walkthrough** that finds where a game keeps its lives,
+  ammo, time or energy by asking only what you can see -- what the number on the screen says
+  now, and again after it changes (or whether a bar went down, up or stayed) -- then holds
+  it there and asks whether it worked. It searches every way games keep such numbers at once
+  (as they are, one less, or BCD) in all of the RAM, 128K banks included. Also a search for
+  those who know what they are after, and POKEs typed in from a magazine. A game's cheats
+  are kept beside it as `<game>.pok`.
 - **Expansions** (all in **Expansions** / the Settings window):
   - **M4 board**: a folder on your PC is its SD card. The M4's own ROM (`M4ROM.ROM`, by Duke,
     [spinpoint.org](http://www.spinpoint.org) -- included in `roms/` with his permission) runs unmodified;
@@ -35,6 +53,14 @@ built around a cycle-level model of the machine's video chips.
     Its **WiFi** is your PC's internet connection: CPC programs open TCP sockets, look up
     names, and run servers (Duke's telnet and TCP examples work); `|HTTPGET` and `|HTTPMEM`
     download (plain HTTP, as the real board), and `|NETSTAT` shows your PC's address.
+    **DSK images on the card** are folders, as on the real board: `|CD,"game.dsk"`, then
+    `CAT`, `LOAD` and `RUN` read the files inside (the board does not write to them).
+  - **Multiface II** (Romantic Robot's ROM, not included -- a file with "multiface" in its
+    name in `roms/`): F10 is its STOP button; its menu, saving and reloading work.
+  - **RS232C serial interface** (Amstrad's, and Pace's: a Z80 DART and an 8253 at
+    `&FADC`/`&FBDC`): its line is a TCP port other programs connect to, a connection out (a
+    BBS, a telnet server), one of your PC's serial ports, or a loopback plug. Its ROM is not
+    included -- fit it in a ROM slot.
   - **GFX9000** (Yamaha V9990 at `&FF60`): every screen mode, sprites, cursors, the
     blitter commands -- taking their real time, with the chip's **/WAIT** holding the Z80
     while it is busy -- raster timing and interrupts, and the behaviour measured on a
@@ -171,7 +197,9 @@ cpcse.exe --shot out.bmp --model cpc6128 --frames 200 [--disk game.dsk] [--type 
           [--m4 <folder>] [--gfx9000] [--v9990-shot gfx.bmp] [--video9000-shot mixed.bmp]
           [--opl4] [--playcity] [--speech ssa1|dktronics|lambdaspeak3] [--mp3card <folder>]
           [--dac digiblaster|amdrum] [--wav out.wav] [--sf2] [--sf3] [--ide <folder>]
-          [--xrom <slot>=<rom file>]
+          [--xrom <slot>=<rom file>] [--multiface] [--disk-writeback]
+          [--serial tcp:<host>:<port>|listen:<port>|com:<port>|loopback]
+          [--record-tape out.cdt]
           [--mouse "w120;j5,60;j16,2;tDIR;kEnter;s<file.bmp>"]
 ```
 
@@ -309,8 +337,9 @@ src/gui/       the desktop front end: SDL2 + OpenGL + Dear ImGui, debugger, asse
 tools/ctl/     cpcse-ctl, the command API's client
 docs/          external-debugging.md
 roms/          Amstrad firmware and the Plus system cartridge (see roms/README.txt)
-third_party/   Dear ImGui (docking branch), RASM, ymfm, the SP0256 core, minimp3 and the
-               DejaVu Sans Mono font, vendored; SDL2 is fetched separately
+third_party/   Dear ImGui (docking branch), RASM, ymfm, the SP0256 core, minimp3, the SPS
+               decoder library (IPF; non-commercial licence) and the DejaVu Sans Mono font,
+               vendored; SDL2 is fetched separately
 ```
 
 ## Project status
@@ -318,12 +347,17 @@ third_party/   Dear ImGui (docking branch), RASM, ymfm, the SP0256 core, minimp3
 | Area | State |
 |---|---|
 | CRTC types 0-4, Gate Array, monitor | Mature: rule sets from the Compendium, cross-checked by independent reference models and SHAKER |
-| Z80, PSG, PPI, disc controller, tape | Working; not yet audited to the same depth as the video chips |
+| Z80 | Audited: passes ZEXDOC, ZEXALL and Patrik Rak's z80test 1.2a (all of it: MEMPTR, the Zilog SCF/CCF flags, interrupted block instructions) |
+| PSG, PPI, disc controller, tape | Audited against their data sheets and formats (the AY-3-8912, the 8255, NEC's uPD765A as the CPC wires it -- timed --, TZX 1.20); tape SAVE checked against the firmware's own LOAD |
 | CPC Plus ASIC | Working; its picture goes through the same monitor model as a CPC's |
 | CSL / SSM | Complete (CSL 1.5, SSM 1.1) |
 | User interface | Every option exposed, grouped by Machine / Media / Video / Audio / Input / Expansions / Tools / Debug; still being refined |
 | DSK editor | Working: new discs, files and sectors of standard and extended images; its filesystem checked against AMSDOS itself (LOAD, SAVE, ERA, read-only) |
-| M4 board | Working: files and raw SD sectors over a host folder, checked against the M4's own ROM source; its WiFi through the host's network (sockets, DNS, servers, `|HTTPGET`). Not yet: mounting DSK images through the M4, its ROM board |
+| M4 board | Working: files, DSK images as folders and raw SD sectors over a host folder, checked against the M4's own ROM source; its WiFi through the host's network (sockets, DNS, servers, `|HTTPGET`) |
+| HFE / IPF disc images | Working: HFE read and written back, IPF read (the SPS library), checked against images made by HxC's and Keir Fraser's tools |
+| Multiface II | Working: STOP, its menu, save and reload |
+| RS232C serial interface | Working: the DART and 8253 checked against their data sheets, and a CPC talking over TCP; not yet tried with the card's own ROM |
+| Cheats | Working: the walkthrough and the search checked on a running CPC |
 | GFX9000 (V9990) + Video9000 | Working, from Yamaha's application manual and tests of a real V9990 on a CPC; the blitter at openMSX's measured speeds (LMMC, LMCM and CMMC estimated), /WAIT on the bus |
 | OPL4 (YMF278B) | Working (ymfm core); needs `yrw801*.rom` for the General MIDI samples |
 | PlayCity | Working: both YMZ294s and the CTC's clock measured; its NMI / IM2 timers follow the Z80 CTC manual but are not yet tested with PlayCity software |

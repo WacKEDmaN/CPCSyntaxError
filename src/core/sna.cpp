@@ -390,6 +390,7 @@ void applySna(GX4000* emulator, const Snapshot& snapshot) {
     emulator->ppi->portA = h[0x56]; emulator->ppi->portB = h[0x57];
     emulator->ppi->portC = h[0x58]; emulator->ppi->setMode(h[0x59]);
     emulator->ay->selected = h[0x5a] & 15;
+    emulator->ay->active = true;              // a register is selected: the chip is on the bus
     for (int i = 0; i < 16; i++) emulator->ay->registers[i] = h[0x5b + i];
     if (snapshot.version >= 3) {
         UPD765A::SnapshotState st; st.motor = h[0x9c] != 0; st.tracks = { h[0x9d], h[0x9e], 0, 0 };

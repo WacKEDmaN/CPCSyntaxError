@@ -336,6 +336,69 @@ void GuiShell::sectionExpansions(bool asMenu) {
                               "Off: only from this computer (127.0.0.1).");
     }
 
+    bool mf = host.multifaceEnabled;
+    if (asMenu) {
+        ImGui::Separator();
+        if (ImGui::MenuItem("Multiface II", nullptr, &mf)) host.setMultiface(mf);
+        if (ImGui::MenuItem("Multiface II: STOP", "F10", false, host.multifaceEnabled)) host.multifaceStop();
+    } else {
+        sectionHeading("Multiface II");
+        if (ImGui::Checkbox("Multiface II", &mf)) host.setMultiface(mf);
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Romantic Robot's freezer: F10 is its STOP button.\nIts ROM is not included: a file with \"multiface\" in its name in the roms folder.");
+        if (host.multifaceEnabled) { if (after().smallButton("STOP (F10)")) host.multifaceStop(); }
+    }
+
+    // Amstrad's RS232C interface, its line plugged into this computer
+    {
+        bool on = host.serialEnabled;
+        if (asMenu) {
+            ImGui::Separator();
+            if (ImGui::MenuItem("RS232C serial interface", nullptr, &on)) host.setSerial(on);
+        } else {
+            sectionHeading("RS232C serial interface");
+            if (ImGui::Checkbox("Amstrad RS232C", &on)) host.setSerial(on);
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("A Z80 DART (&FADC-&FADF) and an 8253 (&FBDC-&FBDF), as Amstrad's and Pace's cards.\n"
+                                  "Its ROM is not included: put it in a ROM slot (Expansion ROMs) if the software needs it.");
+            static const Choice kinds[] = { { "Listen on a port", "listen", "Another program connects to this computer's port (telnet localhost 2323)" },
+                                            { "Connect to host:port", "tcp", "A TCP connection out: a BBS, a telnet server" },
+                                            { "Serial port", "com", "One of this computer's serial ports (COM3, /dev/ttyUSB0)" },
+                                            { "Loopback plug", "loopback", "TXD to RXD, RTS to CTS, DTR to DCD" } };
+            const char* shown = kinds[0].label;
+            for (const Choice& k : kinds) if (host.serialKind == k.value) shown = k.label;
+            ImGui::SetNextItemWidth(180);
+            if (ImGui::BeginCombo("Line", shown)) {
+                for (const Choice& k : kinds) {
+                    if (ImGui::Selectable(k.label, host.serialKind == k.value)) {
+                        host.serialKind = k.value;
+                        if (host.serialKind == "listen") host.serialTarget = "2323";
+                        else if (host.serialKind == "tcp") host.serialTarget = "localhost:23";
+                        else if (host.serialKind == "com") host.serialTarget = "COM1";
+                        if (host.serialEnabled) host.connectSerial();
+                    }
+                    if (k.tip && ImGui::IsItemHovered()) ImGui::SetTooltip("%s", k.tip);
+                }
+                ImGui::EndCombo();
+            }
+            if (host.serialKind != "loopback") {
+                static char target[128] = "";
+                static std::string shownFor;
+                if (shownFor != host.serialTarget) { std::snprintf(target, sizeof target, "%s", host.serialTarget.c_str()); shownFor = host.serialTarget; }
+                ImGui::SetNextItemWidth(180);
+                if (ImGui::InputText(host.serialKind == "listen" ? "Port" : host.serialKind == "tcp" ? "Host:port" : "Device", target, sizeof target,
+                                     ImGuiInputTextFlags_EnterReturnsTrue)) {
+                    host.serialTarget = shownFor = target;
+                    if (host.serialEnabled) host.connectSerial();
+                }
+            }
+            if (host.serialKind == "listen" && ImGui::Checkbox("Accept other computers##serial", &host.serialLan) && host.serialEnabled) host.connectSerial();
+            if (host.serialEnabled) {
+                if (after().smallButton("Reconnect")) host.connectSerial();
+                ImGui::TextDisabled("  %s", host.serialStatus().c_str());
+            }
+        }
+    }
+
     static const Choice sf[] = { { "Off", "none", nullptr }, { "SF2", "sf2", "Symbiface II: PS/2 mouse, RTC, IDE/CF" },
                                  { "SF3", "sf3", "Symbiface III: USB mouse, RTC, IDE/CF" } };
     auto pickSf = [this](const char* v) { host.setSymbiface(v); };
@@ -518,6 +581,12 @@ void GuiShell::tapeDeckControls(bool asMenu) {
         if (ImGui::MenuItem("Rewind (a block)", nullptr, false, in)) host.tapeRewindBlock();
         if (ImGui::MenuItem("Rewind to the start", nullptr, false, in)) host.tapeRewind();
         if (ImGui::MenuItem("Reset the counter", nullptr, false, in)) host.tapeResetCounter();
+        if (ImGui::MenuItem("Record", nullptr, host.tapeRecording())) host.tapeRecord();
+        if (ImGui::MenuItem("Turbo loading", nullptr, host.tapeTurbo > 1))
+            host.tapeTurbo = host.tapeTurbo > 1 ? 1 : EmuHost::TAPE_TURBO_UNLIMITED;
+        if (ImGui::MenuItem("New blank tape")) host.tapeNewBlank();
+        if (ImGui::MenuItem("Save tape as...", nullptr, false, in))
+            saver.open("Save tape", host.mediaDir, host.tapeName.empty() ? "tape.cdt" : host.tapeName, [this](const std::string& p) { host.tapeSaveAs(p); });
         if (ImGui::MenuItem("Eject", nullptr, false, in)) host.tapeEject();
         return;
     }
@@ -541,9 +610,9 @@ void GuiShell::tapeDeckControls(bool asMenu) {
     // the buttons, on as many rows as the window's width needs
     const ImGuiStyle& style = ImGui::GetStyle();
     const float right = ImGui::GetCursorScreenPos().x + ImGui::GetContentRegionAvail().x;
-    // all seven across when they fit; never narrower than the longest label
+    // all eight across when they fit; never narrower than the longest label
     const float widest = ImGui::CalcTextSize("Pause").x + style.FramePadding.x * 2;
-    const float w = std::max(widest, (ImGui::GetContentRegionAvail().x - style.ItemSpacing.x * 6) / 7);
+    const float w = std::max(widest, (ImGui::GetContentRegionAvail().x - style.ItemSpacing.x * 7) / 8);
     bool first = true;
     auto button = [&](const char* label, const char* tip, bool lit, bool enabled) {
         if (!first) {
@@ -560,13 +629,36 @@ void GuiShell::tapeDeckControls(bool asMenu) {
         return pressed;
     };
     const bool playing = in && deck->playing;
-    if (button("|<", "Rewind to the start", false, in)) host.tapeRewind();
-    if (button("<<", "Rewind: to this block's start, or the one before", false, in)) host.tapeRewindBlock();
-    if (button("Play", "PLAY", playing && !deck->paused, in && !deck->tapeEnded)) host.tapePlay();
+    const bool recording = in && deck->recording;
+    if (button("|<", "Rewind to the start", false, in && !recording)) host.tapeRewind();
+    if (button("<<", "Rewind: to this block's start, or the one before", false, in && !recording)) host.tapeRewindBlock();
+    if (button("Play", "PLAY", playing && !deck->paused && !recording, in && !deck->tapeEnded && !recording)) host.tapePlay();
+    if (button("Rec", "RECORD (with PLAY): what the CPC SAVEs goes onto the tape from here on.\n"
+                      "No tape in: a blank one. Stop ends it; with \"Save writes to the image\" on, a .cdt file takes it.",
+               recording, !recording)) host.tapeRecord();
     if (button("Pause", "PAUSE: the tape held, PLAY still down", in && deck->paused, playing)) host.tapePause();
-    if (button("Stop", "STOP: PLAY up", false, playing)) host.tapeStop();
-    if (button(">>", "Fast forward: to the next block", false, in && !deck->tapeEnded)) host.tapeFastForward();
+    if (button("Stop", "STOP: PLAY (and REC) up", false, playing)) host.tapeStop();
+    if (button(">>", "Fast forward: to the next block", false, in && !deck->tapeEnded && !recording)) host.tapeFastForward();
     if (button("Eject", "Take the tape out", false, in)) host.tapeEject();
+    ImGui::EndDisabled();
+    if (ImGui::SmallButton("New blank tape")) host.tapeNewBlank();
+    ImGui::BeginDisabled(!in);
+    if (after().smallButton("Save tape as..."))
+        saver.open("Save tape", host.mediaDir, host.tapeName.empty() ? "tape.cdt" : host.tapeName, [this](const std::string& p) { host.tapeSaveAs(p); });
+    if (in && deck->modified) after().textDisabled("recorded, not saved");
+    // tape turbo: the machine faster while the tape moves
+    {
+        const bool fast = host.tapeTurboActive();
+        if (ImGui::Button(fast ? "Turbo: on##tt" : "Turbo##tt")) host.tapeTurbo = host.tapeTurbo > 1 ? 1 : EmuHost::TAPE_TURBO_UNLIMITED;
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+            ImGui::SetTooltip("Load faster: while the tape moves the whole CPC runs faster,\n"
+                              "so every loader (protected ones too) works as it always does.\n"
+                              "Click: unlimited / off. The slider sets how much faster.");
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(-1);
+        const char* shown = host.tapeTurbo <= 1 ? "off (real speed)" : host.tapeTurbo >= EmuHost::TAPE_TURBO_UNLIMITED ? "unlimited" : "%dx";
+        ImGui::SliderInt("##tapeturbo", &host.tapeTurbo, 1, EmuHost::TAPE_TURBO_UNLIMITED, shown, ImGuiSliderFlags_AlwaysClamp);
+    }
     // any block
     if (in && blocks > 0) {
         char preview[160];
@@ -1133,7 +1225,7 @@ void GuiShell::sectionDevelopment(bool asMenu) {
         ImGui::SetNextItemWidth(-ImGui::GetFontSize() * 6);
         ImGui::InputTextWithHint("##path", ".bin, .sna, .dsk, .cpr or a tape", devWatchPath, sizeof(devWatchPath));
         if (after().smallButton("Browse..."))
-            browser.open("File to watch", host.mediaDir, { ".bin", ".sna", ".dsk", ".cpr", ".cdt", ".tzx", ".wav" },
+            browser.open("File to watch", host.mediaDir, { ".bin", ".sna", ".dsk", ".hfe", ".cpr", ".cdt", ".tzx", ".wav" },
                          [this](const std::string& p) { std::snprintf(devWatchPath, sizeof(devWatchPath), "%s", p.c_str()); });
         ImGui::SetNextItemWidth(ImGui::GetFontSize() * 7);
         ImGui::InputTextWithHint("Load at", "header", devWatchAddr, sizeof(devWatchAddr));

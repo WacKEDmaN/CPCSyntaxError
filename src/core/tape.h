@@ -27,10 +27,15 @@ public:
     AY38912* ay;
     bool requireMotor;
     double tstateRatio;
-    int headerPilotPulses = 8064;
-    int dataPilotPulses = 3220;
-    int initialSignalLevel = 1;
-    std::string stopTapeMode = "always";
+    // A standard speed block's pilot (TZX 1.20, block &10: 8063 pulses before a flag byte
+    // below 128, 3223 otherwise -- the 8064/3220 of older revisions were corrected).
+    int headerPilotPulses = 8063;
+    int dataPilotPulses = 3223;
+    // "An emulator should put the 'current pulse level' to 'low' when starting to play a
+    // TZX file, either from the start or from a certain position" (the TZX format).
+    int initialSignalLevel = 0;
+    // Block &2A stops the tape "ONLY if the machine is an 48K Spectrum" (the TZX format).
+    std::string stopTapeMode = "spectrum";
     bool tapeRelayDelay = true;
     std::string machineModel = "cpc";
 
@@ -79,6 +84,31 @@ public:
     void rewindBlock();                         // to this block's start, or the one before it
     void seekBlock(int index);                  // to a block's start
     void buildTimeline();
+
+    // RECORDING (REC down with PLAY): the CPC's cassette write line (PPI port C bit 5) onto
+    // the tape. While the motor turns, each change of the line ends a pulse; a run of pulses
+    // with a silence of RECORD_GAP_US after it is one block, a CSW recording (TZX &18) at
+    // RECORD_RATE -- 4 us a sample, so a 1000-baud pulse is one byte of it -- with the silence
+    // as its pause. The recording overwrites the tape from the block under the head (or goes
+    // after its end), as a deck's erase head would; STOP puts it into the tape image.
+    static constexpr int RECORD_RATE = 250000;
+    static constexpr long long RECORD_GAP_US = 100000;
+    bool recording = false;
+    bool modified = false;           // recorded onto since it went in: to be saved
+    int writeLevel = 0;              // the line, as the PPI drives it
+    long long recordClock = 0;       // microseconds the tape has moved while recording
+    long long lastEdge = -1;         // the last change of the line (-1: none yet)
+    bool blockOpen = false;          // a block's first edge has come and no silence since
+    std::vector<uint32_t> recordPulses;   // the block being recorded
+    Bytes recorded;                  // the finished blocks, as TZX
+    size_t recordCut = 0;            // where in the image the recording starts
+    long long recordFrom = 0;        // and where on the tape (cycles)
+    int lastBlockPause = -1;         // offset of the last finished block's pause field in `recorded`
+    void newBlank(const std::string& fileName);   // an empty tape
+    bool startRecording();           // REC (with PLAY); false: this tape cannot be recorded on
+    void stopRecording();            // the recording into the tape (STOP, EJECT, the motor kept on)
+    void setWriteLevel(int level);
+    void endRecordedBlock();
 
     CPCTapeDrive(AY38912* ay = nullptr, bool requireMotor = true, double tstateFrequency = 1000000);
     virtual ~CPCTapeDrive() = default;

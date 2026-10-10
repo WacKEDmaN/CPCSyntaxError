@@ -34,7 +34,7 @@ void PPI8255::setMode(int value) {
         portB = 0;
         portC = 0;
     }
-    applyAyBus();
+    applyPortC();
 }
 void PPI8255::write(int port, int value) {
     value &= 0xff;
@@ -46,32 +46,38 @@ void PPI8255::write(int port, int value) {
         case 1:
             if (!portBInput) portB = value;
             break;
-        case 2: {
+        case 2:
             portC = value;
-            if (tape) tape->setMotor(!!(value & 0x10));
-            if (ay) ay->beeperNoise = (value & 0x20) ? 0.22 : 0;
-            applyAyBus();
+            applyPortC();
             break;
-        }
         default:
             if (value & 0x80) {
                 setMode(value);
             } else {
                 int bit = (unsigned)value >> 1 & 7;
                 if (value & 1) portC |= 1 << bit; else portC &= ~(1 << bit);
-                if (tape && bit == 4) tape->setMotor(!!(portC & 0x10));
-                if (ay && bit == 5) ay->beeperNoise = (portC & 0x20) ? 0.22 : 0;
-                applyAyBus();
+                applyPortC();
             }
             break;
     }
 }
+void PPI8255::applyPortC() {
+    // The motor relay and the cassette write line are driven through transistors, not logic
+    // inputs: a high-impedance half gives them no base current, so they are off -- only an
+    // output half drives them (and an 8255 resets with every port an input).
+    const int driven = portCHighInput ? 0 : portC;
+    if (tape) tape->setMotor(!!(driven & 0x10));
+    if (ay) ay->beeperNoise = (driven & 0x20) ? 0.22 : 0;
+    if (tape) tape->setWriteLevel(driven & 0x20);   // the cassette write line
+    applyAyBus();
+}
 void PPI8255::applyAyBus() {
-    if (!portCLowInput) ay->keyboard->selectRow(portC & 0x0f);
-    if (portCHighInput) return;
-    int bus = portC & 0xc0;
-    if (bus == 0xc0) ay->select(portA);
-    else if (bus == 0x80) ay->write(portA);
+    const int pins = portCPins();
+    ay->keyboard->selectRow(pins & 0x0f);
+    int bus = pins & 0xc0;
+    const int data = portAInput ? 0xff : portA;      // an input port A: the PSG sees &FF
+    if (bus == 0xc0) ay->select(data);
+    else if (bus == 0x80) ay->write(data);
 }
 int PPI8255::read(int port) {
     switch (portIndex(port)) {

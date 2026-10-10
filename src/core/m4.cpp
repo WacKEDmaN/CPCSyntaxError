@@ -21,7 +21,7 @@ static const int C_OPEN = 0x4301, C_READ = 0x4302, C_WRITE = 0x4303, C_CLOSE = 0
     C_RAMDISOFF = 0x431a, C_WRITE2 = 0x431b, C_HTTPGET = 0x4320, C_SETNETWORK = 0x4321, C_M4OFF = 0x4322,
     C_NETSTAT = 0x4323, C_TIME = 0x4324, C_DIRSETARGS = 0x4325, C_VERSION = 0x4326, C_UPGRADE = 0x4327,
     C_HTTPGETMEM = 0x4328, C_COPYBUF = 0x4329, C_COPYFILE = 0x432a, C_ROMSUPDATE = 0x432b,
-    C_ROMLIST = 0x432c, C_NETSOCKET = 0x4331, C_NETRSSI = 0x4337, C_GETNETWORK = 0x433b, C_WIFIPOW = 0x433c,
+    C_ROMLIST = 0x432c, C_DSKEXT = 0x4330, C_NETSOCKET = 0x4331, C_NETRSSI = 0x4337, C_GETNETWORK = 0x433b, C_WIFIPOW = 0x433c,
     C_ROMLOW = 0x433d, C_ROMCP = 0x43fc, C_ROMWRITE = 0x43fd, C_CONFIG = 0x43fe;
 // ff.i
 static const int FA_READ = 1, FA_WRITE = 2, FA_CREATE_NEW = 4, FA_CREATE_ALWAYS = 8, FA_OPEN_ALWAYS = 16, FA_REALMODE = 128;
@@ -43,6 +43,7 @@ void M4Board::setRom(const Bytes& image) {
 
 void M4Board::setCard(const std::string& hostFolder) {
     flush();
+    dsk.reset();
     for (int fd = 1; fd < (int)fds.size(); fd++) fds[fd] = Fd{};
     sd.reset();
     storage.reset();
@@ -64,6 +65,9 @@ void M4Board::powerOn() {
     for (Fd& f : fds) f = Fd{};
     dirRows.clear(); dirShort.clear(); dirIndex = 0;
     if (storage) storage->cwd = "/";
+    flushDsk();
+    dsk.reset();
+    extractKey.clear(); extractQueue.clear(); extractIndex = 0;
     net->closeAll();
     net->wifiOn = true;
     heldFor = 0;
@@ -133,6 +137,61 @@ void M4Board::flush() {
         std::string report;
         if (sd->syncToHost(&report)) lastSync = report;
     }
+    flushDsk();
+}
+
+// ------------------------------------------------------------------ a .dsk as a folder
+bool M4Board::mountDsk(const std::string& realPath) {
+    if (!storage) return false;
+    Bytes image;
+    if (storage->readFile(realPath, image) != M4_FR_OK) return false;
+    std::shared_ptr<Disk> disk;
+    try { disk = parseDsk(image); } catch (const std::exception&) { return false; }
+    if (!disk) return false;
+    const std::optional<DskGeometry> g = dskDetect(*disk);
+    if (!g) return false;                            // not a format with a CP/M directory
+    flushDsk();
+    MountedDsk m;
+    m.real = realPath;
+    m.disk = disk;
+    m.geometry = *g;
+    dsk = m;
+    return true;
+}
+
+void M4Board::flushDsk() {
+    if (!dsk || !dsk->dirty || !storage) return;
+    dsk->dirty = false;
+    storage->writeFile(dsk->real, serializeDsk(*dsk->disk, !dsk->disk->extended && dskFitsStandard(*dsk->disk)));
+}
+
+void M4Board::unmountDsk() {
+    flushDsk();
+    dsk.reset();
+}
+
+std::vector<DskFsFile> M4Board::dskFiles(bool listing) const {
+    std::vector<DskFsFile> out;
+    if (!dsk) return out;
+    try {
+        DskFs fs(dsk->disk, dsk->geometry);
+        // m4info v2.0.x: "Do not show files with system attribute set" -- in a listing; a
+        // program still opens them by name (Chany's Dream 2 loads its system file DREAM2.CH1)
+        for (DskFsFile& f : fs.files()) if (!listing || !f.system) out.push_back(f);
+    } catch (const std::exception&) {}
+    return out;
+}
+
+const DskFsFile* M4Board::dskFind(const std::vector<DskFsFile>& files, const std::string& nameIn) const {
+    std::string name = M4Storage::leafOf("/" + nameIn);
+    while (!name.empty() && (name.back() == ' ' || name.back() == '.')) name.pop_back();
+    const std::string want = M4Storage::lower(name);
+    for (const DskFsFile& f : files) if (M4Storage::lower(f.displayName()) == want) return &f;
+    // AMSDOS: a name without a type is looked for as it is, then .BAS, then .BIN
+    if (name.find('.') == std::string::npos)
+        for (const char* ext : { ".bas", ".bin" })
+            for (const DskFsFile& f : files) if (M4Storage::lower(f.displayName()) == want + ext) return &f;
+    return nullptr;
 }
 
 void M4Board::poll() {
@@ -179,6 +238,32 @@ void M4Board::closeFd(int fd) {
 int M4Board::openFile(int mode, const std::string& name, int& fdOut) {
     fdOut = 0xff;
     if (!storage) return M4_FR_NOT_READY;
+    if (dsk) {
+        // Inside a .dsk: its files are read-only (m4info: "DSK files are read only for now").
+        if (mode & (FA_WRITE | FA_CREATE_NEW | FA_CREATE_ALWAYS | FA_OPEN_ALWAYS)) return M4_FR_WRITE_PROTECTED;
+        const std::vector<DskFsFile> files = dskFiles();
+        const DskFsFile* f = dskFind(files, name);
+        if (!f) return M4_FR_NO_FILE;
+        int fd = 1;
+        if (mode & FA_REALMODE) {
+            fd = -1;
+            for (int i = 3; i < (int)fds.size(); i++) if (!fds[i].used) { fd = i; break; }
+            if (fd < 0) return M4_FR_TOO_MANY_OPEN_FILES;
+        } else closeFd(1);
+        Fd o;
+        try { o.data = DskFs(dsk->disk, dsk->geometry).read(*f); } catch (const std::exception&) { return M4_FR_DISK_ERR; }
+        // A file with an AMSDOS header ends where the header says, not at its last record.
+        if (f->header) {
+            const size_t length = (size_t)(f->header->fullLength ? f->header->fullLength : f->header->logicalLength) + 128;
+            if (length <= o.data.size()) o.data.resize(length);
+        }
+        o.used = true;
+        o.canRead = true;
+        o.path = dsk->real + "/" + f->displayName();
+        fds[fd] = o;
+        fdOut = fd;
+        return M4_FR_OK;
+    }
     int fd = -1;
     if (mode & FA_REALMODE) {
         for (int i = 3; i < (int)fds.size(); i++) if (!fds[i].used) { fd = i; break; }
@@ -228,6 +313,76 @@ static std::string asciiSizeK(uint64_t bytes) {
     return b;
 }
 
+// The directory commands while a .dsk is the current folder. false: not one of them (or
+// it left the image), and the card's own handling goes on.
+bool M4Board::dskCommand(int command, const std::vector<int>& p) {
+    auto str = [&](size_t from) { std::string s; for (size_t i = from; i < p.size() && p[i]; i++) s += (char)p[i]; return s; };
+    const std::string arg = str(0);
+    auto s11 = [](const DskFsFile& f) {
+        std::string n = f.name.substr(0, 8), x = f.ext.substr(0, 3);
+        n.resize(8, ' ');
+        x.resize(3, ' ');
+        return n + x;
+    };
+    auto fileSize = [](const DskFsFile& f) -> uint64_t {
+        if (f.header) return (uint64_t)(f.header->fullLength ? f.header->fullLength : f.header->logicalLength) + 128;
+        return (uint64_t)f.records * 128;
+    };
+    switch (command) {
+        case C_CD:
+            if (arg == "..") { unmountDsk(); resp8(0); return true; }   // back to the folder it is in
+            unmountDsk();                            // "/" or anything else: from the image's folder
+            return false;
+        case C_GETPATH: {
+            const std::string folder = storage ? storage->cwd : "/";
+            respStr((folder == "/" ? "" : folder) + "/" + M4Storage::leafOf(dsk->real));
+            return true;
+        }
+        case C_DIRSETARGS: {
+            dirRows.clear(); dirShort.clear(); dirIndex = 0;
+            const std::string pattern = arg.empty() ? std::string("*") : M4Storage::leafOf("/" + arg);
+            for (const DskFsFile& f : dskFiles(true)) {
+                if (!M4Storage::wildcardMatch(pattern, f.displayName())) continue;
+                M4Entry e;
+                e.name = f.displayName();
+                e.size = fileSize(f);
+                e.readOnly = f.readOnly;
+                dirRows.push_back(e);
+                dirShort.push_back(s11(f));
+            }
+            return true;
+        }
+        case C_FREE: {
+            int freeK = 0;
+            try { DskFs fs(dsk->disk, dsk->geometry); freeK = fs.freeBlocks() * dsk->geometry.blockSize / 1024; } catch (const std::exception&) {}
+            respStr("\r\n" + std::to_string(freeK) + "K free\r\n\r\n");
+            return true;
+        }
+        case C_MAKEDIR: case C_ERASEFILE: case C_RENAME: case C_COPYFILE:
+            resp8(M4_FR_WRITE_PROTECTED);            // the image's files are read-only
+            respStr(m4ErrorText(M4_FR_WRITE_PROTECTED));
+            return true;
+        case C_FSTAT: {
+            const std::vector<DskFsFile> files = dskFiles();
+            const DskFsFile* f = dskFind(files, arg);
+            if (!f) { resp8(M4_FR_NO_FILE); return true; }
+            resp8(0);
+            resp32((uint32_t)fileSize(*f));
+            resp16(0); resp16(0);
+            resp8(0x20 | (f->readOnly ? 0x01 : 0));
+            std::string shortName = f->displayName();
+            shortName.resize(13, '\0');
+            for (char c : shortName) resp8((unsigned char)c);
+            std::string longName = f->displayName();
+            longName.resize(258, '\0');
+            for (char c : longName) resp8((unsigned char)c);
+            return true;
+        }
+        default:
+            return false;
+    }
+}
+
 bool M4Board::ack(Z80* cpu) {
     (void)cpu;
     if (!enabled) { cmd.clear(); return false; }
@@ -254,6 +409,7 @@ bool M4Board::ack(Z80* cpu) {
     if (storageCommand) flush();                     // file commands see what raw writes did
     poll();
 
+    if (dsk && dskCommand(command, p)) { finishResponse(command, p); return false; }
     switch (command) {
         case C_CONFIG:                               // data[0] = offset in the config area
             if (!p.empty()) for (size_t i = 1; i < p.size(); i++) at(0xf400 + ((p[0] + (int)i - 1) & 0xff)) = (uint8_t)p[i];
@@ -361,7 +517,11 @@ bool M4Board::ack(Z80* cpu) {
         case C_CD: {
             const std::string target = storage ? storage->find(str(0).empty() ? "/" : str(0)) : "";
             if (!target.empty() && storage->isDir(target)) { storage->cwd = target; resp8(0); }
-            else resp8(0xff);                        // M4ROM.s: 0xFF prints "unknown dir"
+            else if (!target.empty() && storage->isFile(target) && M4Storage::lower(target.substr(target.size() >= 4 ? target.size() - 4 : 0)) == ".dsk" &&
+                     mountDsk(target)) {
+                storage->cwd = M4Storage::parentOf(target);   // the image is a folder inside its own
+                resp8(0);
+            } else resp8(0xff);                      // M4ROM.s: 0xFF prints "unknown dir"
             break;
         }
         case C_GETPATH: respStr(storage ? storage->cwd : "/"); break;
@@ -522,9 +682,68 @@ bool M4Board::ack(Z80* cpu) {
             resp8(err);
             break;
         }
-        case C_READSECTOR: case C_WRITESECTOR: case C_FORMATTRACK:
-            resp8(M4_FR_NOT_READY);                  // no DSK image mounted on the board
+        case C_READSECTOR: case C_WRITESECTOR: {
+            // The ROM's BIOS read/write-sector replacements (M4ROM.s read_sector,
+            // write_sector): data[0] track, data[1] sector ID, data[2] drive (unused);
+            // a read answers [3] the result and the sector from [4].
+            if (!dsk) { resp8(M4_FR_NOT_READY); break; }
+            if (p.size() < 3) { resp8(M4_FR_INVALID_PARAMETER); break; }
+            Sector* s = dskFindSector(*dsk->disk, p[0], 0, p[1]);
+            if (!s && dsk->geometry.sides > 1) s = dskFindSector(*dsk->disk, p[0], 1, p[1]);
+            if (!s || s->data.empty()) { resp8(M4_FR_DISK_ERR); break; }
+            Bytes& data = s->data[0];
+            if (command == C_READSECTOR) {
+                resp8(M4_FR_OK);
+                for (int i = 0; i < 512; i++) resp8(i < (int)data.size() ? data[i] : 0xe5);
+            } else {
+                // The board does not write to its DSK images (the user, 2026-10-09; m4info:
+                // "DSK files are read only"): refused, the image as it was.
+                resp8(M4_FR_WRITE_PROTECTED);
+            }
             break;
+        }
+        case C_FORMATTRACK:
+            resp8(M4_FR_NOT_READY);                  // m4info: "Not implemented yet"
+            break;
+        case C_DSKEXT: {
+            // |DSKX,"disc.dsk","/path": the arguments arrive last-typed first (the path,
+            // then the image). Each call extracts one file: [3] 0 = more to come, then the
+            // text the ROM prints from [4]; [3] 1 ends the loop (M4ROM.s dsk_extract).
+            const std::string key = str(0) + "\n" + secondStr();
+            if (key != extractKey) {
+                extractKey = key;
+                extractQueue.clear();
+                extractIndex = 0;
+                const std::string image = storage ? storage->find(secondStr()) : "";
+                std::optional<MountedDsk> keep = dsk;
+                dsk.reset();
+                if (!image.empty() && mountDsk(image)) {
+                    for (const DskFsFile& f : dskFiles()) {
+                        Bytes data;
+                        try { data = DskFs(dsk->disk, dsk->geometry).read(f); } catch (const std::exception&) { continue; }
+                        if (f.header) {
+                            const size_t length = (size_t)(f.header->fullLength ? f.header->fullLength : f.header->logicalLength) + 128;
+                            if (length <= data.size()) data.resize(length);
+                        }
+                        extractQueue.push_back({ f.displayName(), data });
+                    }
+                }
+                dsk = keep;
+                if (extractQueue.empty()) { extractKey.clear(); resp8(1); respStr("\r\nNo such DSK image\r\n"); break; }
+            }
+            if (extractIndex >= extractQueue.size()) { extractKey.clear(); resp8(1); respStr("Done.\r\n"); break; }
+            const auto& [name, data] = extractQueue[extractIndex++];
+            std::string to;
+            const std::string dest = str(0).empty() ? std::string(".") : str(0);
+            const std::string destDir = storage ? storage->find(dest) : "";
+            err = !storage ? M4_FR_NOT_READY : destDir.empty() || !storage->isDir(destDir) ? M4_FR_NO_PATH
+                  : storage->resolveForCreate((destDir == "/" ? "" : destDir) + "/" + name, to);
+            if (!err) err = storage->writeFile(to, data);
+            if (err == M4_FR_NO_PATH) { extractKey.clear(); resp8(1); respStr("\r\nNo such folder\r\n"); break; }
+            resp8(0);
+            respStr(err ? name + ": " + m4ErrorText(err) + "\r\n" : name + "\r\n");
+            break;
+        }
         // ---------------------------------------------------------- network (the host's)
         case C_HTTPGET: {
             // "[@]host[:port]/file[>name]": @ = print nothing, >name = save as (m4info v2.0.x)

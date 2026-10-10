@@ -848,16 +848,18 @@ void GuiShell::chipTabsIo() {
                 ImGui::TextDisabled("uPD765A disc controller");
                 if (e->hasFdc && e->fdc) {
                     UPD765A* fd = e->fdc;
-                    static const char* phases[] = { "command", "execution", "result" };
+                    static const char* phases[] = { "idle", "command", "execution (read)", "execution (write)", "result", "execution" };
                     if (beginFacts("##fdcf", 150)) {
-                        fact("phase", "%s", fd->phase >= 0 && fd->phase < 3 ? phases[fd->phase] : "?");
+                        fact("phase", "%s", fd->phase >= 0 && fd->phase < 6 ? phases[fd->phase] : "?");
                         fact("command", "&%02X  %s", fd->command & 0xff, fdcCommandName(fd->command));
                         std::string ps;
                         for (int p : fd->params) { char t[4]; std::snprintf(t, sizeof(t), "%02X ", p & 0xff); ps += t; }
                         fact("parameters", "%s", ps.empty() ? "-" : ps.c_str());
                         fact("transfer", "%d / %d bytes", fd->transferIndex, (int)fd->transfer.size());
                         fact("motor", "%s", fd->motor ? "on" : "off");
-                        fact("interrupt status", "&%02X", fd->interruptState & 0xff);
+                        if (!fd->interruptPending()) fact("interrupts", "none");
+                        else fact("interrupts", "A %s, B %s", fd->interrupts[0] >= 0 ? "pending" : "-", fd->interrupts[1] >= 0 ? "pending" : "-");
+                        fact("ready", "A %s, B %s", fd->ready(0) ? "yes" : "no", fd->ready(1) ? "yes" : "no");
                         fact("active drive", "%c", 'A' + (fd->activeDriveIndex & 1));
                         endFacts();
                     }

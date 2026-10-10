@@ -15,6 +15,7 @@ void Z80::reset() {
     ix = iy = 0; sp = 0xffff; pc = 0; i = r = 0;
     iff1 = iff2 = false; im = 0; halted = false; eiDelay = 0;
     pendingInterrupt = -1; pendingNmi = false; tStates = 0;
+    wz = 0; q = 0; flagsWritten = false; lastWasLdAIR = false;
     inInstruction = false; busOffset = 0; waitStates = 0;
     instructionStartPc = pc;
 }
@@ -66,6 +67,7 @@ void Z80::busWrite(int address, int value, int cycles) {
 }
 
 int Z80::fetchOpcode() {
+    if (pc < 0x80 && onLowM1) onLowM1(pc);
     int value = busRead(pc, 4, "execute");
     pc = (pc + 1) & 0xffff;
     r = (r & 0x80) | ((r + 1) & 0x7f);
@@ -122,6 +124,10 @@ int Z80::pop() {
 }
 
 int Z80::interrupt() {
+    // The NMOS Z80's own fault (Zilog's Z80 CPU User Manual, LD A,I / LD A,R): an
+    // interrupt taken straight after either reads IFF2 as it is being reset, so the P/V
+    // flag the instruction left is 0.
+    if (lastWasLdAIR) f &= ~PV;
     if (halted) pc = (pc + 1) & 0xffff;
     halted = false; iff1 = iff2 = false;
     r = (r & 0x80) | ((r + 1) & 0x7f);
@@ -130,6 +136,7 @@ int Z80::interrupt() {
     if (im == 2) pc = readWord(i << 8 | pendingInterrupt);
     else if (im == 0) pc = ports.im0Address ? ports.im0Address(pendingInterrupt) : (pendingInterrupt & 0x38);
     else pc = 0x38;
+    wz = pc;
     pendingInterrupt = -1; if (ports.acknowledge) ports.acknowledge();
     lastWasInterrupt = true;   // ACCC §27.4: one more usec than the T-states give
     return im == 2 ? 19 : 13;
@@ -140,7 +147,7 @@ int Z80::nmi() {
     halted = false; iff2 = iff1; iff1 = false;
     r = (r & 0x80) | ((r + 1) & 0x7f);
     if (inInstruction) busOffset = 5;
-    push(pc, 0); pc = 0x66; pendingNmi = false; return 11;
+    push(pc, 0); pc = wz = 0x66; pendingNmi = false; return 11;
 }
 
 int Z80::pair(int code, int* index) {
@@ -158,7 +165,7 @@ void Z80::setPair(int code, int value, int* index) {
 }
 int Z80::indexAddress(int* index, int internalCycles) {
     if (!displacementSet) { displacement = signed8(fetch()); displacementSet = true; busInternal(internalCycles); }
-    return (*index + displacement) & 0xffff;
+    return wz = (*index + displacement) & 0xffff;
 }
 int Z80::reg(int code, int* index, bool indexedRegisters) {
     switch (code & 7) {
@@ -192,35 +199,42 @@ int Z80::szxy(int value) { value &= 0xff; return (value & S) | (value == 0 ? Z :
 
 int Z80::inc8(int value) {
     int result = (value + 1) & 0xff;
+    flagsWritten = true;
     f = (f & C) | szxy(result) | ((value & 0x0f) == 0x0f ? H : 0) | (value == 0x7f ? PV : 0);
     return result;
 }
 int Z80::dec8(int value) {
     int result = (value - 1) & 0xff;
+    flagsWritten = true;
     f = (f & C) | szxy(result) | N | ((value & 0x0f) ? 0 : H) | (value == 0x80 ? PV : 0);
     return result;
 }
 void Z80::add8(int value, int carry) {
     int a0 = a, sum = a0 + value + carry, result = sum & 0xff; a = result;
+    flagsWritten = true;
     f = szxy(result) | ((a0 ^ value ^ result) & H) | ((~(a0 ^ value) & (a0 ^ result) & S) ? PV : 0) | (sum > 0xff ? C : 0);
 }
 void Z80::sub8(int value, int carry, bool compare) {
     int a0 = a, diff = a0 - value - carry, result = diff & 0xff; if (!compare) a = result;
+    flagsWritten = true;
     f = szxy(result) | N | ((a0 ^ value ^ result) & H) | (((a0 ^ value) & (a0 ^ result) & S) ? PV : 0) | (diff < 0 ? C : 0);
     if (compare) f = (f & ~(Y | X)) | (value & (Y | X));
 }
 void Z80::logic(int op, int value) {
+    flagsWritten = true;
     if (op == 4) { a &= value; f = szp(a) | H; }
     else if (op == 5) { a ^= value; f = szp(a); }
     else { a |= value; f = szp(a); }
 }
 int Z80::add16(int lhs, int rhs) {
     int sum = lhs + rhs, result = sum & 0xffff;
+    flagsWritten = true; wz = (lhs + 1) & 0xffff;
     f = (f & (S | Z | PV)) | ((result >> 8) & (Y | X)) | (((lhs ^ rhs ^ result) & 0x1000) ? H : 0) | (sum > 0xffff ? C : 0);
     return result;
 }
 int Z80::adc16(int lhs, int rhs, bool subtract) {
     int carry = f & C, value = subtract ? -rhs - carry : rhs + carry, sum = lhs + value, result = sum & 0xffff;
+    flagsWritten = true; wz = (lhs + 1) & 0xffff;
     int overflow = subtract ? (lhs ^ rhs) & (lhs ^ result) : ~(lhs ^ rhs) & (lhs ^ result);
     f = ((result >> 8) & S) | (result == 0 ? Z : 0) | ((result >> 8) & (Y | X)) | (((lhs ^ rhs ^ result) & 0x1000) ? H : 0)
         | ((overflow & 0x8000) ? PV : 0) | (subtract ? N : 0) | ((sum < 0 || sum > 0xffff) ? C : 0);
@@ -238,16 +252,18 @@ int Z80::rotate(int value, int type) {
         case 6: carry = value >> 7; result = value << 1 | 1; break;                   // SLL (undocumented)
         default: carry = value & 1; result = value >> 1;                              // SRL
     }
-    result &= 0xff; f = szp(result) | carry; return result;
+    result &= 0xff; f = szp(result) | carry; flagsWritten = true; return result;
 }
 void Z80::bit(int bitn, int value, int xySource) {
     int mask = 1 << bitn, set = value & mask;
+    flagsWritten = true;
     f = (f & C) | H | (set ? 0 : (Z | PV)) | ((bitn == 7 && set) ? S : 0) | (xySource & (Y | X));
 }
 void Z80::daa() {
     int savedFlags = f, correction = ((a & 0x0f) > 9 || (savedFlags & H)) ? 0x06 : 0;
     if ((savedFlags & C) || a > 0x99) { savedFlags |= C; correction |= 0x60; }
     if (savedFlags & N) sub8(correction); else add8(correction);
+    flagsWritten = true;
     f = (f & 0xfa) | (savedFlags & C) | (parity8(a) ? PV : 0);
 }
 
@@ -264,7 +280,7 @@ int Z80::executeCB(int opcode, int* index, int address) {
         return index ? 23 : code == 6 ? 15 : 8;
     }
     if (group == 1) {
-        bit(bitn, value, index ? address >> 8 : code == 6 ? hl() >> 8 : value);
+        bit(bitn, value, index ? address >> 8 : code == 6 ? wz >> 8 : value);
         return index ? 20 : code == 6 ? 12 : 8;
     }
     int result = group == 2 ? value & ~(1 << bitn) : value | 1 << bitn;
@@ -275,23 +291,23 @@ int Z80::executeCB(int opcode, int* index, int address) {
 
 int Z80::executeED(int opcode) {
     int rr = opcode >> 4 & 3;
-    if ((opcode & 0xc7) == 0x40) { int value = portRead(bc(), "in-c"); if ((opcode >> 3 & 7) != 6) setReg(opcode >> 3 & 7, value); f = (f & C) | szp(value); return 12; }
-    if ((opcode & 0xc7) == 0x41) { portWrite(bc(), (opcode >> 3 & 7) == 6 ? 0 : reg(opcode >> 3 & 7), "out-c"); return 12; }
+    if ((opcode & 0xc7) == 0x40) { wz = (bc() + 1) & 0xffff; int value = portRead(bc(), "in-c"); if ((opcode >> 3 & 7) != 6) setReg(opcode >> 3 & 7, value); f = (f & C) | szp(value); flagsWritten = true; return 12; }
+    if ((opcode & 0xc7) == 0x41) { wz = (bc() + 1) & 0xffff; portWrite(bc(), (opcode >> 3 & 7) == 6 ? 0 : reg(opcode >> 3 & 7), "out-c"); return 12; }
     if ((opcode & 0xcf) == 0x42) { setHl(adc16(hl(), pair(rr), true)); return 15; }
     if ((opcode & 0xcf) == 0x4a) { setHl(adc16(hl(), pair(rr))); return 15; }
-    if ((opcode & 0xcf) == 0x43) { writeWord(fetchWord(), pair(rr)); return 20; }
-    if ((opcode & 0xcf) == 0x4b) { setPair(rr, readWord(fetchWord())); return 20; }
+    if ((opcode & 0xcf) == 0x43) { int address = fetchWord(); writeWord(address, pair(rr)); wz = (address + 1) & 0xffff; return 20; }
+    if ((opcode & 0xcf) == 0x4b) { int address = fetchWord(); setPair(rr, readWord(address)); wz = (address + 1) & 0xffff; return 20; }
     if ((opcode & 0xc7) == 0x44) { int value = a; a = 0; sub8(value); return 8; }
-    if ((opcode & 0xc7) == 0x45) { pc = pop(); iff1 = iff2; return 14; }
+    if ((opcode & 0xc7) == 0x45) { pc = wz = pop(); iff1 = iff2; return 14; }
     if ((opcode & 0xc7) == 0x46) { static const int table[8] = { 0, 0, 1, 2, 0, 0, 1, 2 }; im = table[opcode >> 3 & 7]; return 8; }
     switch (opcode) {
         case 0x47: i = a; return 9; case 0x4f: r = a; return 9;
-        case 0x57: a = i; f = (f & C) | (a & (S | Y | X)) | (a == 0 ? Z : 0) | (iff2 ? PV : 0); return 9;
-        case 0x5f: a = r; f = (f & C) | (a & (S | Y | X)) | (a == 0 ? Z : 0) | (iff2 ? PV : 0); return 9;
+        case 0x57: a = i; f = (f & C) | (a & (S | Y | X)) | (a == 0 ? Z : 0) | (iff2 ? PV : 0); flagsWritten = true; return 9;
+        case 0x5f: a = r; f = (f & C) | (a & (S | Y | X)) | (a == 0 ? Z : 0) | (iff2 ? PV : 0); flagsWritten = true; return 9;
         // RRD/RLD are 4,4,3,4,3: four idle T-states for the nibble rotate sit between
         // the read and the write.
-        case 0x67: { int memory0 = read(hl()), aLow = a & 0x0f; busInternal(4); write(hl(), aLow << 4 | memory0 >> 4); a = (a & 0xf0) | (memory0 & 0x0f); f = (f & C) | szp(a); return 18; }
-        case 0x6f: { int memory0 = read(hl()), aLow = a & 0x0f; busInternal(4); write(hl(), (memory0 << 4 & 0xf0) | aLow); a = (a & 0xf0) | memory0 >> 4; f = (f & C) | szp(a); return 18; }
+        case 0x67: { int memory0 = read(hl()), aLow = a & 0x0f; busInternal(4); write(hl(), aLow << 4 | memory0 >> 4); a = (a & 0xf0) | (memory0 & 0x0f); f = (f & C) | szp(a); flagsWritten = true; wz = (hl() + 1) & 0xffff; return 18; }
+        case 0x6f: { int memory0 = read(hl()), aLow = a & 0x0f; busInternal(4); write(hl(), (memory0 << 4 & 0xf0) | aLow); a = (a & 0xf0) | memory0 >> 4; f = (f & C) | szp(a); flagsWritten = true; wz = (hl() + 1) & 0xffff; return 18; }
         default: return blockInstruction(opcode);
     }
 }
@@ -305,6 +321,7 @@ int Z80::blockInstruction(int opcode) {
         return 8; // all other undocumented ED bytes are 8T NOPs
     }
     int operation = opcode & 0x1f;
+    flagsWritten = true;
     bool repeat = !!(opcode & 0x10), decrement = !!(opcode & 0x08); int direction = decrement ? -1 : 1;
     if (operation == 0x00 || operation == 0x08 || operation == 0x10 || operation == 0x18) { // LDI/LDD/LDIR/LDDR
         // LDI/LDD are 4,4,3,3 plus 2 idle T-states after the write (16 T); the repeating
@@ -313,7 +330,9 @@ int Z80::blockInstruction(int opcode) {
         int sum = a + value;
         f = (f & (S | Z | C)) | (bc() ? PV : 0) | (sum & X) | (sum << 4 & Y);
         if (repeat) lastBranchTaken = bc() != 0;
-        if (repeat && bc()) { busInternal(5); pc = (pc - 2) & 0xffff; return 21; } return 16;
+        // Interrupted (it repeats): flags 5 and 3 are bits 13 and 11 of its own address
+        // (David Banks, "Undocumented Flags"; z80test's LDIR->NOP'), and WZ is that + 1.
+        if (repeat && bc()) { busInternal(5); pc = (pc - 2) & 0xffff; wz = (pc + 1) & 0xffff; f = (f & ~(Y | X)) | (pc >> 8 & (Y | X)); return 21; } return 16;
     }
     if (operation == 0x01 || operation == 0x09 || operation == 0x11 || operation == 0x19) { // CPI/CPD/CPIR/CPDR
         // CPI/CPD are 4,4,3 plus 5 idle T-states (16 T); the repeating forms idle 5 more.
@@ -321,7 +340,9 @@ int Z80::blockInstruction(int opcode) {
         bool half = (a & 0x0f) < (value & 0x0f); int adjusted = (result - (half ? 1 : 0)) & 0xff;
         f = (f & C) | N | (result & S) | (result == 0 ? Z : 0) | (half ? H : 0) | (bc() ? PV : 0) | (adjusted & X) | (adjusted << 4 & Y);
         if (repeat) lastBranchTaken = (bc() != 0 && result != 0);
-        if (repeat && bc() && result != 0) { busInternal(5); pc = (pc - 2) & 0xffff; return 21; } return 16;
+        if (repeat && bc() && result != 0) { busInternal(5); pc = (pc - 2) & 0xffff; wz = (pc + 1) & 0xffff; f = (f & ~(Y | X)) | (pc >> 8 & (Y | X)); return 21; }
+        wz = (wz + direction) & 0xffff;
+        return 16;
     }
     bool input = operation == 0x02 || operation == 0x0a || operation == 0x12 || operation == 0x1a; // INI/IND/INIR/INDR
     int value, flagSum;
@@ -329,6 +350,7 @@ int Z80::blockInstruction(int opcode) {
     // cycle (4 T) and the memory cycle (3 T) in whichever order the direction implies.
     busInternal(1);
     if (input) {
+        wz = (bc() + direction) & 0xffff;
         value = portRead(bc(), "block-in");
         write(hl(), value);
         b = (b - 1) & 0xff;
@@ -337,6 +359,7 @@ int Z80::blockInstruction(int opcode) {
     } else {
         value = read(hl());
         b = (b - 1) & 0xff;
+        wz = (bc() + direction) & 0xffff;
         portWrite(bc(), value, "block-out");
         setHl((hl() + direction) & 0xffff);
         flagSum = (value + l) & 0xff;
@@ -355,7 +378,24 @@ int Z80::blockInstruction(int opcode) {
         | (sumOverflowed ? H | C : 0)
         | (parity8((flagSum & 0x07) ^ b) ? PV : 0);
     if (repeat) lastBranchTaken = b != 0;
-    if (repeat && b) { busInternal(5); pc = (pc - 2) & 0xffff; return 21; } return 16;
+    if (repeat && b) {
+        busInternal(5); pc = (pc - 2) & 0xffff;
+        // Interrupted: flags 5 and 3 from bits 13 and 11 of its address, P/V and H as the
+        // repeat's extra cycles leave them, and WZ that address + 1, as LDIR's (David
+        // Banks; z80test's INIR->NOP' in z80full and z80memptr).
+        wz = (pc + 1) & 0xffff;
+        f = (f & ~(Y | X)) | (pc >> 8 & (Y | X));
+        if (sumOverflowed) {
+            const bool down = value & 0x80;
+            const int next = down ? (b - 1) & 7 : (b + 1) & 7;
+            f = (f & ~H) | ((down ? (b & 0x0f) == 0x00 : (b & 0x0f) == 0x0f) ? H : 0);
+            f ^= parity8(next) ? 0 : PV;
+        } else {
+            f ^= parity8(b & 7) ? 0 : PV;
+        }
+        return 21;
+    }
+    return 16;
 }
 
 int Z80::executeBase(int opcode, int* index) {
@@ -390,30 +430,31 @@ int Z80::executeBase(int opcode, int* index) {
     if ((opcode & 0xcf) == 0x03) { int code = opcode >> 4 & 3; setPairL(code, pairL(code) + 1); return indexed && code == 2 ? 10 : 6; }
     if ((opcode & 0xcf) == 0x0b) { int code = opcode >> 4 & 3; setPairL(code, pairL(code) - 1); return indexed && code == 2 ? 10 : 6; }
     if ((opcode & 0xcf) == 0x09) { int code = opcode >> 4 & 3; setPairL(2, add16(pairL(2), pairL(code))); return indexed ? 15 : 11; }
-    if ((opcode & 0xe7) == 0x02) { int address = opcode & 0x10 ? de() : bc(); if (opcode & 0x08) a = read(address); else write(address, a); return 7; }
+    if ((opcode & 0xe7) == 0x02) { int address = opcode & 0x10 ? de() : bc(); if (opcode & 0x08) a = read(address); else write(address, a);
+        wz = (opcode & 0x08) ? (address + 1) & 0xffff : ((address + 1) & 0xff) | a << 8; return 7; }
     switch (opcode) {
         case 0x00: return 4;
-        case 0x07: { int cc = a >> 7; a = (a << 1 | cc) & 0xff; f = (f & (S | Z | PV)) | (a & (Y | X)) | cc; return 4; }
-        case 0x0f: { int cc = a & 1; a = a >> 1 | cc << 7; f = (f & (S | Z | PV)) | (a & (Y | X)) | cc; return 4; }
-        case 0x17: { int cc = a >> 7, old = f & C; a = (a << 1 | old) & 0xff; f = (f & (S | Z | PV)) | (a & (Y | X)) | cc; return 4; }
-        case 0x1f: { int cc = a & 1, old = f & C; a = a >> 1 | old << 7; f = (f & (S | Z | PV)) | (a & (Y | X)) | cc; return 4; }
+        case 0x07: { int cc = a >> 7; a = (a << 1 | cc) & 0xff; flagsWritten = true; f = (f & (S | Z | PV)) | (a & (Y | X)) | cc; return 4; }
+        case 0x0f: { int cc = a & 1; a = a >> 1 | cc << 7; flagsWritten = true; f = (f & (S | Z | PV)) | (a & (Y | X)) | cc; return 4; }
+        case 0x17: { int cc = a >> 7, old = f & C; a = (a << 1 | old) & 0xff; flagsWritten = true; f = (f & (S | Z | PV)) | (a & (Y | X)) | cc; return 4; }
+        case 0x1f: { int cc = a & 1, old = f & C; a = a >> 1 | old << 7; flagsWritten = true; f = (f & (S | Z | PV)) | (a & (Y | X)) | cc; return 4; }
         case 0x08: std::swap(a, ap); std::swap(f, fp); return 4;
-        case 0x10: { b = (b - 1) & 0xff; int displacement0 = signed8(fetch()); lastBranchTaken = b != 0; if (b) { pc = (pc + displacement0) & 0xffff; return 13; } return 8; }
-        case 0x18: { int displacement0 = signed8(fetch()); pc = (pc + displacement0) & 0xffff; return 12; }
-        case 0x20: case 0x28: case 0x30: case 0x38: { int displacement0 = signed8(fetch()); if (condition(opcode >> 3 & 3)) { pc = (pc + displacement0) & 0xffff; return 12; } return 7; }
-        case 0x22: { int address = fetchWord(); writeWord(address, pairL(2)); return indexed ? 20 : 16; }
-        case 0x2a: { int address = fetchWord(); setPairL(2, readWord(address)); return indexed ? 20 : 16; }
+        case 0x10: { busInternal(1); b = (b - 1) & 0xff; int displacement0 = signed8(fetch()); lastBranchTaken = b != 0; if (b) { pc = wz = (pc + displacement0) & 0xffff; return 13; } return 8; }
+        case 0x18: { int displacement0 = signed8(fetch()); pc = wz = (pc + displacement0) & 0xffff; return 12; }
+        case 0x20: case 0x28: case 0x30: case 0x38: { int displacement0 = signed8(fetch()); if (condition(opcode >> 3 & 3)) { pc = wz = (pc + displacement0) & 0xffff; return 12; } return 7; }
+        case 0x22: { int address = fetchWord(); writeWord(address, pairL(2)); wz = (address + 1) & 0xffff; return indexed ? 20 : 16; }
+        case 0x2a: { int address = fetchWord(); setPairL(2, readWord(address)); wz = (address + 1) & 0xffff; return indexed ? 20 : 16; }
         case 0x27: daa(); return 4;
-        case 0x2f: a ^= 0xff; f = (f & (S | Z | PV | C)) | N | H | (a & (Y | X)); return 4;
-        case 0x32: write(fetchWord(), a); return 13;
-        case 0x3a: a = read(fetchWord()); return 13;
-        case 0x37: f = (f & (S | Z | PV)) | (a & (Y | X)) | C; return 4;
-        case 0x3f: { int old = f & C; f = (f & (S | Z | PV)) | (a & (Y | X)) | (old ? H : C); return 4; }
-        case 0xc3: pc = fetchWord(); return 10;
-        case 0xc9: pc = pop(); return 10;
-        case 0xcd: { int address = fetchWord(); push(pc); pc = address; return 17; }
-        case 0xd3: { int port = a << 8 | fetch(); portWrite(port, a, "out-n"); return 11; }
-        case 0xdb: { int port = a << 8 | fetch(); a = portRead(port, "in-n"); return 11; }
+        case 0x2f: a ^= 0xff; flagsWritten = true; f = (f & (S | Z | PV | C)) | N | H | (a & (Y | X)); return 4;
+        case 0x32: { int address = fetchWord(); write(address, a); wz = ((address + 1) & 0xff) | a << 8; return 13; }
+        case 0x3a: { int address = fetchWord(); a = read(address); wz = (address + 1) & 0xffff; return 13; }
+        case 0x37: f = (f & (S | Z | PV)) | (((q ^ f) | a) & (Y | X)) | C; flagsWritten = true; return 4;
+        case 0x3f: { int old = f & C; f = (f & (S | Z | PV)) | (((q ^ f) | a) & (Y | X)) | (old ? H : C); flagsWritten = true; return 4; }
+        case 0xc3: pc = wz = fetchWord(); return 10;
+        case 0xc9: pc = wz = pop(); return 10;
+        case 0xcd: { int address = fetchWord(); push(pc); pc = wz = address; return 17; }
+        case 0xd3: { int n = fetch(), port = a << 8 | n; portWrite(port, a, "out-n"); wz = ((n + 1) & 0xff) | a << 8; return 11; }
+        case 0xdb: { int port = a << 8 | fetch(); wz = (port + 1) & 0xffff; a = portRead(port, "in-n"); return 11; }
         case 0xd9: std::swap(b, bp); std::swap(c, cp); std::swap(d, dp); std::swap(e, ep); std::swap(h, hp); std::swap(l, lp); return 4;
         // EX (SP),HL is 4,3,4,3,5: the second read carries one idle T-state, and the
         // LAST write two -- and it writes the HIGH byte first, so the low byte of the
@@ -424,7 +465,7 @@ int Z80::executeBase(int opcode, int* index) {
             int old = pairL(2);
             write((sp + 1) & 0xffff, old >> 8); write(sp, old & 0xff);
             busInternal(2);
-            setPairL(2, low | high << 8); return indexed ? 23 : 19;
+            setPairL(2, low | high << 8); wz = low | high << 8; return indexed ? 23 : 19;
         }
         case 0xe9: pc = pairL(2); return indexed ? 8 : 4;
         case 0xeb: { int value = de(); setDe(hl()); setHl(value); return 4; }
@@ -435,9 +476,9 @@ int Z80::executeBase(int opcode, int* index) {
         case 0xed: { int extended = fetchOpcode(); lastEdOpcode = extended; return executeED(extended); }
         default: break;
     }
-    if ((opcode & 0xc7) == 0xc0) { lastBranchTaken = condition(opcode >> 3 & 7); if (lastBranchTaken) { pc = pop(); return 11; } return 5; }
-    if ((opcode & 0xc7) == 0xc2) { int address = fetchWord(); if (condition(opcode >> 3 & 7)) pc = address; return 10; }
-    if ((opcode & 0xc7) == 0xc4) { int address = fetchWord(); if (condition(opcode >> 3 & 7)) { push(pc); pc = address; return 17; } return 10; }
+    if ((opcode & 0xc7) == 0xc0) { busInternal(1); lastBranchTaken = condition(opcode >> 3 & 7); if (lastBranchTaken) { pc = wz = pop(); return 11; } return 5; }
+    if ((opcode & 0xc7) == 0xc2) { int address = fetchWord(); wz = address; if (condition(opcode >> 3 & 7)) pc = address; return 10; }
+    if ((opcode & 0xc7) == 0xc4) { int address = fetchWord(); wz = address; if (condition(opcode >> 3 & 7)) { push(pc); pc = address; return 17; } return 10; }
     if ((opcode & 0xc7) == 0xc6) {
         int operation = opcode >> 3 & 7, value = fetch();
         if (operation < 2) add8(value, operation == 1 ? f & C : 0);
@@ -445,7 +486,7 @@ int Z80::executeBase(int opcode, int* index) {
         else if (operation < 7) logic(operation, value); else sub8(value, 0, true);
         return 7;
     }
-    if ((opcode & 0xc7) == 0xc7) { push(pc); pc = opcode & 0x38; return 11; }
+    if ((opcode & 0xc7) == 0xc7) { push(pc); pc = wz = opcode & 0x38; return 11; }
     if ((opcode & 0xcf) == 0xc1) { int code = opcode >> 4 & 3, value = pop(); if (code == 3) setAf(value); else setPairL(code, value); return 10; }
     if ((opcode & 0xcf) == 0xc5) { int code = opcode >> 4 & 3; push(code == 3 ? af() : pairL(code)); return 11; }
     return 4; // remaining undocumented bytes behave as NOPs on an NMOS Z80
@@ -470,6 +511,7 @@ int Z80::step() {
     waitStates = 0;
     lastOpcode = -1; lastIndex = false; lastPrefixCount = 0; lastEdOpcode = -1; lastBranchTaken = -1;
     lastWasInterrupt = false;
+    flagsWritten = false;
     if (pendingNmi) cycles = nmi();
     else if (pendingInterrupt != -1 && iff1 && eiDelay == 0) cycles = interrupt();
     else if (halted) { busRead(pc, 4, "execute"); r = (r & 0x80) | ((r + 1) & 0x7f); cycles = 4; }
@@ -492,6 +534,8 @@ int Z80::step() {
         }
     }
     if (eiDelay > 0) eiDelay -= 1;
+    q = flagsWritten ? f : 0;
+    lastWasLdAIR = lastOpcode == 0xed && (lastEdOpcode == 0x57 || lastEdOpcode == 0x5f);
     cycles += waitStates;
     inInstruction = false;
     tStates += cycles; return cycles;

@@ -59,6 +59,15 @@ public:
     int ix = 0, iy = 0, sp = 0xffff, pc = 0, i = 0, r = 0;
     bool iff1 = false, iff2 = false;
     int im = 0;
+    // Two internal registers a program can see only through undocumented flags:
+    //   WZ (MEMPTR), the address latch: BIT n,(HL) takes flags 5 and 3 from its high byte;
+    //   Q, a copy of F if the last instruction wrote F and 0 if it did not: on a Zilog
+    //   Z80, SCF and CCF set flags 5 and 3 from (Q ^ F) | A (David Banks, "Undocumented
+    //   Flags"; Patrik Rak's z80ccf).
+    int wz = 0;
+    int q = 0;
+    bool flagsWritten = false;    // this instruction wrote F
+    bool lastWasLdAIR = false;    // the last instruction was LD A,I or LD A,R
     bool halted = false;
     int eiDelay = 0;
 
@@ -165,6 +174,9 @@ public:
 
     void requestInterrupt(int vector = 0xff) { pendingInterrupt = vector & 0xff; }
     void requestNmi() { pendingNmi = true; }
+    // Every opcode fetch below &0080, before it is made (the Multiface II watches &0065
+    // and &0066). Empty: none.
+    std::function<void(int address)> onLowM1;
     int interrupt();
     int nmi();
 

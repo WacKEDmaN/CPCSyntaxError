@@ -19,10 +19,13 @@ public:
     double beeperNoise = 0;
 
     int selected = 0;
+    // The address the bus last gave was this chip's: DA7-DA4 0000 (GI's data sheet, "Address
+    // Decoding"). Any other high nibble leaves the latch alone and the chip off the bus.
+    bool active = true;
     std::array<uint16_t, 3> toneCounter{};
     std::array<uint8_t, 3> toneState{};
     int noiseCounter = 0, noiseState = 1;
-    int lfsr = 0x7fffff;
+    int lfsr = 1;              // the noise generator's 17-bit shift register
     int envelopeCounter = 0, envelopeStep = 0, envelopeVolume = 0;
     bool envelopeHolding = false;
     bool envelopeAttack = false, envelopeAlternate = false, envelopeHold = false, envelopeContinue = false;
@@ -38,7 +41,7 @@ public:
     void setOutputSampleRate(double sampleRate);
     void advanceTStates(int tStates);
     std::array<double, 2> readSample();
-    void select(int value) { selected = value & 0x1f; }
+    void select(int value) { active = (value & 0xf0) == 0; if (active) selected = value & 0x0f; }
     void write(int value);
     void writeRegister(int index, int value);
     int read();

@@ -70,6 +70,25 @@ add_library(minimp3 STATIC third_party/minimp3/minimp3_impl.cpp)
 target_include_directories(minimp3 PUBLIC third_party/minimp3)
 target_compile_options(minimp3 PRIVATE -w)
 target_link_libraries(cpcse-core PUBLIC minimp3)
+# The SPS decoder library 5.1 (CAPSImage; Istvan Fabian, KryoFlux Products & Services; its
+# licence, third_party/capsimage/LICENCE.txt, is for non-commercial use only) -- IPF disc images.
+file(GLOB CAPSIMAGE_SOURCES third_party/capsimage/src/Core/*.cpp third_party/capsimage/src/CAPSImg/*.cpp third_party/capsimage/src/Codec/*.cpp)
+list(FILTER CAPSIMAGE_SOURCES EXCLUDE REGEX "dllmain\\.cpp$")
+set(CAPSIMAGE_GENERATED ${CMAKE_CURRENT_BINARY_DIR}/capsimage)
+set(MAJOR_VERSION 5)
+set(MINOR_VERSION 1)
+set(HAVE_STRUCT_DIRENT_D_TYPE 1)
+if(WIN32)
+  set(HAVE_STRUCT_DIRENT_D_TYPE 0)
+endif()
+configure_file(third_party/capsimage/src/config.h.in ${CAPSIMAGE_GENERATED}/config.h)
+configure_file(third_party/capsimage/src/LibIPF/CapsLibVersion.h.in ${CAPSIMAGE_GENERATED}/CapsLibVersion.h)
+add_library(capsimage STATIC ${CAPSIMAGE_SOURCES})
+target_include_directories(capsimage PRIVATE third_party/capsimage/src/CAPSImg third_party/capsimage/src/Codec third_party/capsimage/src/Device)
+target_include_directories(capsimage PUBLIC ${CAPSIMAGE_GENERATED} third_party/capsimage/src/LibIPF third_party/capsimage/src/Core)
+target_compile_definitions(capsimage PRIVATE HAVE_CONFIG_H=1)
+target_compile_options(capsimage PRIVATE -w)
+target_link_libraries(cpcse-core PUBLIC capsimage)
 
 # The M4's WiFi is the host's network (its sockets; DNS and downloads on threads), and
 # LambdaSpeak 3's Epson / DECtalk speech is the host's voices (SAPI on Windows).
@@ -188,6 +207,7 @@ add_executable(cpcse
   src/gui/gui_debug_views.cpp
   src/gui/gui_memory_views.cpp
   src/gui/gui_dsk_editor.cpp
+  src/gui/gui_cheats.cpp
   src/gui/gui_assembler.cpp
   src/gui/asm_highlight.cpp
   src/gui/devserver.cpp

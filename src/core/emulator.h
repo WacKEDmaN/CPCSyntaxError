@@ -9,8 +9,8 @@
 
 namespace cpcse {
 
-class GXMemory; class PlusAsic; class GateArray; class M4Board; class SymbifaceIde; class V9990; class Opl4Card;
-class PlayCity;
+class GXMemory; class PlusAsic; class GateArray; class M4Board; class SymbifaceIde; class Multiface2; class V9990; class Opl4Card;
+class PlayCity; class AmstradSerial;
 class SpeechSynth;
 class SymbifaceMouse; class Symbiface2Rtc; class Symbiface3; class CtmMonitor;
 struct MonitorModel;
@@ -27,11 +27,13 @@ public:
     V9990* v9990 = nullptr;
     Opl4Card* opl4 = nullptr;          // an OPL4 card on the AMSDAP (&FFC4-7, &FF7E-F)
     PlayCity* playcity = nullptr;      // TotO's PlayCity: two YMZ294 + a Z80 CTC (&F880-&F988)
+    AmstradSerial* serial = nullptr;   // Amstrad's RS232C: a Z80 DART (&FADC-F) + 8253 (&FBDC-F)
     SpeechSynth* speech = nullptr;     // an SP0256-AL2 speech synthesiser (SSA-1 / dk'tronics)
     SymbifaceMouse* symbifaceMouse = nullptr;
     Symbiface2Rtc* sf2Rtc = nullptr;
     Symbiface3* sf3 = nullptr;
-    SymbifaceIde* ide = nullptr;     // the SYMBiFACE II / III IDE, a host folder its disc
+    SymbifaceIde* ide = nullptr;
+    Multiface2* multiface = nullptr;   // Romantic Robot's Multiface II     // the SYMBiFACE II / III IDE, a host folder its disc
     CtmMonitor* monitorRenderer = nullptr;
     // WHICH MONITOR IS PLUGGED IN (monitor_model.h). The machine needs to know because
     // ACCC 15.1 (p.146) makes the horizontal calibration a property of the PAIRING: the

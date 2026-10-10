@@ -520,7 +520,7 @@ struct DevServer::Impl {
         if (!std::filesystem::exists(r.path, ec)) { error = "no such file: " + r.path; return false; }
         if (!r.symbols.empty() && loadSymbols(r.symbols, error) < 0) return false;
         const std::string ext = lower(std::filesystem::path(r.path).extension().string());
-        const bool disc = ext == ".dsk" || ext == ".edsk";
+        const bool disc = ext == ".dsk" || ext == ".edsk" || ext == ".hfe" || ext == ".ipf";
         const bool tape = ext == ".cdt" || ext == ".tzx" || ext == ".tap" || ext == ".wav";
         bool ok = true;
         if (ext == ".sna") {

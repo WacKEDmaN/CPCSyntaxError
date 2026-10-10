@@ -137,6 +137,7 @@ void CPCTapeDrive::reset() {
 }
 void CPCTapeDrive::eject() {
     loaded = false;
+    recording = false; modified = false; blockOpen = false; recorded.clear(); recordPulses.clear();
     paused = false;
     playedCycles = counterZeroCycles = totalCycles = 0;
     blockStartCycles.clear();
@@ -171,8 +172,9 @@ void CPCTapeDrive::parseTzx(const Bytes& data) {
             case 0x13: requireBytes(data, p, 1, "TZX pulse-sequence block"); length = (data[p] & 0xff) * 2 + 1; break;
             case 0x14: length = get3(data, p + 7) + 10; break;
             case 0x15: length = get3(data, p + 5) + 8; break;
-            case 0x16: length = get4(data, p + 13) + 17; break;
-            case 0x17: length = get4(data, p + 15) + 19; break;
+            // the C64 blocks start with their own length, as the extension rule's blocks do
+            case 0x16: length = get4(data, p) + 4; break;
+            case 0x17: length = get4(data, p) + 4; break;
             case 0x18:
             case 0x19: length = get4(data, p) + 4; break;
             case 0x20: length = 2; break;
@@ -225,6 +227,7 @@ bool CPCTapeDrive::load(const Bytes& input, const std::string& fileName) {
     playing = false;
     motorOn = false;
     loaded = false;
+    recording = false; modified = false; blockOpen = false;
     name = fileName;
     format = "";
     blocks.clear();
@@ -271,6 +274,7 @@ void CPCTapeDrive::rewind() {
 void CPCTapeDrive::setMotor(bool on) {
     bool oldMotor = motorOn;
     motorOn = on;
+    if (recording) { if (oldMotor && !on) endRecordedBlock(); if (!isActive()) setTapeNoise(0); return; }
     if (motorOn && !oldMotor && loaded && !tapeEnded) {
         startupDelayCycles = tapeRelayDelay ? TAPE_RELAY_DELAY_CYCLES : 0;
         playing = true;
@@ -282,7 +286,7 @@ void CPCTapeDrive::setMotor(bool on) {
 // is no signal and the input reads 0. The real CPC photographed for SHAKER reads PPI.B as
 // #5E/#5F on AI/E and C3/A with nothing in the deck -- bit 7 clear. We reported the level a
 // tape STARTS at (initialSignalLevel) whenever the deck was idle, and printed #DE/#DF.
-int CPCTapeDrive::getPortBBit() { return isActive() ? portBBit : 0x00; }
+int CPCTapeDrive::getPortBBit() { return isActive() && !recording ? portBBit : 0x00; }
 void CPCTapeDrive::setTapeNoise(double level) { if (ay) ay->tapeNoise = level; }
 void CPCTapeDrive::addPulse(double cycles, int level) {
     // Whole cycles, with what each rounding leaves carried into the next pulse: 2168 T is
@@ -473,9 +477,10 @@ int CPCTapeDrive::getSelectTarget(const TapeBlock& block, int index) {
         offset += 3 + textLength;
     }
     if (choices.empty()) return index + 1;
-    std::regex modelPattern = machineModel == "zx48"
-        ? std::regex("(^|[^0-9])48(k|[^0-9]|$)", std::regex::icase)
-        : std::regex("128|\\+2|\\+3", std::regex::icase);
+    // built once: a tape can pass through a select block thousands of times a second
+    static const std::regex spectrum48("(^|[^0-9])48(k|[^0-9]|$)", std::regex::icase);
+    static const std::regex spectrum128("128|\\+2|\\+3", std::regex::icase);
+    const std::regex& modelPattern = machineModel == "zx48" ? spectrum48 : spectrum128;
     const Choice* selected = nullptr;
     for (auto& choice : choices) if (std::regex_search(choice.text, modelPattern)) { selected = &choice; break; }
     if (!selected) selected = &choices[0];
@@ -672,6 +677,14 @@ bool CPCTapeDrive::processQueueEvent(const PulseEvent& event) {
 }
 void CPCTapeDrive::advanceCycles(int cycles) {
     int elapsedCycles = std::max(0, cycles);
+    if (recording) {
+        if (isMotorActive() && playing && !paused) {
+            recordClock += elapsedCycles;
+            playedCycles = recordFrom + recordClock;
+            if (blockOpen && recordClock - lastEdge > RECORD_GAP_US) endRecordedBlock();   // a silence: the block ends
+        }
+        return;
+    }
     if (!isActive()) { setTapeNoise(0); return; }
     if (startupDelayCycles > 0) {
         ensurePulses();
@@ -744,8 +757,8 @@ std::string CPCTapeDrive::getBlockDescription(int index) {
         case 0x13: return "[" + i + "] Pulse Sequence";
         case 0x14: return "[" + i + "] Pure Data (" + n(block.length - 10) + " B)";
         case 0x15: return "[" + i + "] Direct Recording";
-        case 0x16: return "[" + i + "] C64 ROM Loader (" + n(block.length - 17) + " B)";
-        case 0x17: return "[" + i + "] C64 Turbo Loader (" + n(block.length - 19) + " B)";
+        case 0x16: return "[" + i + "] C64 ROM Loader (" + n(block.length - 4) + " B)";
+        case 0x17: return "[" + i + "] C64 Turbo Loader (" + n(block.length - 4) + " B)";
         case 0x18: return "[" + i + "] CSW Recording";
         case 0x19: return "[" + i + "] Generalized Data Block";
         case 0x20: return "[" + i + "] Pause";
@@ -846,6 +859,203 @@ void CPCTapeDrive::rewindBlock() {
     const long long into = playedCycles - blockStartCycles[(size_t)b];
     if (into < (long long)(2 * cyclesPerSecond()) && b > 0) b -= 1;
     seekBlock(b);
+}
+
+// ---------------------------------------------------------------- recording
+
+static void put16(Bytes& b, uint32_t v) { b.push_back((uint8_t)v); b.push_back((uint8_t)(v >> 8)); }
+static void put24(Bytes& b, uint32_t v) { put16(b, v); b.push_back((uint8_t)(v >> 16)); }
+static void put32(Bytes& b, uint32_t v) { put16(b, v); put16(b, v >> 16); }
+
+void CPCTapeDrive::newBlank(const std::string& fileName) {
+    eject();
+    data = { 'Z', 'X', 'T', 'a', 'p', 'e', '!', 0x1a, 1, 20 };
+    name = fileName;
+    format = "CDT";
+    loaded = true;
+    buildTimeline();
+    rewind();
+}
+
+bool CPCTapeDrive::startRecording() {
+    if (!loaded || !hasTzxSignature(data)) return false;            // a .TAP: not this deck's format
+    if (recording) return true;
+    // overwritten from the head on: every block that starts before it stays (one the head is
+    // part way through is kept whole), every one from there is recorded over
+    size_t first = 0;
+    while (first < blocks.size() && first < blockStartCycles.size() && blockStartCycles[first] < playedCycles) first++;
+    recordCut = first < blocks.size() ? (size_t)blocks[first].fileOffset : data.size();
+    recordFrom = std::min(playedCycles, totalCycles);
+    recording = true;
+    playing = true;
+    paused = false;
+    tapeEnded = false;
+    recorded.clear();
+    recordPulses.clear();
+    recordClock = 0;
+    lastEdge = -1;
+    lastBlockPause = -1;
+    blockOpen = false;
+    pulseQueue.clear(); pulseQueueIndex = 0; pulseCyclesLeft = 0;
+    setTapeNoise(0);
+    return true;
+}
+
+void CPCTapeDrive::setWriteLevel(int level) {
+    level = level ? 1 : 0;
+    if (level == writeLevel) return;
+    writeLevel = level;
+    if (!recording || !isMotorActive() || !playing || paused) return;
+    if (!blockOpen) {
+        // a block's first edge; the silence since the last one is that block's pause
+        if (lastBlockPause >= 0 && lastEdge >= 0) {
+            const long long ms = std::clamp<long long>((recordClock - lastEdge) / 1000, 1, 65535);
+            recorded[(size_t)lastBlockPause] = (uint8_t)ms;
+            recorded[(size_t)lastBlockPause + 1] = (uint8_t)(ms >> 8);
+        }
+        blockOpen = true;
+        recordPulses.clear();
+    } else {
+        recordPulses.push_back((uint32_t)(recordClock - lastEdge));  // the pulse this edge ends
+    }
+    lastEdge = recordClock;
+}
+
+// A recorded block as a TZX turbo block (&11), when it is the shape the CPC firmware writes
+// (and most loaders read): a pilot of equal pulses, two sync pulses, then bits of two equal
+// pulses each -- a 0 short, a 1 twice as long. The pulses are sorted into the two lengths by
+// the gap between them; the block is taken only if that sorting is beyond doubt (each bit's
+// two pulses the same kind, the kinds TURBO_SEPARATION apart, the pilot within
+// TURBO_TOLERANCE of even), else the recording stays as it was (CSW). Lengths are T-states
+// of 3.5 MHz, as the format has them.
+static constexpr double TURBO_TOLERANCE = 0.12;
+static constexpr double TURBO_SEPARATION = 1.4;
+static bool turboBlock(const std::vector<uint32_t>& p, int pauseMs, Bytes& out) {
+    static const bool trace = std::getenv("CPCSE_TRACE_TAPEREC") != nullptr;
+    auto refuse = [&](const char* why, size_t at) {
+        if (trace) {
+            std::fprintf(stderr, "TAPEREC no turbo block (%s at pulse %zu of %zu):", why, at, p.size());
+            for (size_t i = at > 6 ? at - 6 : 0; i < p.size() && i < at + 10; i++) std::fprintf(stderr, " %u", p[i]);
+            std::fprintf(stderr, "  first:");
+            for (size_t i = 0; i < p.size() && i < 12; i++) std::fprintf(stderr, " %u", p[i]);
+            std::fprintf(stderr, "\n");
+        }
+        return false;
+    };
+    if (p.size() < 64) return refuse("short", 0);
+    // the pilot: the run of pulses like the first
+    size_t pilot = 0;
+    const double first = p[0];
+    while (pilot < p.size() && std::abs(p[pilot] - first) <= first * TURBO_TOLERANCE) pilot++;
+    if (pilot < 16 || pilot + 2 >= p.size()) return refuse("no pilot", pilot);
+    double pilotLen = 0;
+    for (size_t i = 0; i < pilot; i++) pilotLen += p[i];
+    pilotLen /= (double)pilot;
+    const double sync1 = p[pilot], sync2 = p[pilot + 1];
+    // the data pulses after it, two to a bit
+    const size_t start = pilot + 2;
+    size_t count = p.size() - start;
+    if (count & 1) count--;                                       // a lone last pulse: the line's last edge
+    if (count < 16) return refuse("no data", start);
+    uint32_t lo = UINT32_MAX, hi = 0;
+    for (size_t i = start; i < start + count; i++) { lo = std::min(lo, p[i]); hi = std::max(hi, p[i]); }
+    const double split = (lo + hi) / 2.0;
+    double sum0 = 0, sum1 = 0;
+    size_t n0 = 0, n1 = 0;
+    std::vector<uint8_t> bits;
+    bits.reserve(count / 2);
+    for (size_t i = start; i < start + count; i += 2) {
+        const bool a = p[i] > split, b = p[i + 1] > split;
+        if (a != b) return refuse("unequal pair", i);                // not two equal pulses: not this format
+        (a ? sum1 : sum0) += p[i] + p[i + 1];
+        (a ? n1 : n0) += 2;
+        bits.push_back(a ? 1 : 0);
+    }
+    const double zero = n0 ? sum0 / (double)n0 : (n1 ? sum1 / (double)n1 / 2 : 0);
+    const double one = n1 ? sum1 / (double)n1 : zero * 2;
+    if (zero <= 0 || one <= zero * 1.3) return refuse("one not longer", start);
+    // Unambiguous, as a reader that compares each pulse with a threshold between the two
+    // lengths (the firmware's) sees it: the longest 0 pulse well short of the shortest 1 --
+    // the writer's own unevenness (the firmware's pulses stretch where it fetches the next
+    // byte, some 55 us at 2000 baud) then plays back as the even lengths it meant.
+    uint32_t longest0 = 0, shortest1 = UINT32_MAX;
+    for (size_t i = 0; i < bits.size(); i++)
+        for (int k = 0; k < 2; k++) {
+            const uint32_t v = p[start + 2 * i + (size_t)k];
+            if (bits[i]) shortest1 = std::min(shortest1, v); else longest0 = std::max(longest0, v);
+        }
+    if (n0 && n1 && longest0 * TURBO_SEPARATION >= shortest1) return refuse("lengths overlap", start);
+    for (size_t i = 0; i < pilot; i++) if (std::abs(p[i] - pilotLen) > pilotLen * TURBO_TOLERANCE) return refuse("pilot uneven", i);
+    auto t = [](double us) { return (uint32_t)std::clamp<long long>(std::llround(us * 3.5), 1, 65535); };
+    Bytes data((bits.size() + 7) / 8, 0);
+    for (size_t i = 0; i < bits.size(); i++) if (bits[i]) data[i / 8] |= (uint8_t)(0x80 >> (i % 8));
+    const int lastBits = bits.size() % 8 ? (int)(bits.size() % 8) : 8;
+    out.push_back(0x11);
+    put16(out, t(pilotLen)); put16(out, t(sync1)); put16(out, t(sync2));
+    put16(out, t(zero)); put16(out, t(one));
+    put16(out, (uint32_t)std::min<size_t>(pilot, 65535));
+    out.push_back((uint8_t)lastBits);
+    put16(out, (uint32_t)pauseMs);
+    put24(out, (uint32_t)data.size());
+    out.insert(out.end(), data.begin(), data.end());
+    return true;
+}
+
+// The pulses so far as one block: a turbo block (&11) when they are the firmware's shape,
+// else a CSW block (TZX &18: its length, pause, sample rate, RLE, pulse count, then each
+// pulse in samples -- a byte, or 0 and four bytes for a long one).
+void CPCTapeDrive::endRecordedBlock() {
+    const bool had = blockOpen;
+    blockOpen = false;
+    if (!had || recordPulses.size() < 2) { recordPulses.clear(); return; }   // a stray edge is not a block
+    {
+        Bytes turbo;
+        if (turboBlock(recordPulses, 1000, turbo)) {
+            lastBlockPause = (int)(recorded.size() + 14);            // &11's pause, after its fourteen bytes
+            recorded.insert(recorded.end(), turbo.begin(), turbo.end());
+            recordPulses.clear();
+            return;
+        }
+    }
+    Bytes rle;
+    uint32_t count = 0;
+    for (size_t i = 0; i < recordPulses.size(); i++) {
+        uint32_t samples = (uint32_t)((recordPulses[i] * (uint64_t)RECORD_RATE + 500000) / 1000000);
+        if (samples == 0) samples = 1;
+        if (samples < 256) rle.push_back((uint8_t)samples);
+        else { rle.push_back(0); put32(rle, samples); }
+        count++;
+    }
+    recorded.push_back(0x18);
+    put32(recorded, (uint32_t)(10 + rle.size()));
+    lastBlockPause = (int)recorded.size();
+    put16(recorded, 1000);                                           // until the next block says otherwise
+    put24(recorded, RECORD_RATE);
+    recorded.push_back(1);                                           // RLE
+    put32(recorded, count);
+    recorded.insert(recorded.end(), rle.begin(), rle.end());
+    recordPulses.clear();
+}
+
+void CPCTapeDrive::stopRecording() {
+    if (!recording) return;
+    endRecordedBlock();
+    recording = false;
+    playing = false;
+    if (recorded.empty()) return;                                    // nothing was written
+    Bytes image(data.begin(), data.begin() + (long)std::min(recordCut, data.size()));
+    image.insert(image.end(), recorded.begin(), recorded.end());
+    data = image;
+    blocks.clear();
+    parseTzx(data);
+    buildTimeline();
+    // the head where the recording ended: after the last block written
+    playedCycles = totalCycles;
+    currentBlock = (int)blocks.size();
+    tapeEnded = true;
+    pulseQueue.clear(); pulseQueueIndex = 0; pulseCyclesLeft = 0;
+    recorded.clear();
+    modified = true;
 }
 
 bool CPCTapeDrive::togglePlay() {

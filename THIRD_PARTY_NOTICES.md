@@ -13,6 +13,7 @@ files named here.
 | SP0256 (GI Narrator speech processor), from MAME | MAME commit 638224548b67, framework removed | Joseph Zbiciak, Tim Lindner | BSD 3-Clause | `third_party/sp0256/LICENSE` |
 | DejaVu Sans Mono (the interface font, embedded) | 2.37 | Bitstream, Inc.; DejaVu changes public domain | Bitstream Vera licence | `third_party/dejavu/LICENSE.txt` |
 | minimp3 (MP3 decoder) | upstream ea99364f61c1 | lieff | CC0 1.0 | `third_party/minimp3/LICENSE` |
+| SPS Decoder Library / CAPSImage 5.1 (IPF disc images) | github.com/simonowen/capsimage 502015b6e117 | Istvan Fabian, under licence to KryoFlux Products & Services Ltd | SPS licence -- NON-COMMERCIAL use only; modified only to build with GCC on Windows (CAPSImg/stdafx.h) | `third_party/capsimage/LICENCE.txt` |
 | Disc drive recordings (`sounds/drive_*.wav`), "Amiga 600 floppy drive sounds" | cut and levelled | asie (opengameart.org) | CC0 1.0 | `sounds/CREDITS.txt` |
 | Key press recordings (`sounds/key_press*.wav`), "Single Key Press Sounds" | trimmed and levelled | eklee, qubodup (opengameart.org / freesound.org) | **CC Attribution 3.0** | `sounds/CREDITS.txt` |
 | ymfm (OPL family: the YMF278B / OPL4) | upstream 81aec25 | Aaron Giles | BSD 3-Clause | `third_party/ymfm/LICENSE` |

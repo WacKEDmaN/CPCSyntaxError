@@ -8,10 +8,12 @@
 #pragma once
 #include <SDL.h>
 #include <functional>
+#include <memory>
 #include <string>
 #include <vector>
 #include <cstdint>
 #include "core/common.h"
+#include "core/cheats.h"
 
 namespace cpcse {
 
@@ -21,6 +23,7 @@ struct Disk;
 class CpcVideo;
 class MatrixPrinter;
 struct V9990Picture;
+class HostSerial;
 
 struct ModelProfile {
     std::string id;
@@ -125,6 +128,12 @@ public:
     // speed / display preferences (read by the shell)
     float speed = 1.0f;                     // 0.25 .. 4.0
     bool turbo = false;                      // run uncapped
+    // Tape turbo: while the tape is moving (PLAY or REC down, the motor on) the whole machine
+    // runs this many times faster -- the loader sees nothing different, only the clock on the
+    // wall does. 1 = off; TAPE_TURBO_UNLIMITED = as fast as this computer goes.
+    static constexpr int TAPE_TURBO_UNLIMITED = 21;
+    int tapeTurbo = 1;
+    bool tapeTurboActive() const;
     bool integerScale = false;
     bool maintainAspect = true;
     bool fullscreen = false;
@@ -154,6 +163,22 @@ public:
     bool m4NetworkLan = false;   // programs that listen take connections from other computers
     void applyM4Network();
     // Symbiface II / III: mouse, RTC and the IDE/CF interface.
+    // Amstrad's RS232C serial interface (DART + 8253), its line plugged into the host:
+    // serialKind "tcp" (serialTarget host:port), "listen" (a port), "com" (COM3,
+    // /dev/ttyUSB0) or "loopback". Its ROM, if wanted, goes in a ROM slot like any other.
+    bool serialEnabled = false;
+    std::string serialKind = "listen", serialTarget = "2323";
+    bool serialLan = false;                  // "listen": from other computers too
+    bool setSerial(bool on);                 // fit/remove the card, (re)connecting its line
+    bool connectSerial();                    // the line again, with the current kind/target
+    std::string serialStatus() const;
+    std::shared_ptr<HostSerial> serialLink;
+
+    // Romantic Robot's Multiface II (its ROM from roms/, not shipped); F10 is STOP.
+    bool multifaceEnabled = false;
+    bool setMultiface(bool on);
+    void multifaceStop();
+    std::string multifaceRom() const;
     std::string symbifaceModule = "none";   // none / sf2 / sf3
     // Both cards' IDE/CF interface: this folder is its disc ("symide" beside the program,
     // set by main). Made when the card is turned on and the folder is not there yet.
@@ -185,6 +210,16 @@ public:
     std::shared_ptr<Disk> driveDisk(int unit) const;
     // Where the disc in a drive came from (empty for one made in the editor).
     std::string diskPath[2];
+    // What a program writes to a disc goes back into its image file (the GUI's setting,
+    // diskwriteback; off for headless and CSL runs, so test media never change): once the
+    // drive has been idle a second, and on eject, insert, boot and exit. A disc with no
+    // file (made in the DSK editor) stays the editor's to save.
+    bool diskWriteBack = false;
+    bool diskDirty[2] = { false, false };
+    long long diskLastWrite[2] = { 0, 0 };
+    std::string diskWriteError;          // the last write-back that failed, or ""
+    void flushDisk(int unit);
+    void flushDisks() { flushDisk(0); flushDisk(1); }
     bool loadTapeFile(const std::string& path);
     // THE TAPE DECK (core/tape.h): its buttons. Whether it plays is asked of the deck --
     // a tape stops by itself too (a stop block, its end).
@@ -200,6 +235,27 @@ public:
     void tapeSeekBlock(int index);
     void tapeEject();
     void tapeResetCounter();
+    // CHEATS (core/cheats.h): the finder's search over RAM and the cheats held every frame.
+    // A game's cheats live beside it as <name>.pok -- loaded (switched off) when it is, and
+    // saved there by saveCheats() unless another file is given.
+    CheatFinder cheatFinder;
+    CheatList cheatList;
+    std::string cheatsPath;                   // the .pok file of the game loaded last
+    Bytes* ram();                             // the machine's RAM (null when nothing is booted)
+    void loadCheatsBeside(const std::string& mediaPath);
+    bool loadCheats(const std::string& path);
+    bool saveCheats(const std::string& path = "");
+    void enableCheat(size_t index, bool on);  // a "once" cheat is written as it is switched on
+
+    // RECORD (REC with PLAY): what the CPC SAVEs goes onto the tape from the head on. STOP
+    // (or EJECT, or a new tape) ends it; with diskWriteBack on, a .cdt/.tzx file then takes
+    // it, as a disc's file takes its writes. A blank tape has no file until Save tape as.
+    void tapeRecord();
+    bool tapeRecording() const;
+    void tapeNewBlank();
+    bool tapeSaveAs(const std::string& path);
+    void flushTape();                         // a finished recording into its file
+    std::string tapePath;                     // the file the tape came from ("" for a blank one)
 
     // Out of the slot: the machine as it boots without it (a Plus on its system
     // cartridge). false when there is none.
@@ -311,7 +367,9 @@ private:
     void drainAudio();
     void applySettings();                    // re-apply region/joystick/DAC after a boot
     void applyExpansionRoms();               // re-fit slot ROMs after a boot
-    void applyM4();                          // re-enable M4 after a boot
+    void applyM4();
+    void applySerial();                      // re-fit the serial card after a boot
+    void applyMultiface();                   // re-fit the Multiface II after a boot                          // re-enable M4 after a boot
     void applySymbiface();
     void applyLightgun();
     void applyPrinter();

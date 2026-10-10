@@ -209,7 +209,7 @@ int main(int argc, char** argv) {
     // uses, with no window. --shot out.bmp [--model id] [--sna f] [--crtc N] [--gate-array 40007|40008|40010]
     // [--frames N] [--beam] [--gfx9000] [--v9990-shot out.bmp] (the GFX9000's own monitor).
     {
-        std::string shot, modelId, snaPath, saveSnaPath, dumpRamPath, diskPath, cartPath, tapePath, typeStr, keysStr; int wantCrtc = -1, wantGa = 0, frames = 200, f1at = -1, wantRam = -1, seq = 0; bool beam = false, diag = false, gfx9000 = false, opl4 = false, playcity = false; std::string v9990Shot, video9000Shot, m4Folder, ideFolder, mouseScript, wavPath, speechKind, mp3Card, dacType; bool sf2 = false, sf3 = false; std::vector<std::string> xroms;
+        std::string shot, modelId, snaPath, saveSnaPath, dumpRamPath, diskPath, cartPath, tapePath, typeStr, keysStr; int wantCrtc = -1, wantGa = 0, frames = 200, f1at = -1, wantRam = -1, seq = 0; bool beam = false, diag = false, gfx9000 = false, opl4 = false, playcity = false; std::string v9990Shot, video9000Shot, m4Folder, ideFolder, mouseScript, wavPath, speechKind, mp3Card, dacType; bool sf2 = false, sf3 = false, multiface = false, diskWriteBack = false; std::vector<std::string> xroms; std::string serialLine, recordTape;
         for (int i = 1; i < argc; i++) { std::string a = argv[i];
             if (a == "--shot" && i + 1 < argc) shot = argv[++i];
             else if (a == "--ram" && i + 1 < argc) wantRam = std::atoi(argv[++i]);
@@ -220,6 +220,7 @@ int main(int argc, char** argv) {
             else if (a == "--disk" && i + 1 < argc) diskPath = argv[++i];
             else if (a == "--cart" && i + 1 < argc) cartPath = argv[++i];
             else if (a == "--tape" && i + 1 < argc) tapePath = argv[++i];   // .cdt/.tzx/.wav in the deck
+            else if (a == "--record-tape" && i + 1 < argc) recordTape = argv[++i];   // a blank tape, REC down; saved here at the end
             else if (a == "--type" && i + 1 < argc) typeStr = argv[++i];   // typed after boot (\\n = Enter)
             else if (a == "--keys" && i + 1 < argc) keysStr = argv[++i];   // tap after F1 loads: e.g. "Space" launches PD ball
             else if (a == "--f1at" && i + 1 < argc) f1at = std::atoi(argv[++i]);
@@ -240,6 +241,9 @@ int main(int argc, char** argv) {
             else if (a == "--sf2") sf2 = true;                                // a Symbiface II (its PS/2 mouse)
             else if (a == "--ide" && i + 1 < argc) { ideFolder = argv[++i]; sf2 = true; }   // its IDE, this folder the disc
             else if (a == "--sf3") sf3 = true;                                // a Symbiface III instead (with --ide too)
+            else if (a == "--disk-writeback") diskWriteBack = true;              // save the disc's writes into its .dsk (headless: off)
+            else if (a == "--multiface") multiface = true;                    // a Multiface II (its ROM from roms/); n in --mouse is STOP
+            else if (a == "--serial" && i + 1 < argc) serialLine = argv[++i];  // the RS232C card: tcp:host:port, listen:port, com:COM3, loopback
             else if (a == "--xrom" && i + 1 < argc) xroms.push_back(argv[++i]);   // <slot>=<file>: an expansion ROM
             else if (a == "--mouse" && i + 1 < argc) { mouseScript = argv[++i]; sf2 = true; }
             else if (a == "--v9990-shot" && i + 1 < argc) { v9990Shot = argv[++i]; gfx9000 = true; }
@@ -252,6 +256,15 @@ int main(int argc, char** argv) {
             if (!m4Folder.empty()) { host.m4Enabled = true; host.m4Folder = m4Folder; }
             if (sf2) host.symbifaceModule = "sf2";
             if (sf3) host.symbifaceModule = "sf3";
+            if (multiface) host.multifaceEnabled = true;
+            host.diskWriteBack = diskWriteBack;
+            if (!serialLine.empty()) {
+                const size_t colon = serialLine.find(':');
+                host.serialKind = serialLine.substr(0, colon);
+                host.serialTarget = colon == std::string::npos ? "" : serialLine.substr(colon + 1);
+                host.serialEnabled = true;
+                if (!host.connectSerial()) { std::printf("[shot] --serial %s: %s\n", serialLine.c_str(), host.status.c_str()); return 2; }
+            }
             for (const std::string& x : xroms) {
                 const size_t eq = x.find('=');
                 const int slot = eq == std::string::npos ? -1 : std::atoi(x.substr(0, eq).c_str());
@@ -280,6 +293,7 @@ int main(int argc, char** argv) {
             if (!cartPath.empty()) { host.loadCartridgeFile(cartPath); if (wantCrtc >= 0 && host.emu && host.emu->crtc) host.emu->crtc->setType(wantCrtc); run(150); }
             if (!diskPath.empty()) { host.loadDiskFile(diskPath, 0); run(150); }  // let BASIC settle
             if (!tapePath.empty() && host.loadTapeFile(tapePath)) host.tapePlay();   // PLAY down: it moves when the firmware starts the motor
+            if (!recordTape.empty()) { host.tapeNewBlank(); host.tapeRecord(); }   // REC and PLAY down on a blank tape
             // The firmware has to reach its keyboard scan before a tap registers at
             // all; without a disk or cart to wait on, nothing else provides that time.
             if (!typeStr.empty() && diskPath.empty() && cartPath.empty()) run(150);
@@ -350,6 +364,7 @@ int main(int argc, char** argv) {
                     case 'd': mouse->button(0, true); run(1); mouse->button(0, false); run(2); mouse->button(0, true); run(1); mouse->button(0, false); run(3); break;
                     case 't': typeText(tok.substr(1)); break;   // t<text>: typed (then kEnter)
                     case 'k': if (kb) { kb->setKey(tok.substr(1), true); run(4); kb->setKey(tok.substr(1), false); run(4); } break;
+                    case 'n': host.multifaceStop(); run(2); break;   // n: the Multiface II's STOP
                     case 's': host.render(); host.saveScreenshotBmp(tok.substr(1)); std::printf("[mouse] shot %s\n", tok.c_str() + 1); break;
                     default: break;
                 }
@@ -457,6 +472,7 @@ int main(int argc, char** argv) {
                 return 0;
             }
             if (!saveSnaPath.empty()) std::printf("[sna] %s (%s)\n", saveSnaPath.c_str(), host.saveSnapshot(saveSnaPath) ? "ok" : "FAILED");
+            if (!recordTape.empty()) { host.tapeStop(); std::printf("[tape] %s (%s)\n", recordTape.c_str(), host.tapeSaveAs(recordTape) ? "ok" : host.status.c_str()); }
             // Raw RAM, no header of any kind. A .SNA carries the CRTC type in its header,
             // which makes it the wrong instrument for comparing one chip's run against
             // another's; this is just the bytes.
@@ -619,6 +635,11 @@ int main(int argc, char** argv) {
     host.m4Enabled      = geti("m4", 0) != 0;             // applied by applySettings during boot
     host.m4Network      = geti("m4net", 1) != 0;
     host.m4NetworkLan   = geti("m4netlan", 0) != 0;
+    host.multifaceEnabled = geti("multiface", 0) != 0;   // applied by applySettings during boot
+    host.serialKind     = gets("serialkind", "listen");
+    host.serialTarget   = gets("serialtarget", "2323");
+    host.serialLan      = geti("seriallan", 0) != 0;
+    if (geti("serial", 0) != 0) { host.serialEnabled = true; host.connectSerial(); }   // fitted by applySettings during boot
     host.symbifaceModule = gets("symbiface", "none");
     {
         char* b = SDL_GetBasePath();
@@ -636,7 +657,9 @@ int main(int argc, char** argv) {
     // One monitor, switched, unless the ini says otherwise (an older ini's v9990beside kept).
     host.gfx9000Monitor = gets("v9990monitor", ini.count("v9990beside") ? (geti("v9990beside", 1) ? "beside" : "window") : "switch");
     host.tapeFollowsMotor = geti("tapemotor", 1) != 0;
+    host.diskWriteBack  = geti("diskwriteback", 1) != 0;   // a program's disc writes saved into its .dsk
     host.tapeRelayDelay = geti("taperelay", 1) != 0;
+    host.tapeTurbo      = std::clamp(geti("tapeturbo", 1), 1, (int)EmuHost::TAPE_TURBO_UNLIMITED);
     host.beamRenderer   = geti("beam", 0) != 0;
 
     host.gateArrayPart  = geti("gatearray", 0);            // applied by bootModel
@@ -790,6 +813,7 @@ int main(int argc, char** argv) {
             if (ev.type == SDL_KEYDOWN && !ev.key.repeat && !io.WantTextInput) {
                 if (ev.key.keysym.scancode == SDL_SCANCODE_F11) toggleFullscreen();
                 else if (ev.key.keysym.scancode == SDL_SCANCODE_F12) releaseMouse();
+                else if (ev.key.keysym.scancode == SDL_SCANCODE_F10 && host.multifaceEnabled) host.multifaceStop();   // its STOP button
                 else if (shell.keyboardToCpc()) host.setKey(ev.key.keysym.scancode, true);
             }
         }
@@ -802,16 +826,21 @@ int main(int argc, char** argv) {
         accumulator += dt;
         bool ran = false;
         int framesThisIter = 0;
+        // tape turbo: faster while the tape moves (unlimited at the slider's top)
+        const bool tapeFast = host.tapeTurboActive();
+        const bool unlimited = host.turbo || (tapeFast && host.tapeTurbo >= EmuHost::TAPE_TURBO_UNLIMITED);
+        const float speed = host.speed * (tapeFast ? (float)host.tapeTurbo : 1.0f);
         auto feedAudio = [&]() {
-            if (audioDev && !host.audioOut.empty() && !host.turbo &&
+            if (audioDev && !host.audioOut.empty() && !unlimited && speed <= 1.5f &&
                 SDL_GetQueuedAudioSize(audioDev) < (Uint32)(host.sampleRate * 2 * sizeof(int16_t) / 5))
                 SDL_QueueAudio(audioDev, host.audioOut.data(), (Uint32)(host.audioOut.size() * sizeof(int16_t)));
         };
-        if (host.turbo) { for (int i = 0; i < 8; i++) { host.runFrame(); feedAudio(); } ran = true; framesThisIter = 8; accumulator = 0.0; }
+        if (unlimited) { for (int i = 0; i < 8; i++) { host.runFrame(); feedAudio(); } ran = true; framesThisIter = 8; accumulator = 0.0; }
         else {
-            double period = FRAME_SECONDS / std::max(0.1f, host.speed);
+            double period = FRAME_SECONDS / std::max(0.1f, speed);
             int steps = 0;
-            while (accumulator >= period && steps < 6) { host.runFrame(); feedAudio(); ran = true; steps++; accumulator -= period; }
+            const int most = std::max(6, (int)std::ceil(speed * 2));
+            while (accumulator >= period && steps < most) { host.runFrame(); feedAudio(); ran = true; steps++; accumulator -= period; }
             framesThisIter = steps;
             if (accumulator > 0.25) accumulator = 0.0;
         }
@@ -898,6 +927,11 @@ int main(int argc, char** argv) {
             f << "m4folder=" << host.m4Folder << "\n";
             f << "m4net=" << (host.m4Network ? 1 : 0) << "\n";
             f << "m4netlan=" << (host.m4NetworkLan ? 1 : 0) << "\n";
+            f << "multiface=" << (host.multifaceEnabled ? 1 : 0) << "\n";
+            f << "serial=" << (host.serialEnabled ? 1 : 0) << "\n";
+            f << "serialkind=" << host.serialKind << "\n";
+            f << "serialtarget=" << host.serialTarget << "\n";
+            f << "seriallan=" << (host.serialLan ? 1 : 0) << "\n";
             f << "symbiface=" << host.symbifaceModule << "\n";
             f << "idefolder=" << host.ideFolder << "\n";
             f << "mousesens=" << host.mouseSensitivity << "\n";
@@ -910,7 +944,9 @@ int main(int argc, char** argv) {
             f << "opl4ram=" << host.opl4RamKiB << "\n";
             f << "v9990monitor=" << host.gfx9000Monitor << "\n";
             f << "tapemotor=" << (host.tapeFollowsMotor ? 1 : 0) << "\n";
+            f << "diskwriteback=" << (host.diskWriteBack ? 1 : 0) << "\n";
             f << "taperelay=" << (host.tapeRelayDelay ? 1 : 0) << "\n";
+            f << "tapeturbo=" << host.tapeTurbo << "\n";
             f << "beam=" << (host.beamRenderer ? 1 : 0) << "\n";
             shell.saveSettings(f);
             f << "winw=" << cw << "\n";

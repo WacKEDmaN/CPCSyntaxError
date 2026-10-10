@@ -179,6 +179,7 @@ int GXMemory::read(int address) {
 
 int GXMemory::readMapped(int address) {
     address &= 0xffff;
+    if (overlayLow && address < 0x4000) return address < 0x2000 ? overlayLow[address] : overlayRam[address - 0x2000];
     if (lowerEnabled && lowerSlotFor(address)) {
         int value = cartridgeByte(lowerPage, address); if (value != -1) return value;
         const Bytes& lower = !snapshotLowerRom.empty() ? snapshotLowerRom : lowerRom;
@@ -209,6 +210,7 @@ int GXMemory::readMapped(int address) {
 void GXMemory::write(int address, int value) {
     address &= 0xffff; value &= 0xff;
     if (watchArmed) watchHook(address, value, true);
+    if (overlayRam && address >= 0x2000 && address < 0x4000) { overlayRam[address - 0x2000] = (uint8_t)value; return; }
     int slot = (unsigned)address >> 13; uint32_t offset = writeMap[slot];
     if (offset == 0xffffffff) {
         int asicAddress = (address - asicRamLocation * SLOT_SIZE) & 0x3fff;
@@ -221,6 +223,7 @@ void GXMemory::write(int address, int value) {
 
 int GXMemory::physicalAddress(int address, bool write) const {
     address &= 0xffff;
+    if (overlayLow && address < 0x4000 && (!write || address >= 0x2000)) return -1;   // the card's, not RAM
     if (!write) {   // readMapped()'s order: the ROMs and the cartridge before the RAM
         if (lowerEnabled && lowerSlotFor(address)) {
             if (cartridgeByte(lowerPage, address) != -1) return -1;
