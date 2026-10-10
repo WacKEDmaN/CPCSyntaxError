@@ -299,7 +299,13 @@ int main(int argc, char** argv) {
             if (!typeStr.empty() && diskPath.empty() && cartPath.empty()) run(150);
             // Type a BASIC line on the emulated keyboard (cpc_typing.h) -- "OUT &BC00,4:OUT
             // &BD00,36" -- so a register experiment can be driven from the command line.
-            auto typeText = [&](const std::string& text) {
+            auto typeText = [&](const std::string& given) {
+                // "\n" in the text is Enter, as typed on a command line (a real newline is too)
+                std::string text;
+                for (size_t i = 0; i < given.size(); i++) {
+                    if (given[i] == '\\' && i + 1 < given.size() && given[i + 1] == 'n') { text += '\n'; i++; }
+                    else text += given[i];
+                }
                 for (char c : text)
                     if (kb && cpcTypeKey(*kb, c, true)) { run(4); cpcTypeKey(*kb, c, false); run(4); }
             };
