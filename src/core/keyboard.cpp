@@ -24,7 +24,10 @@ static const std::unordered_map<std::string, KeyCell>& keyMap() {
         {"Digit1",{8,0}},{"Digit2",{8,1}},{"Digit3",{7,1}},{"Digit4",{7,0}},{"Digit5",{6,1}},
         {"Digit6",{6,0}},{"Digit7",{5,1}},{"Digit8",{5,0}},{"Digit9",{4,1}},{"Digit0",{4,0}},
         {"Comma",{4,7}},{"Period",{3,7}},{"Slash",{3,6}},{"Semicolon",{3,5}},{"Quote",{3,4}},
-        {"BracketLeft",{3,2}},{"BracketRight",{2,3}},{"Backslash",{2,6}},{"Minus",{3,1}},{"Equal",{3,0}}
+        {"BracketLeft",{3,2}},{"BracketRight",{2,3}},{"Backslash",{2,6}},{"Minus",{3,1}},{"Equal",{3,0}},
+        // the UK "\ |" key is the CPC's "\ `"; the "` ~" key (top left) is "[ {", which has no
+        // PC key in its place (AltRight is joystick fire, and AltGr also sends a CONTROL)
+        {"IntlBackslash",{2,6}},{"Backquote",{2,1}}
     };
     return m;
 }
@@ -44,7 +47,7 @@ static const std::unordered_map<std::string, CharCell>& symbolMap() {
         {",",{4,7,0}},{"-",{3,1,0}},{".",{3,7,0}},{"/",{3,6,0}},
         {":",{3,5,0}},{";",{3,4,0}},{"<",{4,7,1}},{"=",{3,1,1}},{">",{3,7,1}},{"?",{3,6,1}},
         {"@",{3,2,0}},{"[",{2,1,0}},{"\\",{2,6,0}},{"]",{2,3,0}},{"^",{3,0,0}},{"_",{4,0,1}},
-        {"|",{3,2,1}},{"{",{2,1,1}},{"}",{2,3,1}},{"~",{2,6,1}}
+        {"|",{3,2,1}},{"{",{2,1,1}},{"}",{2,3,1}},{"~",{2,6,1}},{"`",{2,6,1}},{"\xc2\xa3",{3,0,1}}
     };
     return m;
 }

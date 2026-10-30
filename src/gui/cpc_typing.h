@@ -41,11 +41,10 @@ inline bool cpcKeyForChar(char c, std::string& code, bool& shift) {
         case '\\': code = "Backslash"; return true;
         case '`': code = "Backslash"; shift = true; return true;   // the "\ `" key (no ~ on a CPC)
         case '~': return false;   // keyboard.cpp's host map sends a PC's ~ to that key, as `
-        // The "[ {" key is matrix {2,1}: no PC key code of its own (AltRight reaches it, but
-        // is also joystick fire 2), so these two go only through the character map
-        // (cpcTypeKey); BracketLeft is the "@ |" key.
-        case '[': code = "IntlBracket"; return true;
-        case '{': code = "IntlBracket"; shift = true; return true;
+        // The "[ {" key is matrix {2,1}: Backquote in the CPC layout (keyboard.cpp);
+        // BracketLeft is the "@ |" key.
+        case '[': code = "Backquote"; return true;
+        case '{': code = "Backquote"; shift = true; return true;
         case ']': code = "BracketRight"; return true;
         case '}': code = "BracketRight"; shift = true; return true;
         case '!': code = "Digit1"; shift = true; return true;

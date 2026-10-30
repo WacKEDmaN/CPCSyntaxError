@@ -40,6 +40,8 @@ inline std::string sdlScancodeToBrowserCode(SDL_Scancode sc) {
         case SDL_SCANCODE_LEFTBRACKET: return "BracketLeft";
         case SDL_SCANCODE_RIGHTBRACKET: return "BracketRight";
         case SDL_SCANCODE_BACKSLASH: return "Backslash";
+        case SDL_SCANCODE_NONUSHASH: return "Backslash";          // a UK "# ~" reported apart from a US "\ |"
+        case SDL_SCANCODE_NONUSBACKSLASH: return "IntlBackslash"; // a UK "\ |", left of Z
         case SDL_SCANCODE_SEMICOLON: return "Semicolon";
         case SDL_SCANCODE_APOSTROPHE: return "Quote";
         case SDL_SCANCODE_GRAVE: return "Backquote";

@@ -352,6 +352,12 @@ These files are next to the program. **Window → Reset layout** sets the defaul
 
 The keys go to the CPC. The exception is when a debugger or assembler window has the focus.
 
+In the CPC layout, the keys without a PC key in the same place are: CLR (Delete), DEL
+(Backspace), COPY (Left Alt), the CPC's `[` key (the key under Esc, left of 1), the CPC's `\` key
+(`\`, and on a UK keyboard also the key left of Z), and f0 to f9, f. and the small ENTER (the numeric
+keypad, or F1 to F10). With joystick emulation on, the cursor keys, Ctrl and Alt are the
+joystick: switch it off to use them as the CPC's cursor keys, CONTROL and COPY.
+
 ## Command line
 
 `cpcse.exe --roms <folder>` starts the emulator with another ROM folder.
