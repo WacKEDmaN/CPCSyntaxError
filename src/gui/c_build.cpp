@@ -1,8 +1,12 @@
 // CPCSyntaxError GUI — C programs with SDCC and CPCtelera. See c_build.h.
 #include "c_build.h"
 #include "cpct_assets.h"
+#include "cpct_media.h"
 
 #include <algorithm>
+#include <atomic>
+#include <map>
+#include <memory>
 #include <cctype>
 #include <cstdio>
 #include <cstdlib>
@@ -192,6 +196,59 @@ std::string findCpctelera(const std::string& folder) {
     return "";
 }
 
+std::string findZ88dk(const std::string& folder) {
+    std::error_code ec;
+    auto isRoot = [&](const fs::path& p) {
+        return fs::exists(p / "bin" / (std::string("zcc") + EXE), ec) && fs::exists(p / "lib" / "config", ec);
+    };
+    std::vector<fs::path> look;
+    if (!folder.empty()) {
+        const fs::path f = fs::absolute(fs::u8path(folder), ec);
+        look.push_back(f);
+        look.push_back(f.parent_path());              // its bin folder given
+        look.push_back(f / "z88dk");
+    }
+#ifdef _WIN32
+    look.push_back("C:/z88dk");
+    wchar_t exe[MAX_PATH];
+    const DWORD n = GetModuleFileNameW(nullptr, exe, MAX_PATH);
+    if (n && n < MAX_PATH) {
+        const fs::path here = fs::path(std::wstring(exe, n)).parent_path();
+        look.push_back(here / "z88dk");
+        look.push_back(here.parent_path() / "z88dk");
+    }
+#else
+    look.push_back("/opt/z88dk");
+    look.push_back("/usr/local/share/z88dk");
+#endif
+    for (const fs::path& p : look) if (isRoot(p)) return p.u8string();
+    // zcc on the PATH: its folder's parent
+    if (const char* p = std::getenv("PATH")) {
+        std::string s = p;
+#ifdef _WIN32
+        const char sep = ';';
+#else
+        const char sep = ':';
+#endif
+        size_t a = 0;
+        while (a <= s.size()) {
+            size_t b = s.find(sep, a);
+            if (b == std::string::npos) b = s.size();
+            if (b > a) { const fs::path bin = fs::u8path(s.substr(a, b - a)); if (isRoot(bin.parent_path())) return bin.parent_path().u8string(); }
+            a = b + 1;
+        }
+    }
+    return "";
+}
+
+static void setEnv(const char* name, const std::string& value) {
+#ifdef _WIN32
+    SetEnvironmentVariableW(widen(name).c_str(), widen(value).c_str());
+#else
+    setenv(name, value.c_str(), 1);
+#endif
+}
+
 // ---------------------------------------------------------------- reading what the tools say
 
 // "file:12: error 20: text", "file:5: warning 112: text", "file:21: Error: <i> text"; a
@@ -230,6 +287,182 @@ bool parseToolMessage(const std::string& raw, CBuildMessage& out) {
         return true;
     }
     return false;
+}
+
+void parseRstLines(const std::string& text, std::vector<CSourceLine>& out) {
+    std::istringstream in(text);
+    std::string l, file;
+    int line = 0;
+    bool open = false;                   // the last run belongs to the current C line
+    while (std::getline(in, l)) {
+        if (!l.empty() && l.back() == '\r') l.pop_back();
+        bool hasAddress = l.size() >= 12 && l.compare(0, 4, "    ") == 0 && (l.size() == 12 || l[12] == ' ');
+        for (size_t k = 4; hasAddress && k < 12; k++) hasAddress = std::isxdigit((unsigned char)l[k]) != 0;
+        if (!hasAddress) {
+            // ";F:\dir\main.c:43: cpct_drawSolidBox(...)": a new C line
+            const size_t semi = l.find(';');
+            if (semi != std::string::npos) {
+                const std::string c = l.substr(semi + 1);
+                for (size_t k = 2; k < c.size(); k++) {
+                    if (c[k] != ':') continue;
+                    size_t d = k + 1;
+                    while (d < c.size() && std::isdigit((unsigned char)c[d])) d++;
+                    if (d > k + 1 && d < c.size() && c[d] == ':') {
+                        file = c.substr(0, k);
+                        line = std::atoi(c.substr(k + 1, d - k - 1).c_str());
+                        open = false;
+                        break;
+                    }
+                }
+            }
+            // another area (data, initializers) ends the C line's code
+            if (l.find(".area") != std::string::npos) { line = 0; open = false; }
+            continue;
+        }
+        if (l.find(".area") != std::string::npos) { line = 0; open = false; continue; }
+        if (line == 0) continue;
+        // a table SDCC put after the function's code (const data in _CODE): not the line's code
+        bool data = false;
+        for (const char* d : { "\t.db", "\t.dw", "\t.ascii", "\t.asciz", "\t.ds", "\t.byte", "\t.word" }) data = data || l.find(d) != std::string::npos;
+        if (data) { open = false; continue; }
+        const int address = (int)(std::strtoul(l.substr(4, 8).c_str(), nullptr, 16) & 0xffff);
+        int bytes = 0;
+        std::istringstream field(l.size() > 13 ? l.substr(13, 17) : std::string());
+        std::string w;
+        while (field >> w) if (w.size() == 2 && std::isxdigit((unsigned char)w[0]) && std::isxdigit((unsigned char)w[1])) bytes++;
+        if (bytes == 0) continue;            // a label
+        if (open && !out.empty() && out.back().end == address) out.back().end = address + bytes;
+        else { out.push_back({ address, address + bytes, file, line }); open = true; }
+    }
+}
+
+// One line of a z80asm listing: "  335  0000  210000   \tld hl,..." -> its offset, its byte
+// count and the source part; a line with no code gives offset -1.
+static void lisLine(const std::string& l, int& offset, int& bytes, std::string& source) {
+    offset = -1; bytes = 0;
+    size_t i = 0;
+    while (i < l.size() && l[i] == ' ') i++;
+    size_t j = i;
+    while (j < l.size() && std::isdigit((unsigned char)l[j])) j++;
+    if (j == i) { source.clear(); return; }               // not a listing line (a bare label, bytes going on)
+    size_t k = j;
+    while (k < l.size() && l[k] == ' ') k++;
+    size_t m = k;
+    while (m < l.size() && std::isxdigit((unsigned char)l[m])) m++;
+    if (m - k == 4 && m + 2 < l.size() && l[m] == ' ' && l[m + 1] == ' ' && std::isxdigit((unsigned char)l[m + 2])) {
+        offset = (int)std::strtol(l.substr(k, 4).c_str(), nullptr, 16);
+        size_t b = m + 2, e = b;
+        while (e < l.size() && std::isxdigit((unsigned char)l[e])) e++;
+        bytes = (int)(e - b) / 2;
+        source = l.substr(e);
+    } else {
+        source = l.substr(k);
+    }
+}
+
+void parseLisLines(const std::string& text, int base, std::vector<CSourceLine>& out) {
+    std::istringstream in(text);
+    std::string l, file, source;
+    int line = 0;
+    bool code = false, open = false;
+    while (std::getline(in, l)) {
+        if (!l.empty() && l.back() == '\r') l.pop_back();
+        int offset, bytes;
+        lisLine(l, offset, bytes, source);
+        const size_t section = source.find("SECTION");
+        if (section != std::string::npos) {
+            std::istringstream w(source.substr(section + 7));
+            std::string name;
+            w >> name;
+            code = name == "code_compiler";
+            open = false;
+            continue;
+        }
+        if (offset < 0) {
+            size_t s = 0;
+            while (s < source.size() && (source[s] == ' ' || source[s] == '\t')) s++;
+            if (s < source.size() && source[s] == ';') {
+                const std::string c = source.substr(s + 1);
+                for (size_t k = 2; k < c.size(); k++) {
+                    if (c[k] != ':') continue;
+                    size_t d = k + 1;
+                    while (d < c.size() && std::isdigit((unsigned char)c[d])) d++;
+                    if (d > k + 1 && d < c.size() && c[d] == ':') {
+                        file = c.substr(0, k);
+                        line = std::atoi(c.substr(k + 1, d - k - 1).c_str());
+                        open = false;
+                        break;
+                    }
+                }
+            }
+            continue;
+        }
+        if (!code || line == 0 || bytes == 0) continue;
+        const int address = (base + offset) & 0xffff;
+        if (open && !out.empty() && out.back().end == address) out.back().end = address + bytes;
+        else { out.push_back({ address, address + bytes, file, line }); open = true; }
+    }
+}
+
+void parseListingSizes(const std::string& text, std::map<std::string, int>& out) {
+    // an .rst: its code lines carry an 8-digit address in columns 4-11, the source from
+    // column 40; else a z80asm .lis (lisLine)
+    auto rstAddress = [](const std::string& l) {
+        if (l.size() < 13 || l.compare(0, 4, "    ") != 0 || l[12] != ' ') return false;
+        for (size_t k = 4; k < 12; k++) if (!std::isxdigit((unsigned char)l[k])) return false;
+        return true;
+    };
+    bool rst = false;
+    {
+        std::istringstream probe(text);
+        std::string l;
+        for (int n = 0; n < 400 && !rst && std::getline(probe, l); n++) rst = rstAddress(l);
+    }
+    std::istringstream in(text);
+    std::string l, label;
+    while (std::getline(in, l)) {
+        if (!l.empty() && l.back() == '\r') l.pop_back();
+        std::string source;
+        int bytes = 0;
+        if (rst) {
+            source = l.size() > 40 ? l.substr(40) : "";
+            if (rstAddress(l)) {
+                std::istringstream field(l.size() > 13 ? l.substr(13, 17) : std::string());
+                std::string w;
+                while (field >> w) if (w.size() == 2 && std::isxdigit((unsigned char)w[0]) && std::isxdigit((unsigned char)w[1])) bytes++;
+            }
+        } else {
+            int offset;
+            lisLine(l, offset, bytes, source);
+            if (offset < 0) bytes = 0;
+        }
+        size_t s = 0;
+        while (s < source.size() && (source[s] == ' ' || source[s] == '\t')) s++;
+        const std::string src = source.substr(s);
+        if (src.empty() || src[0] == ';') continue;
+        std::string lower = src;
+        for (char& c : lower) c = (char)std::tolower((unsigned char)c);
+        if (lower.find(".area") != std::string::npos || lower.rfind("section", 0) == 0) { label.clear(); continue; }
+        // "name:" or "name::" (SDCC's own "00102$:" labels inside code are not things)
+        size_t e = 0;
+        while (e < src.size() && (std::isalnum((unsigned char)src[e]) || src[e] == '_' || src[e] == '.' || src[e] == '$')) e++;
+        if (e > 0 && e < src.size() && src[e] == ':' && src[e - 1] != '$' && s == 0) {
+            label = src.substr(0, e);
+            out[label] = 0;
+            continue;
+        }
+        if (label.empty()) continue;
+        // ".ds N" (SDCC) or "defs N" (z80asm): N bytes kept
+        for (const char* ds : { ".ds", "defs" }) {
+            if (lower.rfind(ds, 0) == 0) {
+                char* end = nullptr;
+                const long n = std::strtol(src.c_str() + std::strlen(ds), &end, 0);
+                if (end && n > 0 && n <= 0x10000) out[label] += (int)n;
+                bytes = 0;
+            }
+        }
+        out[label] += bytes;
+    }
 }
 
 bool readIntelHex(const std::string& text, std::vector<uint8_t>& bytes, int& lowest) {
@@ -348,8 +581,162 @@ std::vector<std::string> splitWords(const std::string& s) {
 }
 } // namespace
 
+// z88dk: one zcc command builds the whole program (CToolchain's comment); the results read
+// back as from SDCC: the binary, the map's symbols, the listings' lines; then the program
+// as a disc, a tape and a snapshot (cpct_media.h) beside the objects.
+static CBuildResult buildZ88dk(const CToolchain& tools, const std::string& mainPath, const std::function<void(const std::string&)>& progress) {
+    CBuildResult r;
+    std::error_code ec;
+    auto fail = [&](const std::string& text) { CBuildMessage m; m.text = text; r.messages.push_back(m); r.ok = false; return r; };
+    auto note = [&](const std::string& s) { r.log += s + "\n"; if (progress) progress(s); };
+
+    const std::string root = findZ88dk(tools.z88dkFolder);
+    if (root.empty()) return fail("z88dk was not found. Unpack z88dk (z88dk.org) and give its folder in C settings.");
+    const fs::path zroot = fs::u8path(root);
+    setEnv("ZCCCFG", (zroot / "lib" / "config").make_preferred().u8string());
+    putFirstOnPath((zroot / "bin").u8string());
+    const std::string zcc = (zroot / "bin" / (std::string("zcc") + EXE)).u8string();
+
+    const fs::path main = fs::absolute(fs::u8path(mainPath), ec);
+    if (mainPath.empty() || !fs::exists(main, ec)) return fail("Save the C file first: z88dk compiles files on disc.");
+    const fs::path srcDir = main.parent_path();
+    const fs::path projRoot = srcDir.filename() == "src" ? srcDir.parent_path() : srcDir;
+    const fs::path objDir = projRoot / "obj";
+    fs::create_directories(objDir, ec);
+    r.project = main.stem().u8string();
+
+    std::vector<fs::path> sources;
+    for (auto it = fs::recursive_directory_iterator(srcDir, ec); it != fs::recursive_directory_iterator(); it.increment(ec)) {
+        if (ec) break;
+        if (it->is_directory(ec) && fs::equivalent(it->path(), objDir, ec)) { it.disable_recursion_pending(); continue; }
+        const std::string ext = it->path().extension().u8string();
+        if (it->is_regular_file(ec) && (ext == ".c" || ext == ".asm")) sources.push_back(it->path());
+    }
+    std::sort(sources.begin(), sources.end());
+    if (sources.empty()) return fail("No .c or .asm files in " + srcDir.u8string());
+
+    const bool zsdcc = !tools.z88dkSccz80;
+    const fs::path binFile = objDir / (r.project + ".bin");
+    std::vector<std::string> args = { zcc, "+cpc" };
+    if (zsdcc) args.push_back("-compiler=sdcc");
+    for (const char* a : { "-lndos", "-m", "--list", "-create-app" }) args.push_back(a);
+    if (zsdcc) args.push_back("--c-code-in-asm");
+    args.push_back("-zorg=" + std::to_string(tools.codeLoc & 0xffff));
+    for (const std::string& f : splitWords(tools.extraFlags)) args.push_back(f);
+    args.push_back("-o");
+    args.push_back(binFile.u8string());
+    for (const fs::path& s : sources) args.push_back(s.generic_u8string());
+    std::string version;
+    runProgram({ zcc }, "", version);
+    note("z88dk: " + version.substr(0, version.find('\n')) + (zsdcc ? " (zsdcc)" : " (sccz80)"));
+    note(commandLine(args));
+    fs::remove(binFile, ec);                      // this build's own output, so a stale one is not taken
+    std::string out;
+    const int code = runProgram(args, objDir.u8string(), out);
+    r.log += out;
+    {
+        std::istringstream in(out);
+        std::string line;
+        while (std::getline(in, line)) { CBuildMessage m; if (parseToolMessage(line, m)) r.messages.push_back(m); }
+    }
+    // the listings zcc wrote beside the sources go to the objects
+    std::vector<std::pair<fs::path, std::string>> listings;
+    for (const fs::path& s : sources) {
+        const fs::path lis = fs::path(s.native() + fs::path(".lis").native());
+        if (!fs::exists(lis, ec)) continue;
+        if (s.extension() == ".c") listings.emplace_back(s, readText(lis));
+        fs::rename(lis, objDir / lis.filename(), ec);
+    }
+    if (code != 0 || !fs::exists(binFile, ec)) {
+        bool error = false;
+        for (const CBuildMessage& m : r.messages) error = error || m.error;
+        if (!error) { CBuildMessage m; m.text = "zcc failed (exit " + std::to_string(code) + "); the Build log has its output."; r.messages.push_back(m); }
+        return r;
+    }
+    {
+        std::ifstream f(binFile, std::ios::binary);
+        r.bytes.assign(std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>());
+    }
+    r.binPath = binFile.u8string();
+
+    // the map: "name   = $1480 ; addr, public, , module, section, file:line"
+    std::map<std::string, int> addressOf;
+    {
+        std::istringstream map(readText(fs::path(binFile).replace_extension(".map")));
+        std::string line;
+        while (std::getline(map, line)) {
+            const size_t eq = line.find("= $");
+            if (eq == std::string::npos) continue;
+            std::string name = line.substr(0, eq);
+            while (!name.empty() && name.back() == ' ') name.pop_back();
+            const int value = (int)(std::strtoul(line.c_str() + eq + 3, nullptr, 16) & 0xffff);
+            if (name.rfind("__C_LINE", 0) == 0 || name.rfind("__CDBINFO", 0) == 0) continue;
+            addressOf[name] = value;
+            if (line.find("; addr,") != std::string::npos) r.symbols.emplace_back(name, value);
+        }
+    }
+    r.loadAddress = addressOf.count("__head") ? addressOf["__head"] : addressOf.count("CRT_ORG_CODE") ? addressOf["CRT_ORG_CODE"] : tools.codeLoc;
+    r.runAddress = r.loadAddress;                 // the crt0, which calls main
+    // the lines (zsdcc): each listing's code_compiler offsets put at the address the map
+    // gives its first function
+    for (const auto& [source, text] : listings) {
+        std::istringstream in(text);
+        std::string l, src;
+        bool code = false;
+        std::string label;
+        int base = -1;
+        while (base < 0 && std::getline(in, l)) {
+            if (!l.empty() && l.back() == '\r') l.pop_back();
+            int offset, bytes;
+            lisLine(l, offset, bytes, src);
+            if (src.find("SECTION") != std::string::npos) { code = src.find("code_compiler") != std::string::npos; label.clear(); continue; }
+            if (!code) continue;
+            if (offset < 0) {
+                size_t s = 0;
+                while (s < src.size() && (src[s] == ' ' || src[s] == '\t')) s++;
+                size_t e = s;
+                while (e < src.size() && (std::isalnum((unsigned char)src[e]) || src[e] == '_')) e++;
+                if (e > s && e < src.size() && src[e] == ':' && addressOf.count(src.substr(s, e - s))) label = src.substr(s, e - s);
+            } else if (!label.empty()) {
+                base = addressOf[label] - offset;
+            }
+        }
+        if (base >= 0) parseLisLines(text, base, r.lines);
+        parseListingSizes(text, r.symbolSizes);
+    }
+    std::sort(r.lines.begin(), r.lines.end(), [](const CSourceLine& a, const CSourceLine& b) { return a.start < b.start; });
+    if (!zsdcc) note("sccz80 builds have no C line table (its line markers come a line late): choose zsdcc to step by line");
+
+    // the program on a disc, a tape and a snapshot, as the CPCtelera build makes them
+    std::shared_ptr<Disk> disc = cpctNewDisc();
+    std::string why = cpctDiscImport(*disc, r.project + ".bin", r.bytes, 1, r.loadAddress, r.runAddress);
+    if (why.empty()) {
+        const std::vector<uint8_t> image = cpctDiscImage(*disc);
+        r.dskPath = (objDir / (r.project + ".dsk")).u8string();
+        std::ofstream(fs::u8path(r.dskPath), std::ios::binary).write((const char*)image.data(), (std::streamsize)image.size());
+    }
+    std::vector<uint8_t> cdt;
+    std::string tapeName = r.project.substr(0, 16);
+    for (char& ch : tapeName) ch = (char)std::toupper((unsigned char)ch);
+    cpctTapeAddFile(cdt, r.bytes, tapeName, "cpc", r.loadAddress, r.runAddress, 3000);
+    r.cdtPath = (objDir / (r.project + ".cdt")).u8string();
+    std::ofstream(fs::u8path(r.cdtPath), std::ios::binary).write((const char*)cdt.data(), (std::streamsize)cdt.size());
+    std::vector<uint8_t> sna;
+    std::string snaWhy;
+    if (tools.makeSnapshot && tools.makeSnapshot(r.bytes, r.loadAddress, r.runAddress, sna, snaWhy)) {
+        r.snaPath = (objDir / (r.project + ".sna")).u8string();
+        std::ofstream(fs::u8path(r.snaPath), std::ios::binary).write((const char*)sna.data(), (std::streamsize)sna.size());
+    }
+    char text[96];
+    std::snprintf(text, sizeof text, "%d bytes at &%04X, run &%04X (z88dk's crt0)", (int)r.bytes.size(), r.loadAddress & 0xffff, r.runAddress & 0xffff);
+    note(text);
+    r.ok = true;
+    return r;
+}
+
 CBuildResult buildC(const CToolchain& tools, const std::string& mainPath, const std::string& cacheFolder,
                     const std::function<void(const std::string&)>& progress) {
+    if (tools.compiler == "z88dk") return buildZ88dk(tools, mainPath, progress);
     CBuildResult r;
     std::error_code ec;
     auto fail = [&](const std::string& text) { CBuildMessage m; m.text = text; r.messages.push_back(m); r.ok = false; return r; };
@@ -661,10 +1048,45 @@ CBuildResult buildC(const CToolchain& tools, const std::string& mainPath, const 
         if (name == "_main") r.runAddress = value;
     }
     if (r.runAddress < 0) r.runAddress = r.loadAddress;
+    // the C lines' addresses, from each object's listing as the linker finished it (-Wl-u)
+    for (const std::string& o : objects) {
+        const std::string rst = readText(fs::u8path(o).replace_extension(".rst"));
+        parseRstLines(rst, r.lines);
+        parseListingSizes(rst, r.symbolSizes);
+    }
+    std::sort(r.lines.begin(), r.lines.end(), [](const CSourceLine& a, const CSourceLine& b) { return a.start < b.start; });
     const fs::path binFile = objDir / (r.project + ".bin");
     std::ofstream f(binFile, std::ios::binary);
     f.write((const char*)r.bytes.data(), (std::streamsize)r.bytes.size());
+    f.close();
     r.binPath = binFile.u8string();
+
+    // ---- the disc, tape and snapshot images the project's TARGET asks for
+    if (cpctProject) {
+        MediaResult m = makeProjectMedia(root.u8string(), cpct, r.project, r.bytes, r.loadAddress, r.runAddress);
+        r.log += m.log;
+        r.messages.insert(r.messages.end(), m.messages.begin(), m.messages.end());
+        if (!m.ok) return r;
+        r.dskPath = m.dskPath;
+        r.cdtPath = m.cdtPath;
+        r.discNeeded = m.discNeeded;
+        if (m.wantSna) {
+            std::vector<uint8_t> sna;
+            std::string why = "no machine to make it";
+            if (tools.makeSnapshot && tools.makeSnapshot(r.bytes, r.loadAddress, r.runAddress, sna, why)) {
+                std::ofstream s(fs::u8path(m.snaPath), std::ios::binary);
+                s.write((const char*)sna.data(), (std::streamsize)sna.size());
+                if (s) { r.snaPath = m.snaPath; r.log += "snapshot: " + fs::u8path(m.snaPath).filename().u8string() + "\n"; }
+                else { CBuildMessage w; w.text = "Could not write " + m.snaPath; r.messages.push_back(w); return r; }
+            } else {
+                CBuildMessage w; w.text = "The snapshot (" + fs::u8path(m.snaPath).filename().u8string() + ") was not made: " + why; w.error = false;
+                r.messages.push_back(w);
+            }
+        }
+        std::string made;
+        for (const std::string* p : { &r.dskPath, &r.cdtPath, &r.snaPath }) if (!p->empty()) made += (made.empty() ? "" : ", ") + fs::u8path(*p).filename().u8string();
+        if (!made.empty()) note("Images: " + made);
+    }
     r.ok = true;
     return r;
 }

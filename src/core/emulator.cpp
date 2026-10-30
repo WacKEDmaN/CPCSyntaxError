@@ -174,6 +174,7 @@ GX4000::GX4000() {
         ay->advanceTStates(4); dac->advanceTStates(4); ppi->advanceTStates(4); fdc->advanceCycles(1); tape->advanceCycles(1);
         if (playcity->enabled) { playcity->advanceMicrosecond(); playcity->cursorPin(crtc->cursorOutput()); }
         speech->advanceMicrosecond();
+        sf3->advanceMicrosecond();
         if (serial->enabled) serial->advanceMicrosecond();
         if (analyser.enabled) recordAnalyser();
     };

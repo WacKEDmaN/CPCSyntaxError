@@ -63,6 +63,10 @@ public:
     bool active() const;
     void closeAll();
     void sockInfo(uint8_t* to) const;   // the 80 bytes at &FE00
+    // A fresh socket s (1-4), closing what was there: for a card whose programs pick the
+    // socket number themselves (the SYMBiFACE III, sf3.h).
+    bool openSocket(int s);
+    bool socketFree(int s) const;
 
     // A blocking HTTP GET run on a thread (|HTTPGET, |HTTPMEM): the board holds the Z80
     // until it is done, as the real one does (its ROM reads the answer straight after

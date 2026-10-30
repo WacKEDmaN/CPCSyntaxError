@@ -28,9 +28,16 @@ struct AsmSpan { int start = 0, length = 0; AsmToken kind = AsmToken::Text; };
 // the line starts inside /* */, and is left saying whether the next one does.
 std::vector<AsmSpan> highlightAsmLine(const std::string& line, bool& inBlockComment);
 
+// C source (the C mode, SDCC and CPCtelera) in the same classes, so one colour set does
+// both: keywords as Mnemonic, types and qualifiers as Register, preprocessor lines as
+// Directive (an #include's file name as String), a function name before "(" as Label,
+// other names as Symbol. Line comments are // only; /* */ runs over lines as above.
+std::vector<AsmSpan> highlightCLine(const std::string& line, bool& inBlockComment);
+
 // The token classes' names, for the colour settings and the ini ("mnemonic", "number"...).
 const char* asmTokenKey(AsmToken t);
 const char* asmTokenLabel(AsmToken t);
+const char* cTokenLabel(AsmToken t);       // the same classes as the C mode names them
 
 // The colours (0xRRGGBB), and the defaults: a dark-theme set in the spirit of the editor's.
 using AsmColours = std::array<uint32_t, (size_t)AsmToken::Count>;

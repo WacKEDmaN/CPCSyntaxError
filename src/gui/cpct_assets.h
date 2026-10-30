@@ -37,4 +37,20 @@ struct AssetResult {
 
 AssetResult convertProjectAssets(const std::string& projectRoot, const std::string& srcDir, const std::string& cpctFolder, bool force);
 
+// After the link: the images the project's TARGET (cfg/build_config.mk) asks for, beside
+// the project, as CPCtelera names them ($(PROJNAME).dsk / .cdt / .sna). cpct_media.h makes
+// the disc (the program, then $(DSKFILESDIR)'s files for $(DSKINC), then FILE2SECTOR's
+// data) and the tape (CDTMAN's files, else the program as "Game"). The snapshot needs a
+// machine: wantSna and snaPath say that the caller is to make it.
+struct MediaResult {
+    bool ok = true;
+    std::vector<CBuildMessage> messages;
+    std::string log;
+    std::string dskPath, cdtPath, snaPath;
+    bool wantSna = false;
+    bool discNeeded = false;      // the disc holds more than the program: put it in drive A to run
+};
+MediaResult makeProjectMedia(const std::string& projectRoot, const std::string& cpctFolder, const std::string& projName,
+                             const std::vector<uint8_t>& bin, int load, int run);
+
 } // namespace cpcse

@@ -7,6 +7,10 @@
 //    between them only the 16x16 blocks that changed, XORed with the frame before and
 //    deflated. Exact pixels and small files; VLC, ffmpeg and video editors built on them
 //    play it.
+//  - MP4, H.264: by ffmpeg, when it is installed (its program named by `ffmpeg`): the frames
+//    go to it raw through a pipe while the sound is written to a WAV beside; at the end
+//    ffmpeg joins the two (AAC sound) into the .mp4 and the two temporary files go. Small
+//    files (x264, CRF 18) that every player plays.
 //  - WAV: the sound only.
 // The sound in an AVI is 16-bit stereo PCM. An AVI is split into numbered files at 1 GB
 // (the old AVI index cannot point further).
@@ -37,8 +41,11 @@ void deflateSyncFlush(const uint8_t* data, size_t size, std::vector<uint8_t>& ou
 
 class MediaRecorder {
 public:
-    enum class Format { Mjpeg, Zmbv, Wav };
-    MediaRecorder() = default;
+    enum class Format { Mjpeg, Zmbv, Wav, H264 };
+    std::string ffmpeg = "ffmpeg";           // H264: the ffmpeg program (a path, or found on the PATH)
+    // ffmpeg's program when it can be run: the one given, else on the PATH; "" when none.
+    static std::string findFfmpeg(const std::string& given);
+    MediaRecorder();
     ~MediaRecorder();
     MediaRecorder(const MediaRecorder&) = delete;
     MediaRecorder& operator=(const MediaRecorder&) = delete;
@@ -93,6 +100,12 @@ private:
     void work();
     void encode(Job& j);
     void writeReady();                       // with `lock` held
+
+    // H264: ffmpeg's process (its stdin takes the frames), the two temporary files
+    struct Encoder;
+    std::unique_ptr<Encoder> encoder;
+    std::string tempVideo, tempAudio;
+    bool finishH264();                       // ffmpeg ends, joins the two into basePath
 
     // the file
     std::FILE* file = nullptr;

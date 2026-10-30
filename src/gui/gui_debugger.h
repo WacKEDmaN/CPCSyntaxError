@@ -69,7 +69,23 @@ public:
     void stepOver();                       // CALL / RST / DJNZ / block repeats run to the next instruction
     void stepOut();                        // run until a RET takes SP above where it is now
     void runTo(int address);
+    // Run to an address past every breakpoint and watchpoint on the way (the assembler's
+    // Run to cursor): the core sees none until the machine stops, then they are back.
+    void runToPassingBreakpoints(int address);
     void setPc(int address);
+
+    // Source lines (from the C build): runs of addresses, each from one line of a file.
+    // With them the steps can go a line at a time: stepLine runs until the PC is at the
+    // first address of a run of another line (over: and not deeper in a call than where it
+    // started, by SP). Code with no line (the libraries, the firmware) runs through. With no
+    // line at the PC they are stepInto / stepOver.
+    struct SourceLine { int start = 0, end = 0; std::string file; int line = 0; };
+    std::vector<SourceLine> sourceLines;   // sorted by start
+    void setSourceLines(std::vector<SourceLine> lines);
+    const SourceLine* lineAt(int address) const;
+    // The first address of the line's code (its lowest run), -1 if the line has none.
+    int lineAddress(const std::string& file, int line) const;
+    void stepLine(bool over);
 
     // Symbols (from the assembler). Addresses may carry several names; the first wins
     // in the disassembly.
@@ -86,6 +102,9 @@ public:
 private:
     EmuHost& host;
     std::unordered_set<int> pcSet;         // enabled breakpoint addresses, handed to the core
+    std::unordered_set<int> noBreakpoints; // ...or this, while runToPassingBreakpoints runs
+    bool passingBreakpoints = false;
+    void endPassingBreakpoints();
     bool pcSetDirty = true;
     void rebuildPcSet();
     void resumeFrom();                     // common part of the run-like commands

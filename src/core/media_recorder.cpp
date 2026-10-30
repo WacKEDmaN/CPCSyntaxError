@@ -3,7 +3,19 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
+#include <filesystem>
+
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#endif
 
 namespace cpcse {
 
@@ -294,6 +306,147 @@ void put16(std::vector<uint8_t>& b, uint16_t v) { b.push_back((uint8_t)v); b.pus
 void putId(std::vector<uint8_t>& b, const char* id) { b.insert(b.end(), id, id + 4); }
 } // namespace
 
+// ============================================================== ffmpeg's process
+// A program with its standard input a pipe of ours (what it prints is thrown away); on
+// Windows without a console window of its own.
+struct MediaRecorder::Encoder {
+#ifdef _WIN32
+    HANDLE process = nullptr, input = nullptr;
+    static std::wstring widen(const std::string& s) {
+        if (s.empty()) return std::wstring();
+        const int n = MultiByteToWideChar(CP_UTF8, 0, s.data(), (int)s.size(), nullptr, 0);
+        std::wstring w((size_t)n, L'\0');
+        MultiByteToWideChar(CP_UTF8, 0, s.data(), (int)s.size(), w.data(), n);
+        return w;
+    }
+    // one argument as the C runtime reads it back: quoted when it holds a space or a quote
+    static std::wstring quote(const std::wstring& a) {
+        if (!a.empty() && a.find_first_of(L" \t\"") == std::wstring::npos) return a;
+        std::wstring q = L"\"";
+        size_t slashes = 0;
+        for (wchar_t c : a) {
+            if (c == L'\\') { slashes++; continue; }
+            if (c == L'"') q.append(slashes * 2 + 1, L'\\'); else q.append(slashes, L'\\');
+            slashes = 0;
+            q.push_back(c);
+        }
+        q.append(slashes * 2, L'\\');
+        q.push_back(L'"');
+        return q;
+    }
+    bool start(const std::vector<std::string>& args) {
+        std::wstring line;
+        for (const std::string& a : args) { if (!line.empty()) line += L' '; line += quote(widen(a)); }
+        SECURITY_ATTRIBUTES sa{ sizeof sa, nullptr, TRUE };
+        HANDLE readEnd = nullptr;
+        if (!CreatePipe(&readEnd, &input, &sa, 1 << 20)) return false;
+        SetHandleInformation(input, HANDLE_FLAG_INHERIT, 0);
+        HANDLE nul = CreateFileW(L"NUL", GENERIC_WRITE, FILE_SHARE_WRITE, &sa, OPEN_EXISTING, 0, nullptr);
+        STARTUPINFOW si{};
+        si.cb = sizeof si;
+        si.dwFlags = STARTF_USESTDHANDLES;
+        si.hStdInput = readEnd;
+        si.hStdOutput = nul;
+        si.hStdError = nul;
+        PROCESS_INFORMATION pi{};
+        std::vector<wchar_t> cmd(line.begin(), line.end());
+        cmd.push_back(0);
+        const BOOL ok = CreateProcessW(nullptr, cmd.data(), nullptr, nullptr, TRUE, CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi);
+        CloseHandle(readEnd);
+        if (nul != INVALID_HANDLE_VALUE) CloseHandle(nul);
+        if (!ok) { CloseHandle(input); input = nullptr; return false; }
+        CloseHandle(pi.hThread);
+        process = pi.hProcess;
+        return true;
+    }
+    bool write(const void* data, size_t n) {
+        const char* p = (const char*)data;
+        while (n) {
+            DWORD put = 0;
+            if (!input || !WriteFile(input, p, (DWORD)std::min<size_t>(n, 1 << 20), &put, nullptr) || put == 0) return false;
+            p += put; n -= put;
+        }
+        return true;
+    }
+    int finish() {
+        if (input) { CloseHandle(input); input = nullptr; }
+        if (!process) return -1;
+        WaitForSingleObject(process, INFINITE);
+        DWORD code = 1;
+        GetExitCodeProcess(process, &code);
+        CloseHandle(process);
+        process = nullptr;
+        return (int)code;
+    }
+#else
+    std::FILE* pipe = nullptr;
+    bool start(const std::vector<std::string>& args) {
+        std::string line;
+        for (const std::string& a : args) {
+            std::string q = "'";
+            for (char c : a) { if (c == '\'') q += "'\\''"; else q += c; }
+            line += (line.empty() ? "" : " ") + q + "'";
+        }
+        pipe = popen((line + " >/dev/null 2>&1").c_str(), "w");
+        return pipe != nullptr;
+    }
+    bool write(const void* data, size_t n) { return pipe && std::fwrite(data, 1, n, pipe) == n; }
+    int finish() {
+        if (!pipe) return -1;
+        const int status = pclose(pipe);
+        pipe = nullptr;
+        return status;
+    }
+#endif
+    ~Encoder() { finish(); }
+};
+
+std::string MediaRecorder::findFfmpeg(const std::string& given) {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    if (!given.empty() && given != "ffmpeg" && fs::is_regular_file(fs::u8path(given), ec)) return given;
+#ifdef _WIN32
+    const char* names[] = { "ffmpeg.exe" };
+    const char sep = ';';
+#else
+    const char* names[] = { "ffmpeg" };
+    const char sep = ':';
+#endif
+    const char* env = std::getenv("PATH");
+    const std::string path = env ? env : "";
+    size_t a = 0;
+    while (a <= path.size()) {
+        size_t b = path.find(sep, a);
+        if (b == std::string::npos) b = path.size();
+        if (b > a)
+            for (const char* n : names) {
+                const fs::path f = fs::u8path(path.substr(a, b - a)) / n;
+                if (fs::is_regular_file(f, ec)) return f.u8string();
+            }
+        a = b + 1;
+    }
+    return "";
+}
+
+// The pictures through ffmpeg into a video-only .mp4, the sound in a WAV: joined at the end.
+bool MediaRecorder::finishH264() {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    const int code = encoder ? encoder->finish() : -1;
+    encoder.reset();
+    if (code != 0) { error = "ffmpeg could not encode the video (exit " + std::to_string(code) + ")"; return false; }
+    Encoder mux;
+    const bool started = mux.start({ ffmpeg, "-hide_banner", "-loglevel", "error", "-y", "-i", tempVideo, "-i", tempAudio,
+                                     "-c:v", "copy", "-c:a", "aac", "-b:a", "192k", "-shortest", "-movflags", "+faststart", basePath });
+    const int joined = started ? mux.finish() : -1;
+    if (joined != 0) { error = "ffmpeg could not join the picture and the sound (exit " + std::to_string(joined) + "); they are in " + tempVideo + " and " + tempAudio; return false; }
+    fs::remove(fs::u8path(tempVideo), ec);      // this recording's own temporary files, and only them
+    fs::remove(fs::u8path(tempAudio), ec);
+    totalBytes = (uint64_t)fs::file_size(fs::u8path(basePath), ec);
+    return true;
+}
+
+MediaRecorder::MediaRecorder() = default;
 MediaRecorder::~MediaRecorder() { stop(); }
 
 bool MediaRecorder::start(const std::string& path, Format format, int width, int height, int sampleRate, double frameMicroseconds, int jpegQuality) {
@@ -304,9 +457,23 @@ bool MediaRecorder::start(const std::string& path, Format format, int width, int
     lastPicture.reset();
     todo.clear(); finished.clear();
     quit = false; splitQueued = false;
-    if (!openFile()) return false;
+    if (fmt == Format::H264) {
+        const std::string program = findFfmpeg(ffmpeg);
+        if (program.empty()) { error = "ffmpeg was not found (install it, or name its program in the recording settings)"; return false; }
+        ffmpeg = program;
+        tempVideo = path + ".video.mp4";
+        tempAudio = path + ".sound.wav";
+        char fps[32];
+        std::snprintf(fps, sizeof fps, "%.6f", 1e6 / frameMicroseconds);
+        encoder = std::make_unique<Encoder>();
+        const bool started = encoder->start({ ffmpeg, "-hide_banner", "-loglevel", "error", "-y", "-f", "rawvideo", "-pix_fmt", "rgba",
+                                              "-video_size", std::to_string(width) + "x" + std::to_string(height), "-framerate", fps, "-i", "-",
+                                              "-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-tune", "animation", "-pix_fmt", "yuv420p", tempVideo });
+        if (!started) { encoder.reset(); error = "ffmpeg could not be started (" + ffmpeg + ")"; return false; }
+    }
+    if (!openFile()) { if (encoder) { encoder->finish(); encoder.reset(); } return false; }
     running = true;
-    if (fmt != Format::Wav) {
+    if (fmt != Format::Wav && fmt != Format::H264) {
         const unsigned cores = std::max(2u, std::thread::hardware_concurrency());
         const unsigned n = std::min(4u, cores - 1);
         for (unsigned i = 0; i < n; i++) workers.emplace_back([this] { work(); });
@@ -326,7 +493,12 @@ void MediaRecorder::addFrame(const uint32_t* pixels, const int16_t* audio, size_
         silenceCarry -= (double)n;
         job->audio.assign(n * 2, 0);
     }
-    if (fmt == Format::Wav) {
+    if (fmt == Format::Wav || fmt == Format::H264) {
+        // pixels 0xAABBGGRR are the bytes R, G, B, A: ffmpeg's "rgba"
+        if (fmt == Format::H264 && encoder && !encoder->write(pixels, (size_t)w * h * 4)) {
+            error = "ffmpeg stopped taking the pictures";
+            running = false;
+        }
         std::lock_guard<std::mutex> g(lock);
         writeChunk("01wb", job->audio.data(), (uint32_t)(job->audio.size() * 2), true);
         return;
@@ -415,7 +587,7 @@ void MediaRecorder::writeReady() {
 
 void MediaRecorder::writeChunk(const char id[4], const void* data, uint32_t size, bool key) {
     if (!file) return;
-    if (fmt == Format::Wav) {
+    if (fmt == Format::Wav || fmt == Format::H264) {
         if (std::fwrite(data, 1, size, file) != size) error = "the disc is full";
         fileBytes += size; totalBytes += size;
         fileAudioSamples += size / 4;
@@ -438,8 +610,8 @@ void MediaRecorder::writeChunk(const char id[4], const void* data, uint32_t size
 }
 
 bool MediaRecorder::openFile() {
-    std::string name = basePath;
-    if (fileIndex > 0) {
+    std::string name = fmt == Format::H264 ? tempAudio : basePath;
+    if (fileIndex > 0 && fmt != Format::H264) {
         const size_t dot = name.rfind('.');
         const std::string stem = dot == std::string::npos ? name : name.substr(0, dot), ext = dot == std::string::npos ? "" : name.substr(dot);
         name = stem + "_" + std::to_string(fileIndex + 1) + ext;
@@ -450,7 +622,7 @@ bool MediaRecorder::openFile() {
     fileBytes = 0; fileVideoFrames = 0; fileAudioSamples = 0;
     fileIndexEntries.clear();
     std::vector<uint8_t> b;
-    if (fmt == Format::Wav) {
+    if (fmt == Format::Wav || fmt == Format::H264) {
         putId(b, "RIFF"); put32(b, 0); putId(b, "WAVE");
         putId(b, "fmt "); put32(b, 16); put16(b, 1); put16(b, 2); put32(b, (uint32_t)rate); put32(b, (uint32_t)rate * 4); put16(b, 4); put16(b, 16);
         putId(b, "data"); put32(b, 0);
@@ -477,7 +649,8 @@ bool MediaRecorder::openFile() {
     put32(b, (uint32_t)(w * h * 4)); put32(b, 0xffffffffu); put32(b, 0);
     put16(b, 0); put16(b, 0); put16(b, (uint16_t)w); put16(b, (uint16_t)h);
     putId(b, "strf"); put32(b, 40);
-    put32(b, 40); put32(b, (uint32_t)w); put32(b, (uint32_t)h); put16(b, 1); put16(b, fmt == Format::Mjpeg ? 24 : 32);
+    put32(b, 40); put32(b, (uint32_t)w); put32(b, (uint32_t)h);
+    if (fmt == Format::Mjpeg) { put16(b, 1); put16(b, 24); } else put32(b, 0);   // ZMBV: 0, as DOSBox writes it
     putId(b, codec); put32(b, (uint32_t)(w * h * 4)); put32(b, 0); put32(b, 0); put32(b, 0); put32(b, 0);
     // the sound
     putId(b, "LIST"); put32(b, 4 + 8 + 56 + 8 + 18); putId(b, "strl");
@@ -498,7 +671,7 @@ bool MediaRecorder::openFile() {
 void MediaRecorder::closeFile() {
     if (!file) return;
     auto patch = [&](long at, uint32_t v) { std::fseek(file, at, SEEK_SET); uint8_t b[4] = { (uint8_t)v, (uint8_t)(v >> 8), (uint8_t)(v >> 16), (uint8_t)(v >> 24) }; std::fwrite(b, 1, 4, file); };
-    if (fmt == Format::Wav) {
+    if (fmt == Format::Wav || fmt == Format::H264) {
         const long end = std::ftell(file);
         patch(4, (uint32_t)(end - 8));
         patch(40, (uint32_t)(end - 44));
@@ -528,7 +701,7 @@ void MediaRecorder::stop() {
     {
         std::unique_lock<std::mutex> g(lock);
         // every frame given is written
-        done.wait(g, [&] { return nextToWrite >= framesAdded || fmt == Format::Wav || !file; });
+        done.wait(g, [&] { return nextToWrite >= framesAdded || fmt == Format::Wav || fmt == Format::H264 || !file; });
         quit = true;
     }
     wake.notify_all();
@@ -538,6 +711,7 @@ void MediaRecorder::stop() {
     done.notify_all();
     std::lock_guard<std::mutex> g(lock);
     closeFile();
+    if (fmt == Format::H264 && encoder) finishH264();
 }
 
 } // namespace cpcse

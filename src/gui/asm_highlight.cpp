@@ -160,6 +160,128 @@ std::vector<AsmSpan> highlightAsmLine(const std::string& line, bool& inBlockComm
     return spans;
 }
 
+namespace {
+
+const std::unordered_set<std::string>& cKeywords() {
+    static const std::unordered_set<std::string> s = {
+        "if", "else", "while", "do", "for", "switch", "case", "default", "break", "continue", "return", "goto",
+        "sizeof", "typedef", "struct", "union", "enum", "true", "false", "NULL",
+        // SDCC's own
+        "__asm", "__endasm", "__asm__", "_asm", "_endasm",
+    };
+    return s;
+}
+
+const std::unordered_set<std::string>& cTypes() {
+    static const std::unordered_set<std::string> s = {
+        "void", "char", "short", "int", "long", "float", "double", "signed", "unsigned", "bool", "_Bool",
+        "const", "volatile", "static", "extern", "register", "auto", "inline", "restrict",
+        "int8_t", "int16_t", "int32_t", "uint8_t", "uint16_t", "uint32_t", "size_t", "ptrdiff_t",
+        // CPCtelera's types
+        "u8", "u16", "u32", "u64", "i8", "i16", "i32", "i64", "f32",
+        // SDCC's qualifiers and calling conventions
+        "__at", "__naked", "__interrupt", "__critical", "__banked", "__nonbanked", "__sfr", "__sdcccall",
+        "__z88dk_fastcall", "__z88dk_callee", "__preserves_regs", "__reentrant", "__smallc", "__trap",
+    };
+    return s;
+}
+
+bool cIdentStart(char c) { return std::isalpha((unsigned char)c) || c == '_'; }
+bool cIdentChar(char c) { return std::isalnum((unsigned char)c) || c == '_'; }
+
+} // namespace
+
+std::vector<AsmSpan> highlightCLine(const std::string& line, bool& inBlockComment) {
+    std::vector<AsmSpan> spans;
+    const int n = (int)line.size();
+    auto push = [&](int start, int length, AsmToken kind) {
+        if (length <= 0) return;
+        if (!spans.empty() && spans.back().kind == kind && spans.back().start + spans.back().length == start) spans.back().length += length;
+        else spans.push_back({ start, length, kind });
+    };
+    int i = 0;
+    if (inBlockComment) {
+        const size_t end = line.find("*/");
+        if (end == std::string::npos) { push(0, n, AsmToken::Comment); return spans; }
+        push(0, (int)end + 2, AsmToken::Comment);
+        inBlockComment = false;
+        i = (int)end + 2;
+    }
+    // a preprocessor line: "#" and its word are Directive; after #include, <file> is String
+    bool include = false;
+    {
+        int k = i;
+        while (k < n && (line[(size_t)k] == ' ' || line[(size_t)k] == '\t')) k++;
+        if (i == 0 && k < n && line[(size_t)k] == '#') {
+            push(0, k, AsmToken::Text);
+            int e = k + 1;
+            while (e < n && (line[(size_t)e] == ' ' || line[(size_t)e] == '\t')) e++;
+            int w = e;
+            while (w < n && cIdentChar(line[(size_t)w])) w++;
+            include = line.compare((size_t)e, (size_t)(w - e), "include") == 0;
+            push(k, w - k, AsmToken::Directive);
+            i = w;
+        }
+    }
+    while (i < n) {
+        const char c = line[(size_t)i];
+        const char next = i + 1 < n ? line[(size_t)i + 1] : '\0';
+        if (c == ' ' || c == '\t') { int s = i; while (i < n && (line[(size_t)i] == ' ' || line[(size_t)i] == '\t')) i++; push(s, i - s, AsmToken::Text); continue; }
+        if (c == '/' && next == '/') { push(i, n - i, AsmToken::Comment); break; }
+        if (c == '/' && next == '*') {
+            const size_t end = line.find("*/", (size_t)i + 2);
+            if (end == std::string::npos) { push(i, n - i, AsmToken::Comment); inBlockComment = true; break; }
+            push(i, (int)end + 2 - i, AsmToken::Comment);
+            i = (int)end + 2;
+            continue;
+        }
+        if (c == '"' || c == '\'' || (include && c == '<')) {
+            const char close = c == '<' ? '>' : c;
+            int e = i + 1;
+            while (e < n && line[(size_t)e] != close) { if (close != '>' && line[(size_t)e] == '\\' && e + 1 < n) e++; e++; }
+            if (e < n) e++;                                   // the closing quote
+            push(i, e - i, AsmToken::String);
+            i = e;
+            continue;
+        }
+        if (std::isdigit((unsigned char)c) || (c == '.' && std::isdigit((unsigned char)next))) {
+            int e = i + 1;
+            while (e < n && (std::isalnum((unsigned char)line[(size_t)e]) || line[(size_t)e] == '.' ||
+                             ((line[(size_t)e] == '+' || line[(size_t)e] == '-') && (line[(size_t)e - 1] == 'e' || line[(size_t)e - 1] == 'E') &&
+                              !(line[(size_t)i] == '0' && i + 1 < n && (line[(size_t)i + 1] == 'x' || line[(size_t)i + 1] == 'X')))))
+                e++;
+            push(i, e - i, AsmToken::Number);
+            i = e;
+            continue;
+        }
+        if (cIdentStart(c)) {
+            int e = i;
+            while (e < n && cIdentChar(line[(size_t)e])) e++;
+            const std::string word = line.substr((size_t)i, (size_t)(e - i));
+            AsmToken kind;
+            if (cKeywords().count(word)) kind = AsmToken::Mnemonic;
+            else if (cTypes().count(word)) kind = AsmToken::Register;
+            else {
+                int k = e;
+                while (k < n && (line[(size_t)k] == ' ' || line[(size_t)k] == '\t')) k++;
+                kind = k < n && line[(size_t)k] == '(' ? AsmToken::Label : AsmToken::Symbol;
+            }
+            push(i, e - i, kind);
+            i = e;
+            continue;
+        }
+        push(i, 1, AsmToken::Text);                           // operators and punctuation
+        i++;
+    }
+    return spans;
+}
+
+const char* cTokenLabel(AsmToken t) {
+    static const char* const labels[] = { "Text and operators", "Keywords", "Types and qualifiers", "Preprocessor",
+                                          "Numbers", "Strings", "Comments", "Functions", "Names" };
+    return labels[(size_t)t];
+}
+
 const char* asmTokenKey(AsmToken t) {
     static const char* const keys[] = { "text", "mnemonic", "register", "directive", "number", "string", "comment", "label", "symbol" };
     return keys[(size_t)t];

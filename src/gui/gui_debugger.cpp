@@ -26,6 +26,12 @@ void Debugger::attach() {
     GX4000* e = host.emu;
     if (!e || !e->memory || !e->cpu) return;
     if (pcSetDirty) rebuildPcSet();
+    if (passingBreakpoints && host.paused) passingBreakpoints = false;    // it stopped: they are back
+    if (passingBreakpoints) {
+        e->breakpoints = &noBreakpoints;
+        host.watchArmed = false;
+        return;
+    }
     e->breakpoints = &pcSet;
     e->breakpointPredicate = [this, e](int pc) {
         bool stop = false;
@@ -107,8 +113,19 @@ void Debugger::clearAssemblerBreakpoints() {
 }
 
 
+// Every command that sets the machine going again (or stops it) ends a Run to cursor's pass
+// over the breakpoints: they are the core's again at once (runToPassingBreakpoints sets the
+// pass after this).
+void Debugger::endPassingBreakpoints() {
+    if (!passingBreakpoints) return;
+    passingBreakpoints = false;
+    pcSetDirty = true;
+    attach();
+}
+
 void Debugger::resumeFrom() {
     if (!host.booted() || !host.emu) return;
+    endPassingBreakpoints();
     // The breakpoint under the PC has already stopped us once; let it go this time.
     host.emu->breakpointSkipOnce = host.emu->cpu->pc & 0xffff;
     host.breakReason.clear();
@@ -126,6 +143,7 @@ void Debugger::run() {
 
 void Debugger::pause() {
     if (!host.booted()) return;
+    endPassingBreakpoints();
     host.paused = true;
     host.emu->stepTarget = -1;       // a pending step-over/run-to must not fire later
     host.stopAfter = nullptr;
@@ -135,6 +153,7 @@ void Debugger::pause() {
 
 void Debugger::stepInto() {
     if (!host.booted()) return;
+    endPassingBreakpoints();
     host.paused = true;
     host.breakReason.clear();
     lastWatchAddress = -1;
@@ -177,6 +196,61 @@ void Debugger::stepOut() {
         bool ret = op == 0xc9 || (op & 0xc7) == 0xc0 ||
                    (op == 0xed && (e->memory->readMapped((previousPc + 1) & 0xffff) & 0xc7) == 0x45);
         return ret && (e->cpu->sp & 0xffff) > startSp;
+    };
+    resumeFrom();
+}
+
+void Debugger::runToPassingBreakpoints(int address) {
+    if (!host.booted()) return;
+    GX4000* e = host.emu;
+    e->stepTarget = address & 0xffff;
+    host.stopAfter = nullptr;
+    resumeFrom();                           // (ends an earlier pass first)
+    passingBreakpoints = true;
+    e->breakpoints = &noBreakpoints;        // now: the next frame runs before attach() again
+    host.watchArmed = false;
+    e->memory->watchHook = [](int, int, bool) {};
+}
+
+void Debugger::setSourceLines(std::vector<SourceLine> lines) {
+    std::sort(lines.begin(), lines.end(), [](const SourceLine& a, const SourceLine& b) { return a.start < b.start; });
+    sourceLines = std::move(lines);
+}
+
+const Debugger::SourceLine* Debugger::lineAt(int address) const {
+    address &= 0xffff;
+    auto it = std::upper_bound(sourceLines.begin(), sourceLines.end(), address, [](int a, const SourceLine& l) { return a < l.start; });
+    if (it == sourceLines.begin()) return nullptr;
+    --it;
+    return address < it->end ? &*it : nullptr;
+}
+
+int Debugger::lineAddress(const std::string& file, int line) const {
+    int best = -1;
+    for (const SourceLine& l : sourceLines)
+        if (l.line == line && l.file == file && (best < 0 || l.start < best)) best = l.start;
+    return best;
+}
+
+void Debugger::stepLine(bool over) {
+    if (!host.booted()) return;
+    GX4000* e = host.emu;
+    const SourceLine* from = lineAt(e->cpu->pc);
+    if (!from) { if (over) stepOver(); else stepInto(); return; }
+    const std::string file = from->file;
+    const int line = from->line, startSp = e->cpu->sp & 0xffff;
+    e->stepTarget = -1;
+    // `left`: the PC has been outside the line's code (another line, a call); a jump back
+    // to the start of the same line after that (the next turn of a loop on one line) is a
+    // new step, as in other debuggers
+    host.stopAfter = [this, e, file, line, startSp, over, left = false](int) mutable {
+        const int pc = e->cpu->pc & 0xffff;
+        const SourceLine* l = lineAt(pc);
+        const bool same = l && l->line == line && l->file == file;
+        if (!same) left = true;
+        if (!l || l->start != pc) return false;                     // not at the start of a line's code
+        if (same && !left) return false;                            // still the same line
+        return !over || (e->cpu->sp & 0xffff) >= startSp;            // over: not deeper in a call
     };
     resumeFrom();
 }

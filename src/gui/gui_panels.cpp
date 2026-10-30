@@ -7,6 +7,7 @@
 #include "core/machine_sounds.h"
 
 #include "imgui.h"
+#include "imgui_internal.h"   // ImGuiViewportP::PlatformMonitor (the GFX9000 screen's display)
 
 #include <algorithm>
 #include <atomic>
@@ -43,6 +44,7 @@
 #include "core/emulator.h"
 #include "core/matrix_printer.h"
 #include "core/monitor_model.h"
+#include "core/sf3.h"
 #include "core/v9990.h"
 #include "core/opl4.h"
 #include "core/speech.h"
@@ -172,6 +174,8 @@ void GuiShell::sectionVideo(bool asMenu) {
     } else if (ImGui::Button(host.fullscreen ? "Windowed (F11)" : "Fullscreen (F11)") && toggleFullscreen) {
         toggleFullscreen();
     }
+    ImGui::Checkbox("Full screen: the picture only", &fullscreenPictureOnly);
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Full screen shows the picture alone: no menus, windows or status bar.\nF11 or a double-click goes back.");
 
     if (asMenu) ImGui::Separator(); else sectionHeading("CRT effect");
     ImGui::Checkbox("CRT effect", &host.crtEffect);
@@ -211,7 +215,7 @@ void GuiShell::sectionVideo(bool asMenu) {
     if (asMenu) ImGui::Separator(); else sectionHeading("GFX9000 monitor");
     static const Choice gfxPlace[] = {
         { "Beside the CPC screen", "beside", "Two monitors: its own picture next to the CPC's, in the Screen window" },
-        { "Own window", "window", "Two monitors: the GFX9000's in the GFX9000 window" },
+        { "Own window", "window", "Two monitors: the GFX9000's in the GFX9000 screen window, which can go onto\nanother display and be full screen there (F11 while it has the focus)" },
         { "One monitor (switched)", "switch",
           "One monitor: the GFX9000's picture while it displays one, the CPC's otherwise.\n"
           "A program hands it back with OUT &FF6F,&10 and takes it with OUT &FF6F,0." },
@@ -224,14 +228,14 @@ void GuiShell::sectionVideo(bool asMenu) {
         for (size_t i = 0; i < 4; i++) {      // too wide for one line in a docked window
             if (ImGui::RadioButton(gfxPlace[i].label, host.gfx9000Monitor == gfxPlace[i].value)) {
                 host.gfx9000Monitor = gfxPlace[i].value;
-                if (host.gfx9000Monitor == "window") panelOpen("GFX9000") = true;
+                if (host.gfx9000Monitor == "window") panelOpen("GFX9000 screen") = true;
             }
             if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip("%s", gfxPlace[i].tip);
         }
     } else {
         choiceRow(true, gfxPlace, host.gfx9000Monitor, [this](const char* v) {
             host.gfx9000Monitor = v;
-            if (host.gfx9000Monitor == "window") panelOpen("GFX9000") = true;
+            if (host.gfx9000Monitor == "window") panelOpen("GFX9000 screen") = true;
         });
     }
     ImGui::EndDisabled();
@@ -289,6 +293,18 @@ void GuiShell::sectionAudio(bool asMenu) {
     float volPct = host.masterVolume * 100.0f;
     ImGui::SetNextItemWidth(itemWidth(asMenu));
     if (ImGui::SliderFloat("##vol", &volPct, 0.0f, 100.0f, "volume %.0f%%")) host.masterVolume = volPct / 100.0f;
+    // Each source under the master volume, up to twice its own level; a right click sets 100%.
+    if (asMenu) ImGui::Separator(); else sectionHeading("Sound sources");
+    for (const auto& s : EmuHost::soundLevels()) {
+        float& v = host.*(s.level);
+        float pct = v * 100.0f;
+        const bool fitted = host.soundFitted(s.key);
+        const std::string format = std::string(s.name) + (fitted ? " %.0f%%" : " %.0f%% (off)");
+        ImGui::SetNextItemWidth(itemWidth(asMenu));
+        if (ImGui::SliderFloat((std::string("##vol_") + s.key).c_str(), &pct, 0.0f, 200.0f, format.c_str())) v = pct / 100.0f;
+        if (ImGui::IsItemClicked(ImGuiMouseButton_Right)) v = 1.0f;
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s: 0 to 200%% of its own level (right click: 100%%)%s", s.name, fitted ? "" : "\nNot fitted now: the level is kept for when it is.");
+    }
     // The machine's own noises, not its sound chip: synthesised, mixed beside the AY.
     if (asMenu) ImGui::Separator(); else sectionHeading("Machine noises");
     ImGui::Checkbox("Disc drive sounds", &host.driveSounds);
@@ -626,6 +642,11 @@ void GuiShell::sectionExpansions(bool asMenu) {
                         [this](const std::string& dir) { host.setIdeFolder(dir); });
     };
     const bool sfOn = host.symbifaceModule != "none";
+    auto pickSf3 = [this](bool usb) {
+        std::string& f = usb ? host.sf3UsbFolder : host.sf3SdFolder;
+        browser.openDir(usb ? "SF3 USB stick folder" : "SF3 SD card folder", f.empty() ? host.romDir : f,
+                        [this, usb](const std::string& dir) { host.setSf3Folder(usb, dir); });
+    };
     if (asMenu) {
         ImGui::Separator();
         if (ImGui::BeginMenu("Symbiface")) {
@@ -633,6 +654,10 @@ void GuiShell::sectionExpansions(bool asMenu) {
             ImGui::Separator();
             if (ImGui::MenuItem("IDE folder...")) pickIde();
             if (ImGui::MenuItem("Rescan IDE folder", nullptr, false, sfOn)) host.rescanIde();
+            ImGui::Separator();
+            if (ImGui::MenuItem("SF3 USB stick folder...")) pickSf3(true);
+            if (ImGui::MenuItem("SF3 SD card folder...")) pickSf3(false);
+            ImGui::MenuItem("SF3 OLED display", nullptr, &panelOpen("SF3 OLED"), host.symbifaceModule == "sf3");
             ImGui::EndMenu();
         }
     } else {
@@ -643,6 +668,17 @@ void GuiShell::sectionExpansions(bool asMenu) {
         if (sfOn) { if (after().smallButton("Rescan##ide")) host.rescanIde(); }
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("The IDE/CF drive is this folder, as one FAT16 partition:\nwhat SymbOS writes there goes back into the folder.");
         if (!host.ideFolder.empty()) ImGui::TextDisabled("  %s", host.ideFolder.c_str());
+        if (host.symbifaceModule == "sf3") {
+            ImGui::TextUnformatted("SF3 USB stick");
+            if (after().smallButton("Folder...##sf3usb")) pickSf3(true);
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Drive 1: of the SE-ONE player (SEPLAYER, AT+MSDPLAY):\nMP3 and WAV files in this folder and its folders.");
+            if (!host.sf3UsbFolder.empty()) ImGui::TextDisabled("  %s", host.sf3UsbFolder.c_str());
+            ImGui::TextUnformatted("SF3 SD card");
+            if (after().smallButton("Folder...##sf3sd")) pickSf3(false);
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Drive 0: (SAMPLE, SETALK and the other system files).");
+            if (!host.sf3SdFolder.empty()) ImGui::TextDisabled("  %s", host.sf3SdFolder.c_str());
+            if (after().smallButton("OLED display##sf3")) panelOpen("SF3 OLED") = true;
+        }
     }
 
     if (asMenu) {
@@ -949,6 +985,40 @@ void GuiShell::lightgunFromScreen(float ox, float oy, float drawW, float drawH, 
     host.lightgunAim(x, y, ImGui::IsMouseDown(ImGuiMouseButton_Left));
 }
 
+// ============================================================== SF3 OLED window
+// The SYMBiFACE III's 128 x 32 OLED as the CPC wrote it (functions 200-210, sf3.h): the two
+// text rows (202 upper, 203 lower) and the texts placed at x, y in a 10, 18 or 26 px font.
+void GuiShell::windowSf3Oled() {
+    bool& open = panelOpen("SF3 OLED");
+    if (!open) return;
+    if (ImGui::Begin("SF3 OLED", &open)) {
+        WrapText wrapText;                     // text wraps at the window's edge
+        Symbiface3* sf3 = host.emu && host.emu->sf3 && host.emu->sf3->enabled ? host.emu->sf3 : nullptr;
+        if (!sf3) ImGui::TextDisabled("No SYMBiFACE III is fitted (Expansions: Symbiface / SF3).");
+        else {
+            const float scale = std::max(1.0f, std::floor(ImGui::GetContentRegionAvail().x / 128.0f));
+            const ImVec2 o = ImGui::GetCursorScreenPos();
+            ImDrawList* d = ImGui::GetWindowDrawList();
+            d->AddRectFilled(o, ImVec2(o.x + 128 * scale, o.y + 32 * scale), IM_COL32(0, 0, 0, 255));
+            const ImU32 ink = IM_COL32(120, 200, 255, 255);
+            ImFont* font = ImGui::GetFont();
+            for (int row = 0; row < 2; row++)
+                d->AddText(font, 14.0f * scale, ImVec2(o.x + 2 * scale, o.y + (row * 16 + 1) * scale), ink, sf3->oledRows[(size_t)row].c_str());
+            for (const auto& t : sf3->oledTexts) {
+                const float px = t.font >= 26 ? 26.0f : t.font >= 18 ? 18.0f : 10.0f;
+                d->AddText(font, px * scale, ImVec2(o.x + t.x * scale, o.y + t.y * scale), ink, t.text.c_str());
+            }
+            ImGui::Dummy(ImVec2(128 * scale, 32 * scale));
+            const Sf3Audio& a = *sf3->audio;
+            static const char* modes[] = { "MP3A (SymAmp)", "MP3B (USB player)", "REG (samples)", "SYNTH (MIDI)", "FM" };
+            ImGui::TextDisabled("Sound card: %s%s", modes[(int)a.mode], a.route == 6 ? ", EMR MIDI on" : "");
+            if (a.playing()) ImGui::TextDisabled("Playing: %s", a.nowPlaying().c_str());
+            if (!a.lastFault().empty()) ImGui::TextDisabled("Last error: %s", a.lastFault().c_str());
+        }
+    }
+    ImGui::End();
+}
+
 // ============================================================== Printer window
 void GuiShell::windowPrinter() {
     bool& open = panelOpen("Printer");
@@ -1164,6 +1234,99 @@ void GuiShell::drawGfxMonitor(ImDrawList* dl, float x, float y, float w, float h
     }
 }
 
+// The GFX9000's picture alone. Full screen: the window over the whole display it was on, with
+// no frame, its own platform window (never merged into the main one), on top.
+void GuiShell::windowGfxScreen() {
+    bool& open = panelOpen("GFX9000 screen");
+    gfxScreenFocused = false;
+    if (!open) { if (gfxScreenFull) toggleGfxScreenFull(); return; }
+    ImGuiWindowFlags flags = ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse;
+    if (gfxScreenFull) {
+        const ImGuiPlatformIO& pio = ImGui::GetPlatformIO();
+        if (gfxScreenMonitor >= 0 && gfxScreenMonitor < pio.Monitors.Size) {
+            const ImGuiPlatformMonitor& m = pio.Monitors[gfxScreenMonitor];
+            ImGui::SetNextWindowPos(m.MainPos);
+            ImGui::SetNextWindowSize(m.MainSize);
+        }
+        ImGuiWindowClass wc;
+        wc.ViewportFlagsOverrideSet = ImGuiViewportFlags_NoAutoMerge | ImGuiViewportFlags_NoDecoration | ImGuiViewportFlags_TopMost;
+        ImGui::SetNextWindowClass(&wc);
+        ImGui::SetNextWindowDockID(0);
+        flags |= ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoDocking |
+                 ImGuiWindowFlags_NoSavedSettings;
+    } else {
+        // A window of its own (a system window, never merged into the main one), so it can
+        // be dragged anywhere, onto another display; docking it is still allowed. 640 x 480
+        // the first time, at the main window's top right; never smaller than 320 x 240.
+        const ImGuiViewport* vp = ImGui::GetMainViewport();
+        ImGui::SetNextWindowSize(ImVec2(640, 480), ImGuiCond_FirstUseEver);
+        ImGui::SetNextWindowPos(ImVec2(vp->Pos.x + std::max(0.0f, vp->Size.x - 680), vp->Pos.y + 60), ImGuiCond_FirstUseEver);
+        // back from full screen: where it was and its size (once), the frame and the "on top"
+        // the full screen gave its system window taken off again
+        if (gfxRestorePending) {
+            if (gfxRestore[2] >= 320 && gfxRestore[3] >= 240) {
+                ImGui::SetNextWindowPos(ImVec2(gfxRestore[0], gfxRestore[1]));
+                ImGui::SetNextWindowSize(ImVec2(gfxRestore[2], gfxRestore[3]));
+            } else {
+                ImGui::SetNextWindowPos(ImVec2(vp->Pos.x + std::max(0.0f, vp->Size.x - 680), vp->Pos.y + 60));
+                ImGui::SetNextWindowSize(ImVec2(640, 480));
+            }
+            gfxRestorePending = false;
+        }
+        ImGui::SetNextWindowSizeConstraints(ImVec2(320, 240), ImVec2(FLT_MAX, FLT_MAX));
+        ImGuiWindowClass wc;
+        wc.ViewportFlagsOverrideSet = ImGuiViewportFlags_NoAutoMerge;
+        wc.ViewportFlagsOverrideClear = ImGuiViewportFlags_NoDecoration | ImGuiViewportFlags_TopMost;
+        ImGui::SetNextWindowClass(&wc);
+    }
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0, 0, 0, 1));
+    const bool visible = ImGui::Begin("GFX9000 screen", &open, flags);
+    ImGui::PopStyleColor();
+    ImGui::PopStyleVar();
+    if (visible) {
+        gfxScreenFocused = ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows);
+        // full screen asked for: on the display the window is on now; its place and size
+        // kept for the way back
+        if (gfxScreenFull && gfxScreenMonitor < 0) {
+            gfxScreenMonitor = std::max(0, (int)static_cast<ImGuiViewportP*>(ImGui::GetWindowViewport())->PlatformMonitor);
+            const ImVec2 p = ImGui::GetWindowPos(), sz = ImGui::GetWindowSize();
+            gfxRestore[0] = p.x; gfxRestore[1] = p.y; gfxRestore[2] = sz.x; gfxRestore[3] = sz.y;
+        }
+        const ImVec2 avail = ImGui::GetContentRegionAvail(), at = ImGui::GetCursorScreenPos();
+        float w = avail.x, h = avail.y;
+        if (host.maintainAspect) { h = std::min(avail.y, avail.x * 0.75f); w = h * 4.0f / 3.0f; }
+        const float x = at.x + (avail.x - w) * 0.5f, y = at.y + (avail.y - h) * 0.5f;
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        int vw = 0, vh = 0;
+        if (!host.v9990Enabled) {
+            const char* msg = "No GFX9000 fitted (Settings > Expansions)";
+            const ImVec2 ts = ImGui::CalcTextSize(msg);
+            dl->AddText(ImVec2(at.x + (avail.x - ts.x) * 0.5f, at.y + (avail.y - ts.y) * 0.5f), ImGui::GetColorU32(ImGuiCol_TextDisabled), msg);
+        } else if (host.gfx9000Monitor == "video9000" && uploadTexture && host.video9000Picture(video9000Pixels, vw, vh)) {
+            video9000Texture = uploadTexture(3, video9000Pixels.data(), vw, vh);
+            dl->AddImage((ImTextureID)(intptr_t)video9000Texture, ImVec2(x, y), ImVec2(x + w, y + h));
+        } else {
+            drawGfxMonitor(dl, x, y, w, h);
+        }
+        ImGui::InvisibleButton("##gfxscreen", ImVec2(std::max(1.0f, avail.x), std::max(1.0f, avail.y)));
+        if (ImGui::IsItemClicked(ImGuiMouseButton_Left) && host.emulatedMouseActive() && !host.mouseCaptured) mouseCaptureRequested = true;
+        if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(0) && !host.emulatedMouseActive()) toggleGfxScreenFull();
+        if (ImGui::BeginPopupContextItem("##gfxscreenmenu")) {
+            if (ImGui::MenuItem(gfxScreenFull ? "Leave full screen" : "Full screen on this display", "F11")) toggleGfxScreenFull();
+            ImGui::EndPopup();
+        }
+    }
+    ImGui::End();
+    if (!open && gfxScreenFull) toggleGfxScreenFull();     // closed while full: it opens framed next time
+}
+
+void GuiShell::toggleGfxScreenFull() {
+    gfxScreenFull = !gfxScreenFull;
+    gfxScreenMonitor = -1;
+    if (!gfxScreenFull) gfxRestorePending = true;
+}
+
 // Everything of the GFX9000's in one window: fitted or not, where its picture goes, the
 // picture, and the V9990's state, registers, palette and VRAM.
 void GuiShell::windowGfx9000() {
@@ -1175,11 +1338,21 @@ void GuiShell::windowGfx9000() {
         if (head.checkbox("Fitted", &gfx)) host.setV9990(gfx);
         head.spacing = 20.0f;
         static const char* places[] = { "beside", "window", "switch", "video9000" };
-        static const char* placeNames[] = { "beside the CPC's screen", "in this window", "one monitor, switched", "one monitor, via a Video9000" };
+        static const char* placeNames[] = { "beside the CPC's screen", "its own GFX9000 screen window", "one monitor, switched", "one monitor, via a Video9000" };
         int place = 0;
         for (int i = 0; i < 4; i++) if (host.gfx9000Monitor == places[i]) place = i;
         head.field(ImGui::GetFontSize() * 18, "picture");
-        if (ImGui::Combo("picture", &place, placeNames, 4)) host.gfx9000Monitor = places[place];
+        if (ImGui::Combo("picture", &place, placeNames, 4)) {
+            host.gfx9000Monitor = places[place];
+            if (host.gfx9000Monitor == "window") panelOpen("GFX9000 screen") = true;
+        }
+        if (head.button(panelOpen("GFX9000 screen") ? "Show the screen window" : "Open the screen in its own window")) {
+            panelOpen("GFX9000 screen") = true;
+            focusWindowNextFrame = "GFX9000 screen";
+        }
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("The GFX9000's picture alone, in a window you can drag anywhere, onto another display,\n"
+                              "and make full screen there (F11 or a double-click).");
         if (!host.v9990Enabled) ImGui::TextDisabled("Not fitted.");
         else if (ImGui::BeginTabBar("##gfxtabs")) {
           if (ImGui::BeginTabItem("Picture")) {

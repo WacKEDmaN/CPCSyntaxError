@@ -95,6 +95,13 @@ public:
     float mechanicsVolume = 0.5f;
     std::array<bool, 512> keyHeld{};   // SDL scancodes down, so a key repeat does not click
     float masterVolume = 0.6f;
+    // Each sound source's own level under the master volume, 0..2 (1 = as the device puts it
+    // out): the CPC's AY, the printer-port DAC, the speech synthesisers, LambdaSpeak 3's MP3
+    // module, the SYMBiFACE III's sound card, the PlayCity and the OPL4.
+    float volAy = 1, volDac = 1, volSpeech = 1, volLs3Mp3 = 1, volSf3 = 1, volPlayCity = 1, volOpl4 = 1;
+    struct SoundLevel { const char* key; const char* name; float EmuHost::* level; };
+    static const std::vector<SoundLevel>& soundLevels();
+    bool soundFitted(const char* key) const;   // is that source in the machine now
     int sampleRate = 44100;
 
     // input / expansion options
@@ -256,8 +263,12 @@ public:
     // Both cards' IDE/CF interface: this folder is its disc ("symide" beside the program,
     // set by main). Made when the card is turned on and the folder is not there yet.
     std::string ideFolder;
+    // The SYMBiFACE III's USB stick (drive 1:) and SD card (drive 0:) for its SE-ONE player
+    // and samples: folders on this computer ("" = none).
+    std::string sf3UsbFolder, sf3SdFolder;
     std::string ls3EepromFile;       // LambdaSpeak 3's 128 KB EEPROM, kept between sessions ("" = not kept)
     void setIdeFolder(const std::string& folder);
+    void setSf3Folder(bool usb, const std::string& folder);   // the USB stick (true) or the SD card
     void rescanIde();
     float mouseSensitivity = 1.0f;
 
@@ -344,11 +355,31 @@ public:
     // firmware and the stack and jumps to it. A GX4000 has no firmware: the ROMs over the program are paged
     // out and the PC set. `how` says which. False with no machine.
     bool startProgram(const std::vector<uint8_t>& bytes, int load, int run, std::string& how);
+    // The C build's snapshot maker (CToolchain::makeSnapshot): a second machine, apart from
+    // the shown one, made from the ROMs of the current model (of a 6128 when the current one
+    // has no firmware or is a Plus), taken to the BASIC prompt, the program put in and MC
+    // START PROGRAM set up as startProgram does; its .sna is the result. The ROMs are read
+    // now; the function itself may run on another thread. Empty when the ROMs are missing.
+    std::function<bool(const std::vector<uint8_t>&, int, int, std::vector<uint8_t>&, std::string&)> programSnapshotMaker();
 
     // ---- RECORDING (core/media_recorder.h): every frame's picture and sound to a file ----
     // "mjpeg" (an AVI most players play), "zmbv" (a lossless AVI) or, by the file's name, a
     // .wav of the sound alone.
-    std::string recordFormat = "mjpeg";
+    std::string recordFormat = "mjpeg";   // "mjpeg", "zmbv" or "h264" (ffmpeg)
+    std::string ffmpegPath;               // ffmpeg's program for H.264; "" = on the PATH
+    // The picture a video recording takes: "shown" (as the screen shows it: the GFX9000's on
+    // a switched monitor or through a Video9000, both side by side when it has a picture of its
+    // own, beside the CPC's or in the GFX9000 screen window), "cpc", "gfx" (the GFX9000's, scaled to the CPC's frame at 4:3, black bars), or
+    // "both" (side by side, twice as wide). The frame's size is set when it starts.
+    std::string recordSource = "shown";
+    int recordWidth = 0, recordHeight = 0;
+    std::vector<uint32_t> recordCanvas;
+    // "screen": the picture as drawn, read back by main after each frame (recordWidth x
+    // recordHeight, pixels 0xAABBGGRR); screenPictureSize is its drawn size in pixels, which
+    // the recording takes when it starts.
+    std::vector<uint32_t> screenCapture;
+    int screenPictureW = 0, screenPictureH = 0;
+    const uint32_t* recordPicture();      // this frame's picture for the recorder
     std::string recordDir = "recordings";    // where the save dialog starts (set by main)
     MediaRecorder recorder;
     bool startRecording(const std::string& path, std::string& why);

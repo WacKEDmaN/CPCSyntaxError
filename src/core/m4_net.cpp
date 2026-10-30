@@ -240,6 +240,14 @@ void M4Network::closeSocket(int s) {
     if (s >= 1 && s < SOCKETS) socks[s].reset();
 }
 
+bool M4Network::openSocket(int s) {
+    if (!online() || s < 1 || s >= SOCKETS) return false;
+    socks[s] = std::make_unique<Sock>();
+    return true;
+}
+
+bool M4Network::socketFree(int s) const { return s >= 1 && s < SOCKETS && !socks[s]; }
+
 void M4Network::closeAll() {
     for (int s = 1; s < SOCKETS; s++) socks[s].reset();
     socks[0] = std::make_unique<Sock>();

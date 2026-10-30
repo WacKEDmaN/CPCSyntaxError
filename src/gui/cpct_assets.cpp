@@ -11,7 +11,9 @@
 #include <sstream>
 
 #include "cpct_img.h"
+#include "cpct_media.h"
 #include "zx_compress.h"
+#include "core/dsk.h"
 
 namespace fs = std::filesystem;
 
@@ -208,7 +210,164 @@ bool readTmx(const fs::path& file, std::vector<TmxLayer>& layers, int& mapW, int
     if (layers.empty()) { why = "no layer"; return false; }
     return true;
 }
+// The project's cfg/*.mk files in the order make reads them: those cfg/build_config.mk
+// includes, then those the Makefile includes after it (diskSectors' disk_sector_manager.mk).
+std::vector<fs::path> projectMks(const fs::path& root) {
+    std::vector<fs::path> mks;
+    for (const fs::path& from : { root / "cfg" / "build_config.mk", root / "Makefile" }) {
+        std::istringstream in(readAll(from));
+        std::string l;
+        while (std::getline(in, l)) {
+            l = trim(l);
+            if (l.rfind("include cfg/", 0) != 0) continue;
+            const fs::path mk = root / trim(l.substr(8));
+            if (mk.filename() != "build_config.mk" && std::find(mks.begin(), mks.end(), mk) == mks.end()) mks.push_back(mk);
+        }
+    }
+    return mks;
+}
+
+// make's 16-bit address as cpc2cdt and iDSK read it: 0x hex or decimal; -1 if neither
+int address16(const std::string& s) {
+    char* end = nullptr;
+    long v;
+    if (s.size() > 2 && s[0] == '0' && s[1] == 'x') v = std::strtol(s.c_str() + 2, &end, 16);
+    else v = std::strtol(s.c_str(), &end, 10);
+    return !s.empty() && end && !*end && v >= 0 && v <= 0xffff ? (int)v : -1;
+}
+
 } // namespace
+
+MediaResult makeProjectMedia(const std::string& projectRoot, const std::string& cpctFolder, const std::string& projName,
+                             const std::vector<uint8_t>& bin, int load, int run) {
+    MediaResult r;
+    std::error_code ec;
+    const fs::path root = fs::u8path(projectRoot);
+    auto problem = [&](const Call* c, const std::string& text, bool error) {
+        CBuildMessage m;
+        if (c) { m.file = c->mk; m.line = c->line; }
+        m.text = (c ? c->macro + ": " : std::string()) + text;
+        m.error = error;
+        r.messages.push_back(m);
+        if (error) r.ok = false;
+    };
+    // build_config.mk's names and TARGET
+    Vars vars;
+    vars.v["PROJNAME"] = projName;
+    vars.v["OBJDIR"] = "obj";
+    vars.v["DSKFILESDIR"] = "dsk";
+    if (!cpctFolder.empty()) { vars.v["CPCT_PATH"] = cpctFolder + "/"; vars.v["CPCT_SRC"] = cpctFolder + "/src"; }
+    std::vector<Call> ignored;
+    readMk(root / "cfg" / "build_config.mk", vars, ignored);
+    auto var = [&](const char* name, const std::string& fallback) {
+        auto it = vars.v.find(name);
+        return it == vars.v.end() ? fallback : trim(vars.expand(it->second));
+    };
+    const std::string dskName = var("DSK", projName + ".dsk"), cdtName = var("CDT", projName + ".cdt"), snaName = var("SNA", projName + ".sna");
+    const std::string dskInc = var("DSKINC", "obj/" + dskName + ".dskinc");
+    const std::vector<std::string> target = words(var("TARGET", cdtName + " " + dskName + " " + dskInc + " " + snaName));
+    auto wants = [&](const std::string& n) { return std::find(target.begin(), target.end(), n) != target.end(); };
+
+    std::vector<Call> calls;
+    Vars mkVars = vars;
+    for (const fs::path& mk : projectMks(root)) if (fs::exists(mk, ec)) readMk(mk, mkVars, calls);
+    auto readBytes = [](const fs::path& p, bool& ok) {
+        std::ifstream f(p, std::ios::binary);
+        ok = (bool)f;
+        return std::vector<uint8_t>((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+    };
+
+    // ---- the disc: the program, the DSKFILESDIR files, then FILE2SECTOR
+    if (wants(dskName)) {
+        std::shared_ptr<Disk> disc = cpctNewDisc();
+        std::string why = cpctDiscImport(*disc, projName + ".bin", bin, 1, load, run);
+        if (!why.empty()) problem(nullptr, dskName + ": " + why, true);
+        if (wants(dskInc)) {
+            std::vector<fs::path> files;
+            for (auto it = fs::directory_iterator(root / var("DSKFILESDIR", "dsk"), ec); !ec && it != fs::directory_iterator(); it.increment(ec))
+                if (it->is_regular_file(ec)) files.push_back(it->path());
+            std::sort(files.begin(), files.end());
+            for (const fs::path& f : files) {
+                bool ok = false;
+                const std::vector<uint8_t> data = readBytes(f, ok);
+                const bool text = cpctLooksAscii(data);
+                why = ok ? cpctDiscImport(*disc, f.filename().u8string(), data, text ? 0 : 1, 0, 0) : "could not be read";
+                if (!why.empty()) problem(nullptr, dskName + ": " + f.filename().u8string() + ": " + why, true);
+                else { r.log += "disc: added " + f.filename().u8string() + (text ? " (text)" : "") + "\n"; r.discNeeded = true; }
+            }
+        }
+        std::string sectorDisc;
+        for (const Call& c : calls) {
+            if (c.macro != "FILE2SECTOR") continue;
+            const std::string cmd = c.args.empty() ? "" : c.args[0];
+            if (cmd == "SET_DSK_FILE") sectorDisc = c.args.size() > 1 ? c.args[1] : "";
+            else if (cmd == "ADD_DATA_FILE") {
+                if (sectorDisc != dskName) { problem(&c, "only the project's own disc (" + dskName + ") is written here; SET_DSK_FILE names '" + sectorDisc + "'", true); continue; }
+                const std::string file = c.args.size() > 1 ? c.args[1] : "", where = c.args.size() > 2 ? c.args[2] : "";
+                bool ok = false;
+                const std::vector<uint8_t> data = readBytes(root / fs::u8path(file), ok);
+                why = !ok ? file + " could not be read" : data.empty() ? file + " is empty" : data.size() > 65536 ? file + " is over 64K" : cpctDiscWriteSectors(*disc, data, where);
+                if (!why.empty()) problem(&c, why, true);
+                else { r.log += "disc: " + file + " (" + std::to_string(data.size()) + " bytes) written to " + where + "\n"; r.discNeeded = true; }
+            } else problem(&c, "unknown command " + cmd, true);
+        }
+        r.dskPath = (root / fs::u8path(dskName)).u8string();
+        const Bytes image = cpctDiscImage(*disc);
+        std::ofstream f(fs::u8path(r.dskPath), std::ios::binary);
+        f.write((const char*)image.data(), (std::streamsize)image.size());
+        char addresses[40];
+        std::snprintf(addresses, sizeof addresses, "load &%04X, run &%04X", load & 0xffff, run & 0xffff);
+        if (!f) problem(nullptr, "could not write " + r.dskPath, true);
+        else r.log += "disc: " + dskName + " (" + projName + ".bin, " + addresses + ")\n";
+    }
+
+    // ---- the tape: CDTMAN's list of files, else the program as a firmware file "Game"
+    if (wants(cdtName)) {
+        struct Entry { std::string file, type, name; int load = -1, run = -1; const Call* c = nullptr; };
+        std::vector<Entry> list;
+        std::string filename = "Game";
+        for (const Call& c : calls) {
+            if (c.macro != "CDTMAN") continue;
+            const auto arg = [&](size_t i) { return i < c.args.size() ? c.args[i] : std::string(); };
+            const std::string cmd = arg(0);
+            if (cmd == "SET_FILENAME") {
+                filename.clear();
+                for (char ch : arg(1)) if (ch != '\'') filename += ch;
+                if (filename.size() > 16) problem(&c, "'" + filename + "' is longer than the 16 characters a tape name can have", true);
+            } else if (cmd == "ADDFILE") {
+                Entry e{ arg(2), arg(1), filename, address16(arg(3)), address16(arg(4)), &c };
+                if (e.type == "firmware" && (e.load < 0 || e.run < 0)) { problem(&c, "a firmware file needs its load and run addresses", true); continue; }
+                list.push_back(e);
+            } else if (cmd == "ADD_GENERATED_BIN") {
+                Entry e{ "", arg(1) == "miniload" ? "generated_ml" : "generated_fw", filename, address16(arg(2)), address16(arg(3)), &c };
+                list.push_back(e);
+            } else problem(&c, cmd + " (CPCtelera's miniloader) is not made here: its loader is CPCtelera's own Z80 code", true);
+        }
+        if (list.empty()) list.push_back(Entry{ "", "firmware_bin", filename });
+        std::vector<uint8_t> cdt;
+        for (const Entry& e : list) {
+            std::vector<uint8_t> data = bin;
+            if (!e.file.empty()) {
+                bool ok = false;
+                data = readBytes(root / fs::u8path(e.file), ok);
+                if (!ok) { problem(e.c, e.file + " could not be read", true); continue; }
+            }
+            if (e.type == "generated_fw" || e.type == "firmware_bin") cpctTapeAddFile(cdt, data, e.name, "cpc", e.load >= 0 ? e.load : load, e.run >= 0 ? e.run : run, 3000);
+            else if (e.type == "firmware") cpctTapeAddFile(cdt, data, e.name, "cpc", e.load, e.run, 3000);
+            else if (e.type == "basic") cpctTapeAddFile(cdt, data, e.name, "cpc", -1, -1, 3000);
+            else if (e.type == "ascii") cpctTapeAddFile(cdt, data, e.name, "cpctxt", -1, -1, -1);
+            else { problem(e.c, "format '" + e.type + "' (CPCtelera's miniloader) is not made here", true); continue; }
+            r.log += "tape: " + (e.file.empty() ? projName + ".bin" : e.file) + " as '" + e.name + "' (" + e.type + ")\n";
+        }
+        r.cdtPath = (root / fs::u8path(cdtName)).u8string();
+        std::ofstream f(fs::u8path(r.cdtPath), std::ios::binary);
+        f.write((const char*)cdt.data(), (std::streamsize)cdt.size());
+        if (!f) problem(nullptr, "could not write " + r.cdtPath, true);
+    }
+
+    if (wants(snaName)) { r.wantSna = true; r.snaPath = (root / fs::u8path(snaName)).u8string(); }
+    return r;
+}
 
 AssetResult convertProjectAssets(const std::string& projectRoot, const std::string& srcDir, const std::string& cpctFolder, bool force) {
     AssetResult r;
@@ -224,16 +383,7 @@ AssetResult convertProjectAssets(const std::string& projectRoot, const std::stri
         if (error) r.ok = false;
     };
 
-    // the .mk files in the order build_config.mk includes them
-    std::vector<fs::path> mks;
-    {
-        std::istringstream in(readAll(root / "cfg" / "build_config.mk"));
-        std::string l;
-        while (std::getline(in, l)) {
-            l = trim(l);
-            if (l.rfind("include cfg/", 0) == 0) mks.push_back(root / trim(l.substr(8)));
-        }
-    }
+    const std::vector<fs::path> mks = projectMks(root);
     Vars vars;
     vars.v["SRCDIR"] = "src";
     vars.v["OBJDIR"] = "obj";
@@ -638,8 +788,9 @@ AssetResult convertProjectAssets(const std::string& projectRoot, const std::stri
             writeText(outs[0], s);
             note("packed " + std::to_string(files.size()) + " file(s) with " + method + " -> " + outfile + ".s (" + unS + " -> " + czS + " bytes)");
             r.converted++;
-        } else if (c.macro.rfind("CDTMAN", 0) == 0 || c.macro.rfind("FILE2SECTOR", 0) == 0 || c.macro == "DISKSECTOR") {
-            // tape and disc images: not needed to run the program in the emulator
+        } else if (c.macro == "CDTMAN" || c.macro == "FILE2SECTOR" || c.macro == "APKMAN") {
+            // the tape and the disc are made after the link (makeProjectMedia); APKMAN packs
+            // an Android APK, which has no use here
         } else {
             problem(&c, "not a step this build knows; left out", false);
         }

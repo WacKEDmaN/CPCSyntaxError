@@ -106,6 +106,7 @@ private:
     bool highlight = true;
     AsmColours colours = defaultAsmColours();
     uint64_t sourceRevision = 0, indexedRevision = ~0ull;
+    bool indexedC = false;                      // the line index was made with C's comment rules
     std::vector<int> lineStarts;                // offset of each line in `source`
     std::vector<uint8_t> lineInComment;         // the line starts inside /* */
     void indexLines();
@@ -117,6 +118,7 @@ private:
     // result in when it is done.
     CToolchain ctools;
     bool cMode() const;
+    bool cSyntax() const;                       // colour the shown file as C (.c / .h)
     struct CRun {
         std::thread worker;
         std::mutex lock;
@@ -130,10 +132,52 @@ private:
     void pageForRun(int start, int length);     // the ROMs over the program paged out before it runs
     void startCBuild(bool thenRun, bool assetsOnly = false);   // assetsOnly: "Convert assets"
     void finishCBuild();
+    void insertBuiltDisc(const CBuildResult& res);
     void cSettingsPopup();
+
+    // C lines in the debugger (Debugger::sourceLines, from the build's .rst listings): the
+    // line at a stopped PC is marked and shown (its file opened in a tab if need be); a
+    // click on a line number toggles a breakpoint on that line's first address; F11 / F10 /
+    // Shift+F11 step a line, over a line, out of the function.
+    std::map<std::pair<std::string, int>, int> lineFirstAddress;   // (canonical file, line) -> address
+    std::map<std::string, std::string> lineFileKey;                // table file name -> canonical
+    int followPc = -1;                          // the stopped PC last shown
+    int scrollToLine = -1;                      // bring this line into view next frame
+    void setCLines(const std::vector<CSourceLine>& lines);
+    int openFileTab(const std::string& file);   // the file's tab, opened if need be; -1 if unreadable
+    void followStoppedLine();
 
     int gotoLine = -1;                          // move the editor's cursor here next frame
     static int editorCallback(ImGuiInputTextCallbackData* data);
+
+    // Run to cursor (Ctrl+F10): the machine runs, past every breakpoint, to the first code
+    // of the cursor's line (or of the first line after it with code). C: from the line
+    // table. Assembly: the main file assembled again aside (nothing loaded) with
+    // "__cpcse_cursor__ equ $" before the cursor's line, whose value is the address.
+    int cursorPos = 0;                          // the editor's cursor, a byte offset in `source`
+    // Mouse-over (once built and in memory): a name under the mouse shows its address and
+    // what memory holds there (its size from the listings when known: a byte, a word, a
+    // long, or the bytes); in assembly a register shows its value. The right-click menu runs
+    // to the line under the mouse.
+    std::map<std::string, int> symbolSizes;    // from the C build's listings
+    int menuLine = -1;                          // the line the right-click menu is for
+    bool wordUnderMouse(const char* childName, float lineH, std::string& word, int& line);
+    void symbolTooltip(const std::string& word);
+    void runToLine(int line);
+public:
+    void runToCursor();
+    // for the checks: the tooltip's text for a word, as the mouse-over would show it ("" = none)
+    std::string hoverText(const std::string& word);
+    void setCursorLine(int line);               // for the checks: the cursor to a line's start
+private:
+    int asmLineAddress(int line, std::string& why);
+    // Whether the built program has been started (Build + run, or a Run to cursor that
+    // started it) since it was built; else Run to cursor starts it first. The bytes of the
+    // last C build, to start it as Build + run does.
+    bool programStarted = false;
+    std::vector<uint8_t> lastBytes;
+    bool pcInProgram() const;                   // the PC in the program's RAM (no ROM over it)
+    std::string startForRun();                  // starts the program as Build + run does; how, or "" if it cannot
     std::string displayName() const;
 };
 

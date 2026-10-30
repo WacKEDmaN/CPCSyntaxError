@@ -216,6 +216,7 @@ add_executable(cpcse
   src/gui/gui_assembler.cpp
   src/gui/c_build.cpp
   src/gui/cpct_assets.cpp
+  src/gui/cpct_media.cpp
   src/gui/cpct_img.cpp
   src/gui/png_decode.cpp
   src/gui/zx_compress.cpp

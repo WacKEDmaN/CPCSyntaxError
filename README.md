@@ -155,6 +155,18 @@ Select the expansions in the **Expansions** menu or in the Settings window.
   is a folder on your PC: `symide` next to the program, or a folder that you select. SymbOS
   reads and writes it as one FAT16 partition. The **X-MASS** is the same IDE/CF interface
   alone, at `&FD08`.
+- **SYMBiFACE III**, more:
+  - **Its sound card** (the SE-ONE at `&FF20`): SymAmp plays MP3 files through it, with
+    volume, balance, bass, treble and the spectrum. TMTLOGIC's SE-ONE player, samples, speech
+    sounds and MIDI programs work. The **USB stick** and the **SD card** are folders on your PC
+    (Expansions → Symbiface).
+  - **Its WiFi** uses the network of your PC. **Web radio works**: TMTLOGIC's `WEB-DK.BAS`
+    plays its station.
+  - **Its other functions**: `|VER`, the clock, the buzzer, the measurements and the **OLED**
+    display (Expansions → Symbiface → SF3 OLED display).
+  - MP3 and WAV are decoded in the emulator. AAC, AAC+, Ogg, WMA, M4A/MP4, FLAC and Opus need
+    [ffmpeg](https://ffmpeg.org) on your PC: on the PATH, or named with `ffmpeg=` in
+    `cpcse.ini`.
 - **Mouse interfaces** (Input → Mouse interface): the **AMX mouse** on the joystick port, the
   **Kempston mouse** and TotO's **MultiPlay**. They are off while a Symbiface II or III is
   fitted, because the Symbiface has its own mouse.
@@ -177,6 +189,8 @@ Select the expansions in the **Expansions** menu or in the Settings window.
   the printer port, and the DigiBlaster and AmDrum. You can save printer pages as BMP or SVG.
 - **Drive and keyboard sounds**: the drive motor, the head steps, disc insert and eject, and
   key clicks. They are recordings in `sounds/`. You can replace them with your own WAV files.
+- **A volume for each sound device** (Audio → Sound sources): the CPC, the DACs, speech, the
+  LambdaSpeak 3 MP3 module, the SYMBiFACE III, the PlayCity and the OPL4, each from 0 to 200%.
 
 ### Tools
 
@@ -207,9 +221,11 @@ Select the expansions in the **Expansions** menu or in the Settings window.
   **Ctrl+Shift+1** to **Ctrl+Shift+9** save it. Each slot is a `.sna` file and a picture in
   `states/<program>/`, so the slots stay from one session to the next. The Snapshot window
   shows them as pictures. **File → Undo the last load** gives back the machine as it was.
-- **Recording** (File → Record): video and sound into an AVI, as **MJPEG** (most players,
-  Windows' own player too) or **ZMBV** (lossless and small: VLC, ffmpeg and video editors),
-  or the sound only into a WAV. Every frame is recorded, also at unlimited speed.
+- **Recording** (File → Record): video and sound into an AVI as **MJPEG** (most players,
+  Windows' own player too), into an MP4 as **H.264** with [ffmpeg](https://ffmpeg.org) (small
+  files: 90 seconds is about 3.5 MB), or the sound only into a WAV. The picture can be the one
+  shown, the CPC, the GFX9000, both side by side, or the screen with its CRT effects. Every
+  frame is recorded, also at unlimited speed.
 - **The timeline** (Machine window, on by default): a snapshot of the machine every second
   and every input since. **Ctrl+Left** goes a second back (hold it to go on). The snapshots
   are exact: from one, with the same inputs, the machine runs the same, instruction for
@@ -242,7 +258,13 @@ Select the expansions in the **Expansions** menu or in the Settings window.
   - The project's `cfg/*.mk` asset steps run first: images, Tiled maps, Arkos Tracker 3 music,
     packed data (zx0, zx1, zx7b) and `.bin` files. **Convert assets** runs all of them again.
   - All 58 example projects of CPCtelera's "next" branch build and run.
-  - SDCC is not included: install it separately.
+  - SDCC is not included: install it separately. [z88dk](https://z88dk.org) can be the
+    compiler in its place (sccz80 or zsdcc), in **C settings...**.
+  - A CPCtelera project's disc and tape images and an SNA snapshot are made too.
+  - Step a C line (F10, F11, Shift+F11) and click the gutter to set a breakpoint.
+- **Run to cursor** (Ctrl+F10, or the right-click menu) runs to the line under the cursor and
+  goes past every breakpoint on the way, in assembly and in C. Put the mouse on a variable or
+  a label to see its address and its value.
 - **The BASIC window** (next to the assembler) lists the BASIC program in the machine, edits
   it, and puts it back into memory at once, as if it had been typed. It can type RUN for you.
   Its tokenizer is checked byte for byte against Locomotive BASIC itself.
@@ -348,6 +370,8 @@ These files are next to the program. **Window → Reset layout** sets the defaul
 | Ctrl+1 to Ctrl+9 | Load quick save slot 1 to 9 |
 | Ctrl+Shift+1 to Ctrl+Shift+9 | Save quick save slot 1 to 9 |
 | F9, Ctrl+F9 | Assemble, assemble and run (in the assembler window); build, build and run for a `.c` file |
+| Ctrl+F10 | Run to the cursor's line, past the breakpoints (in the assembler window) |
+| F10, F11, Shift+F11 | Step a C line over, into, out (in the assembler window, for a `.c` file) |
 | F12, middle button | Release the mouse (click the picture to give the mouse to the Symbiface or the mouse interface) |
 
 The keys go to the CPC. The exception is when a debugger or assembler window has the focus.
@@ -379,7 +403,10 @@ cpcse.exe --shot out.bmp --model cpc6128 --frames 200 [--disk game.dsk] [--type 
           [--serial tcp:<host>:<port>|listen:<port>|com:<port>|loopback]
           [--gfx9000] [--v9990-shot gfx.bmp] [--video9000-shot mixed.bmp]
           [--opl4] [--playcity] [--speech ssa1|dktronics|lambdaspeak3] [--mp3card <folder>]
-          [--dac digiblaster|amdrum] [--wav out.wav] [--record out.avi|out.wav] [--record-format mjpeg|zmbv]
+          [--dac digiblaster|amdrum] [--wav out.wav] [--record out.avi|out.mp4|out.wav]
+          [--record-format mjpeg|h264] [--record-source shown|cpc|gfx|both]
+          [--sf3-usb <folder>] [--sf3-sd <folder>] [--z88dk <folder>] [--sccz80]
+          [--gfx9000-monitor beside|window|switch|video9000]
           [--mouse "w120;j5,60;j16,2;tDIR;kEnter;s<file.bmp>"]
 ```
 
@@ -392,7 +419,9 @@ cpcse.exe --shot out.bmp --model cpc6128 --frames 200 [--disk game.dsk] [--type 
   emulator saves the tape in that file.
 - `--raster-overlay` draws the raster timing overlay on the picture.
 - `--record` records the whole run: an `.avi` with picture and sound (`--record-format`
-  `mjpeg`, the default, or `zmbv`, lossless), or a `.wav` with the sound only.
+  `mjpeg`, the default), an `.mp4` (`h264`, with ffmpeg), or a `.wav` with the sound only.
+  `--record-source` picks the picture.
+- `--sf3-usb` and `--sf3-sd` fit a SYMBiFACE III with that folder as its USB stick or SD card.
 - `--tape-fast` sets the fast loading of the tape: a speed in baud, `instant`, or `off`. At
   the end, the emulator prints the decision for each block.
 - `--mouse` runs a small script after all the other steps. The commands are: `w` (wait
@@ -570,6 +599,7 @@ third_party/   Dear ImGui (docking branch), RASM, ymfm, the SP0256 core, minimp3
 | M4 board | Working. Files, DSK images and raw SD sectors use a folder on the PC. The ROM source of the M4 checks them. The WiFi uses the network of your PC. |
 | Multiface II | Working: STOP, the menu, save and reload. |
 | Symbiface II and III, X-MASS | Working: the mouse, the RTC and the IDE/CF interface. The ATA standard and SymbOS check them. |
+| SYMBiFACE III sound card, WiFi and functions | Working: SymAmp's MP3 driver, TMTLOGIC's programs (SEPLAYER, SAMPLER, SE-TALK, SE-SYNTH, EMR, WEB-DK) and ROM, and SF3Monitor. Not emulated: the ROM banks, the file functions, DFU, MIDI files, the FM radio's sound. |
 | Mouse interfaces (AMX, Kempston, MultiPlay) | Working. Their CPCWiki pages check them. They are not yet tested with AMX Art, OCP Art Studio or Carrier Command. |
 | CRO ROM containers | Working. The two example files of the format start on the Plus. |
 | GFX9000 (V9990) and Video9000 | Working. The data comes from the application manual from Yamaha and from tests of a real V9990 on a CPC. The blitter speeds are from the measurements of openMSX. |
@@ -586,8 +616,9 @@ third_party/   Dear ImGui (docking branch), RASM, ymfm, the SP0256 core, minimp3
 
 - **SymAmp under SymbOS.** SA2 songs for 60 Hz or 70 Hz that set their speed in the pattern
   play approximately 1.4 times too slowly. The cause is the player of SymAmp, not the
-  emulator. A real CPC plays them at the same speed. MP3 playback is not available, because it
-  needs an MSX MP3 cartridge. The emulator does not have that cartridge.
+  emulator. A real CPC plays them at the same speed. For MP3 playback, fit a SYMBiFACE III.
+- **LambdaSpeak 3 in its Amdrum mode** takes all `&FFxx` ports. In that mode, the sound card
+  of the SYMBiFACE III does not answer.
 - **GFX9000.** Tests on real hardware show that some commands sometimes fail (a command that
   uses DY or NX/NY again can go wrong or stop). The emulator does not do this. The colour order
   of LMMV with DIX=1 is approximate.

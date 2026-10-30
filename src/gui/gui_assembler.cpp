@@ -10,6 +10,7 @@
 #include <filesystem>
 #include <fstream>
 #include <sstream>
+#include <unordered_set>
 
 #include "emuhost.h"
 #include "gui_debugger.h"
@@ -204,6 +205,253 @@ int AssemblerWindow::tabFor(const std::string& file) const {
     return -1;
 }
 
+int AssemblerWindow::openFileTab(const std::string& file) {
+    const int have = tabFor(file);
+    if (have >= 0) return have;
+    Tab tab;
+    if (!readText(file, tab.source)) return -1;
+    tab.path = file;
+    tab.lineCount = countLines(tab.source);
+    tabs.push_back(tab);
+    return (int)tabs.size() - 1;
+}
+
+void AssemblerWindow::setCLines(const std::vector<CSourceLine>& lines) {
+    std::vector<Debugger::SourceLine> table;
+    lineFirstAddress.clear();
+    lineFileKey.clear();
+    for (const CSourceLine& l : lines) {
+        table.push_back({ l.start, l.end, l.file, l.line });
+        auto key = lineFileKey.find(l.file);
+        if (key == lineFileKey.end()) key = lineFileKey.emplace(l.file, canonical(l.file)).first;
+        auto at = lineFirstAddress.find({ key->second, l.line });
+        if (at == lineFirstAddress.end() || l.start < at->second) lineFirstAddress[{ key->second, l.line }] = l.start;
+    }
+    debugger.setSourceLines(std::move(table));
+    followPc = -1;
+}
+
+// The machine stopped (a step, a breakpoint, Pause) on a C line: its tab shown, the line
+// brought into view. This happens once per stop, so the editor can be used while it stays stopped.
+void AssemblerWindow::followStoppedLine() {
+    if (!host.booted() || !host.emu || !host.paused || debugger.sourceLines.empty()) { if (!host.paused) followPc = -1; return; }
+    const int pc = host.emu->cpu->pc & 0xffff;
+    if (pc == followPc) return;
+    followPc = pc;
+    const Debugger::SourceLine* l = debugger.lineAt(pc);
+    if (!l) return;
+    const int tab = openFileTab(l->file);
+    if (tab < 0) return;
+    selectTab = tab;
+    scrollToLine = l->line;
+}
+
+void AssemblerWindow::setCursorLine(int line) {
+    int at = 0;
+    for (int l = 1; l < line && at < (int)source.size(); at++) if (source[(size_t)at] == '\n') l++;
+    cursorPos = at;
+}
+
+int AssemblerWindow::asmLineAddress(int line, std::string& why) {
+    namespace fs = std::filesystem;
+    if (activeTab != 0) { why = "for assembly it works in the main file's tab (the one F9 assembles)"; return -1; }
+    // the source with the marker before the line: an alias (EQU, its $ taken where it is,
+    // and exported with the labels; a variable "=" is not exported), not a label, so the
+    // local labels' scope (.name after a global label) stays as it is; no byte is added
+    std::string text = source;
+    size_t at = 0;
+    for (int l = 1; l < line && at < text.size(); at++) if (text[at] == '\n') l++;
+    text.insert(at, "__cpcse_cursor__ equ $\n");
+    std::error_code ec;
+    const fs::path previous = fs::current_path(ec);
+    if (!path.empty()) fs::current_path(fs::path(path).parent_path(), ec);
+    unsigned char* out = nullptr; int outLength = 0; s_rasm_info* info = nullptr; int fatal = 0;
+    const int ret = rasm_bridge_assemble(text.data(), (int)text.size(), syntax, &out, &outLength, &info, &fatal);
+    fs::current_path(previous, ec);
+    int address = -1;
+    for (int i = 0; info && i < info->nbsymbol; i++) {
+        if (!info->symbol[i].name) continue;
+        std::string n = info->symbol[i].name;
+        for (char& c : n) c = (char)std::tolower((unsigned char)c);
+        if (n == "__cpcse_cursor__") address = info->symbol[i].v & 0xffff;
+    }
+    rasm_bridge_free(out, info);
+    if (ret != 0 || fatal) why = "the source does not assemble with the marker on that line (inside a macro or a loop?)";
+    else if (address < 0) why = "rasm gave no address for that line";
+    return ret != 0 || fatal ? -1 : address;
+}
+
+void AssemblerWindow::runToCursor() {
+    runToLine(1 + (int)std::count(source.begin(), source.begin() + std::min<size_t>((size_t)std::max(cursorPos, 0), source.size()), '\n'));
+}
+
+// The name under the mouse in the editor (and the line, 1 = the first, even when there is
+// no name): the editor's text as drawHighlighted places it. Called right after the text box.
+bool AssemblerWindow::wordUnderMouse(const char* childName, float lineH, std::string& word, int& line) {
+    word.clear();
+    line = -1;
+    ImGuiWindow* child = ImGui::FindWindowByName(childName);
+    if (!child) return false;
+    indexLines();
+    const ImGuiStyle& style = ImGui::GetStyle();
+    const ImVec2 frame = ImGui::GetItemRectMin(), mouse = ImGui::GetIO().MousePos;
+    const float ox = frame.x + style.FramePadding.x - child->Scroll.x, oy = frame.y + style.FramePadding.y - child->Scroll.y;
+    const int row = (int)std::floor((mouse.y - oy) / lineH);
+    if (row < 0 || row >= (int)lineStarts.size()) return false;
+    line = row + 1;
+    const int a = lineStarts[(size_t)row];
+    const int b = row + 1 < (int)lineStarts.size() ? lineStarts[(size_t)row + 1] - 1 : (int)source.size();
+    if (b <= a) return false;
+    const std::string text = source.substr((size_t)a, (size_t)(b - a));
+    ImFont* font = ImGui::GetFont();
+    const float size = ImGui::GetFontSize();
+    int col = -1;
+    float x = ox;
+    for (int i = 0; i < (int)text.size(); i++) {
+        const float w = font->CalcTextSizeA(size, FLT_MAX, 0.0f, text.data() + i, text.data() + i + 1).x;
+        if (mouse.x >= x && mouse.x < x + w) { col = i; break; }
+        x += w;
+    }
+    const bool c = cSyntax();
+    auto inWord = [c](char ch) { return std::isalnum((unsigned char)ch) || ch == '_' || (!c && (ch == '.' || ch == '@')); };
+    if (col < 0 || !inWord(text[(size_t)col])) return false;
+    int s = col, e = col;
+    while (s > 0 && inWord(text[(size_t)s - 1])) s--;
+    while (e < (int)text.size() && inWord(text[(size_t)e])) e++;
+    word = text.substr((size_t)s, (size_t)(e - s));
+    if (std::isdigit((unsigned char)word[0])) word.clear();   // a number, not a name
+    return !word.empty();
+}
+
+std::string AssemblerWindow::hoverText(const std::string& word) {
+    if (word.empty() || !lastOk || !host.booted() || !host.emu || !host.emu->memory || !host.emu->cpu) return "";
+    GX4000* e = host.emu;
+    const Z80& z = *e->cpu;
+    auto peek = [e](int a) { return e->memory->readMapped(a & 0xffff) & 0xff; };
+    auto bytesAt = [&](int a, int n) {
+        std::string s;
+        char b[8];
+        for (int i = 0; i < n; i++) { std::snprintf(b, sizeof b, "%s%02X", i ? " " : "", peek(a + i)); s += b; }
+        return s;
+    };
+    std::string lw = word;
+    for (char& ch : lw) ch = (char)std::tolower((unsigned char)ch);
+    const bool c = cSyntax();
+    char b[320];
+    if (!c) {
+        // a register: its value now (and, for a pair, what it points at)
+        struct Reg { const char* name; int value; bool pair; };
+        const Reg regs[] = { { "a", z.a, false }, { "f", z.f, false }, { "b", z.b, false }, { "c", z.c, false }, { "d", z.d, false },
+                             { "e", z.e, false }, { "h", z.h, false }, { "l", z.l, false }, { "i", z.i, false }, { "r", z.r, false },
+                             { "ixh", z.ix >> 8, false }, { "ixl", z.ix & 0xff, false }, { "iyh", z.iy >> 8, false }, { "iyl", z.iy & 0xff, false },
+                             { "af", z.a << 8 | z.f, true }, { "bc", z.b << 8 | z.c, true }, { "de", z.d << 8 | z.e, true },
+                             { "hl", z.h << 8 | z.l, true }, { "ix", z.ix, true }, { "iy", z.iy, true }, { "sp", z.sp, true }, { "pc", z.pc, true } };
+        for (const Reg& r : regs) {
+            if (lw != r.name) continue;
+            if (r.pair) std::snprintf(b, sizeof b, "%s = &%04X (%d)\n(%s) = %s", word.c_str(), r.value & 0xffff, r.value & 0xffff, word.c_str(), bytesAt(r.value, 8).c_str());
+            else std::snprintf(b, sizeof b, "%s = &%02X (%d)", word.c_str(), r.value & 0xff, r.value & 0xff);
+            return b;
+        }
+    }
+    // the symbol: in assembly as written (any case); in C its "_name" (SDCC's and z88dk's), then as written
+    const std::pair<std::string, int>* found = nullptr;
+    for (const std::string& want : c ? std::vector<std::string>{ "_" + word, word } : std::vector<std::string>{ word }) {
+        for (const auto& s : symbols) {
+            bool same = s.first == want;
+            if (!same && !c && s.first.size() == want.size()) {
+                same = true;
+                for (size_t i = 0; i < want.size() && same; i++) same = std::tolower((unsigned char)s.first[i]) == std::tolower((unsigned char)want[i]);
+            }
+            if (same) { found = &s; break; }
+        }
+        if (found) break;
+    }
+    if (!found) return "";
+    const int at = found->second & 0xffff;
+    const auto sz = symbolSizes.find(found->first);
+    const int size = sz == symbolSizes.end() ? -1 : sz->second;
+    const Debugger::SourceLine* code = debugger.lineAt(at);
+    const std::string name = word + (c && found->first != word ? "  (" + found->first + ")" : "");   // C: the compiler's _name
+    if (code && code->start == at) {                    // a function
+        std::snprintf(b, sizeof b, "%s\nfunction at &%04X%s", name.c_str(), at, size > 0 ? (", " + std::to_string(size) + " bytes of code").c_str() : "");
+        return b;
+    }
+    if (!c) {                                           // an assembly label or constant
+        std::snprintf(b, sizeof b, "%s = &%04X (%d)\nat &%04X: %s", name.c_str(), at, at, at, bytesAt(at, 8).c_str());
+        return b;
+    }
+    const int v8 = peek(at), v16 = v8 | peek(at + 1) << 8;
+    const long v32 = (long)v16 | (long)peek(at + 2) << 16 | (long)peek(at + 3) << 24;
+    if (size == 1) std::snprintf(b, sizeof b, "%s\n&%04X, 1 byte: &%02X = %d (signed %d)", name.c_str(), at, v8, v8, (int)(int8_t)v8);
+    else if (size == 2) std::snprintf(b, sizeof b, "%s\n&%04X, 2 bytes: &%04X = %d (signed %d)", name.c_str(), at, v16, v16, (int)(int16_t)v16);
+    else if (size == 4) std::snprintf(b, sizeof b, "%s\n&%04X, 4 bytes: &%08lX = %lu (signed %ld)", name.c_str(), at, (unsigned long)v32, (unsigned long)v32, (long)(int32_t)v32);
+    else if (size > 4) std::snprintf(b, sizeof b, "%s\n&%04X, %d bytes: %s%s", name.c_str(), at, size, bytesAt(at, std::min(size, 16)).c_str(), size > 16 ? " ..." : "");
+    else std::snprintf(b, sizeof b, "%s\n&%04X: byte &%02X = %d, word &%04X = %d\n%s", name.c_str(), at, v8, v8, v16, v16, bytesAt(at, 8).c_str());
+    return b;
+}
+
+void AssemblerWindow::symbolTooltip(const std::string& word) {
+    const std::string text = hoverText(word);
+    if (!text.empty()) ImGui::SetTooltip("%s", text.c_str());
+}
+
+void AssemblerWindow::runToLine(int line) {
+    if (!host.booted()) return;
+    std::string why;
+    int address = -1;
+    if (!lineFirstAddress.empty() && !path.empty() && cSyntax()) {
+        // the C line, or the first line after it that has code
+        const std::string key = canonical(path);
+        for (int l = line; l < line + 200 && address < 0; l++) {
+            auto at = lineFirstAddress.find({ key, l });
+            if (at != lineFirstAddress.end()) address = at->second;
+        }
+        if (address < 0) why = "no code on that line or after it in this file";
+    } else if (cMode()) {
+        why = "build the C program first (F9): its lines' addresses come from the build";
+    } else {
+        address = asmLineAddress(line, why);
+    }
+    char b[200];
+    if (address < 0) { std::snprintf(b, sizeof b, "Run to line %d: %s", line, why.c_str()); summary = b; return; }
+    // built but not started (F9 only: the machine is still at the prompt): started first, as
+    // a debugger starts the program it is asked to run to a line of
+    std::string started;
+    if (!programStarted && !pcInProgram()) started = startForRun();
+    debugger.runToPassingBreakpoints(address);
+    std::snprintf(b, sizeof b, "Running to line %d (&%04X), past the breakpoints%s", line, address & 0xffff,
+                  started.empty() ? "" : ("; the program started (" + started + ")").c_str());
+    summary = b;
+}
+
+bool AssemblerWindow::pcInProgram() const {
+    if (!host.booted() || !host.emu || !host.emu->cpu || !host.emu->gateArray || lastLength <= 0 || lastStart < 0) return false;
+    const int pc = host.emu->cpu->pc & 0xffff;
+    if (pc < lastStart || pc >= lastStart + lastLength) return false;
+    // the RMR: bit 2 set = the lower ROM off, bit 3 set = the upper ROM off
+    const int rmr = host.emu->gateArray->romConfig;
+    if (pc < 0x4000 && !(rmr & 0x04)) return false;
+    if (pc >= 0xc000 && !(rmr & 0x08)) return false;
+    return true;
+}
+
+std::string AssemblerWindow::startForRun() {
+    if (!host.booted() || lastLength <= 0) return "";
+    std::string how;
+    if (!lastBytes.empty()) {
+        host.startProgram(lastBytes, lastStart, lastRun, how);    // C: from BASIC, MC START PROGRAM
+    } else {
+        const int entry = lastRun >= 0 ? lastRun : lastStart;     // assembly: at its entry, the ROMs over it off
+        pageForRun(lastStart, lastLength);
+        debugger.setPc(entry);
+        char b[32];
+        std::snprintf(b, sizeof b, "at &%04X", entry & 0xffff);
+        how = b;
+    }
+    programStarted = true;
+    return how;
+}
+
 void AssemblerWindow::storeActive() {
     if (activeTab < 0 || activeTab >= (int)tabs.size()) return;
     Tab& t = tabs[(size_t)activeTab];
@@ -259,6 +507,9 @@ void AssemblerWindow::loadSettings(const std::map<std::string, std::string>& ini
     if ((it = ini.find("asm_sdcc")) != ini.end()) ctools.sdccFolder = it->second;
     if ((it = ini.find("asm_cpctelera")) != ini.end()) ctools.cpcteleraFolder = it->second;
     if ((it = ini.find("asm_cflags")) != ini.end()) ctools.extraFlags = it->second;
+    if ((it = ini.find("asm_ccompiler")) != ini.end()) ctools.compiler = it->second == "z88dk" ? "z88dk" : "sdcc";
+    if ((it = ini.find("asm_z88dk")) != ini.end()) ctools.z88dkFolder = it->second;
+    if ((it = ini.find("asm_z88dk_sccz80")) != ini.end()) ctools.z88dkSccz80 = std::atoi(it->second.c_str()) != 0;
     if ((it = ini.find("asm_codeloc")) != ini.end()) ctools.codeLoc = (int)std::strtol(it->second.c_str(), nullptr, 0) & 0xffff;
     it = ini.find("asm_file");
     if (it != ini.end() && !it->second.empty()) {
@@ -275,6 +526,9 @@ void AssemblerWindow::saveSettings(std::ostream& out) const {
     out << "asm_sdcc=" << ctools.sdccFolder << "\n";
     out << "asm_cpctelera=" << ctools.cpcteleraFolder << "\n";
     out << "asm_cflags=" << ctools.extraFlags << "\n";
+    out << "asm_ccompiler=" << ctools.compiler << "\n";
+    out << "asm_z88dk=" << ctools.z88dkFolder << "\n";
+    out << "asm_z88dk_sccz80=" << (ctools.z88dkSccz80 ? 1 : 0) << "\n";
     char loc[16];
     std::snprintf(loc, sizeof loc, "0x%04X", ctools.codeLoc & 0xffff);
     out << "asm_codeloc=" << loc << "\n";
@@ -288,8 +542,10 @@ void AssemblerWindow::saveSettings(std::ostream& out) const {
 // Where each line starts, and whether it starts inside /* */ -- again only when the text
 // has changed.
 void AssemblerWindow::indexLines() {
-    if (indexedRevision == sourceRevision) return;
+    const bool c = cSyntax();
+    if (indexedRevision == sourceRevision && indexedC == c) return;
     indexedRevision = sourceRevision;
+    indexedC = c;
     lineStarts.assign(1, 0);
     lineInComment.assign(1, 0);
     bool inComment = false;
@@ -297,7 +553,8 @@ void AssemblerWindow::indexLines() {
     for (;;) {
         const size_t nl = source.find('\n', start);
         const std::string line = source.substr(start, nl == std::string::npos ? std::string::npos : nl - start);
-        highlightAsmLine(line, inComment);
+        if (c) highlightCLine(line, inComment);
+        else highlightAsmLine(line, inComment);
         if (nl == std::string::npos) break;
         start = nl + 1;
         lineStarts.push_back((int)start);
@@ -335,7 +592,7 @@ void AssemblerWindow::drawHighlighted(const char* childName, float lineH, float 
         bool inComment = lineInComment[(size_t)l] != 0;
         const float y = origin.y + (float)l * lineH;
         float x = origin.x;
-        for (const AsmSpan& s : highlightAsmLine(line, inComment)) {
+        for (const AsmSpan& s : indexedC ? highlightCLine(line, inComment) : highlightAsmLine(line, inComment)) {
             const char* begin = line.data() + s.start;
             const char* end = begin + s.length;
             dl->AddText(font, size, ImVec2(x, y), col[(size_t)s.kind], begin, end);
@@ -357,7 +614,7 @@ void AssemblerWindow::coloursPopup() {
         if (ImGui::ColorEdit3("##c", rgb, ImGuiColorEditFlags_NoInputs))
             colours[k] = (uint32_t)(rgb[0] * 255.0f + 0.5f) << 16 | (uint32_t)(rgb[1] * 255.0f + 0.5f) << 8 | (uint32_t)(rgb[2] * 255.0f + 0.5f);
         ImGui::SameLine();
-        ImGui::TextColored(ImVec4(rgb[0], rgb[1], rgb[2], 1.0f), "%s", asmTokenLabel((AsmToken)k));
+        ImGui::TextColored(ImVec4(rgb[0], rgb[1], rgb[2], 1.0f), "%s", cSyntax() ? cTokenLabel((AsmToken)k) : asmTokenLabel((AsmToken)k));
         ImGui::PopID();
     }
     ImGui::EndDisabled();
@@ -381,6 +638,15 @@ static std::string cleanMessage(const char* raw, int length) {
     }
     while (!out.empty() && (out.back() == ' ' || out.back() == '|' || out.back() == ':')) out.pop_back();
     return out;
+}
+
+// The shown file's own type decides its colours: a .c or .h tab as C, the others (a .s or
+// .asm beside the C files) as assembly; an unsaved tab follows the main file.
+bool AssemblerWindow::cSyntax() const {
+    std::string ext = std::filesystem::path(path).extension().string();
+    for (char& c : ext) c = (char)std::tolower((unsigned char)c);
+    if (ext.empty()) return cMode();
+    return ext == ".c" || ext == ".h";
 }
 
 bool AssemblerWindow::cMode() const {
@@ -418,6 +684,7 @@ void AssemblerWindow::startCBuild(bool thenRun, bool assetsOnly) {
     CRun* r = run.get();
     CToolchain tools = ctools;
     tools.assetsOnly = assetsOnly;           // every asset step again, then stop
+    if (!assetsOnly) tools.makeSnapshot = host.programSnapshotMaker();
     run->worker = std::thread([r, tools, mainPath, cache]() {
         CBuildResult result = buildC(tools, mainPath, cache, [r](const std::string& line) {
             std::lock_guard<std::mutex> g(r->lock);
@@ -466,6 +733,8 @@ void AssemblerWindow::finishCBuild() {
     symbols = res.symbols;
     lastOk = res.ok;
     lastStart = res.loadAddress; lastRun = res.runAddress; lastLength = (int)res.bytes.size();
+    lastBytes = res.bytes;
+    programStarted = false;
     if (!res.ok) {
         int errors = 0;
         for (const CBuildMessage& m : res.messages) if (m.error) errors++;
@@ -483,16 +752,32 @@ void AssemblerWindow::finishCBuild() {
                       (int)res.bytes.size(), res.loadAddress & 0xffff);
     }
     summary = b;
+    std::string images;
+    for (const std::string* p : { &res.dskPath, &res.cdtPath, &res.snaPath })
+        if (!p->empty()) images += (images.empty() ? "" : ", ") + std::filesystem::u8path(*p).filename().u8string();
+    if (!images.empty()) summary += "; wrote " + images;
     debugger.setSymbols(symbols);
+    setCLines(res.lines);
+    symbolSizes = res.symbolSizes;
     if (thenRun && host.booted() && !res.bytes.empty()) {
         // as a CPC runs a binary from BASIC (EmuHost::startProgram): a reset to the prompt,
         // the bytes put back, MC START PROGRAM to _main
         std::string how;
+        insertBuiltDisc(res);
         host.startProgram(res.bytes, res.loadAddress, res.runAddress, how);
+        programStarted = true;
         debugger.run();
         std::snprintf(b, sizeof b, "  -- running from _main &%04X (%s)", res.runAddress & 0xffff, how.c_str());
         summary += b;
     }
+}
+
+// A project whose disc holds more than the program (its dsk/ files, FILE2SECTOR's data)
+// reads that disc as it runs: the new image goes into drive A first, as the disc would be
+// in the real drive. A machine with no disc drive is left alone.
+void AssemblerWindow::insertBuiltDisc(const CBuildResult& res) {
+    if (!res.discNeeded || res.dskPath.empty() || !host.booted() || !host.emu || !host.emu->hasFdc) return;
+    host.loadDiskFile(res.dskPath, 0);
 }
 
 // A program run where a ROM sits over it would run the ROM: the firmware itself keeps its
@@ -511,8 +796,35 @@ void AssemblerWindow::pageForRun(int start, int length) {
 
 void AssemblerWindow::cSettingsPopup() {
     if (!ImGui::BeginPopup("C settings")) return;
-    ImGui::TextUnformatted("C programs: SDCC, and CPCtelera's library");
+    ImGui::TextUnformatted("C programs: SDCC (with CPCtelera's library), or z88dk");
     ImGui::Separator();
+    int which = ctools.compiler == "z88dk" ? 1 : 0;
+    if (ImGui::RadioButton("SDCC / CPCtelera", which == 0)) ctools.compiler = "sdcc";
+    ImGui::SameLine();
+    if (ImGui::RadioButton("z88dk", which == 1)) ctools.compiler = "z88dk";
+    if (ctools.compiler == "z88dk") {
+        static char z88Buf[512];
+        if (ImGui::IsWindowAppearing()) std::snprintf(z88Buf, sizeof z88Buf, "%s", ctools.z88dkFolder.c_str());
+        fitNextItemWidth(360, "z88dk folder");
+        if (ImGui::InputTextWithHint("z88dk folder", "empty: C:\\z88dk, beside this program, or the PATH", z88Buf, sizeof z88Buf)) ctools.z88dkFolder = z88Buf;
+        if (after().smallButton("Browse...##z88dk"))
+            browser.openDir("z88dk folder", ctools.z88dkFolder.empty() ? host.romDir : ctools.z88dkFolder,
+                            [this](const std::string& d) { ctools.z88dkFolder = d; std::snprintf(z88Buf, sizeof z88Buf, "%s", d.c_str()); });
+        const std::string z = findZ88dk(ctools.z88dkFolder);
+        ImGui::TextDisabled("  %s", z.empty() ? "z88dk not found (z88dk.org: unpack it, then name its folder)" : ("found: " + z).c_str());
+        bool zsdcc = !ctools.z88dkSccz80;
+        if (ImGui::Checkbox("Compile with zsdcc (SDCC in z88dk)", &zsdcc)) ctools.z88dkSccz80 = !zsdcc;
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("zsdcc: C lines can be stepped in the debugger.\nOff: z88dk's own sccz80 (no line stepping: its line markers come a line late).");
+        int zloc = ctools.codeLoc;
+        fitNextItemWidth(120, "Code address##z88");
+        if (ImGui::InputInt("Code address##z88", &zloc, 0x100, 0x1000, ImGuiInputTextFlags_CharsHexadecimal)) ctools.codeLoc = std::clamp(zloc, 0, 0xffff);
+        static char zflags[256];
+        if (ImGui::IsWindowAppearing()) std::snprintf(zflags, sizeof zflags, "%s", ctools.extraFlags.c_str());
+        fitNextItemWidth(360, "Extra zcc flags");
+        if (ImGui::InputText("Extra zcc flags", zflags, sizeof zflags)) ctools.extraFlags = zflags;
+        ImGui::EndPopup();
+        return;
+    }
     static char sdccBuf[512], cpctBuf[512], flagsBuf[256];
     static bool loaded = false;
     if (!loaded || ImGui::IsWindowAppearing()) {
@@ -615,6 +927,8 @@ void AssemblerWindow::assemble(bool thenRun) {
         }
         summary = b;
         debugger.setSymbols(symbols);
+        setCLines({});                              // an assembled program has no C lines
+        symbolSizes.clear();
         if (brkLabels) {
             debugger.clearAssemblerBreakpoints();
             for (const auto& s : symbols) {
@@ -625,8 +939,11 @@ void AssemblerWindow::assemble(bool thenRun) {
                 if (brk) debugger.addBreakpoint(s.second, "", true);
             }
         }
+        programStarted = false;
+        lastBytes.clear();
         if (thenRun && outLength > 0 && host.booted()) {
             int entry = lastRun >= 0 ? lastRun : lastStart;
+            programStarted = true;
             pageForRun(lastStart, outLength);
             debugger.setPc(entry);
             debugger.run();
@@ -646,6 +963,8 @@ int AssemblerWindow::editorCallback(ImGuiInputTextCallbackData* data) {
     if (data->EventFlag == ImGuiInputTextFlags_CallbackResize) {
         self->source.resize((size_t)data->BufTextLen);
         data->Buf = self->source.data();
+    } else if (data->EventFlag == ImGuiInputTextFlags_CallbackAlways && self->gotoLine <= 0) {
+        self->cursorPos = data->CursorPos;              // for Run to cursor
     } else if (data->EventFlag == ImGuiInputTextFlags_CallbackAlways && self->gotoLine > 0) {
         int start = 0, l = 1;
         for (int i = 0; i < data->BufTextLen && l < self->gotoLine; i++) if (data->Buf[i] == '\n') { l++; start = i + 1; }
@@ -670,7 +989,13 @@ void AssemblerWindow::draw(bool* open) {
         if (ImGui::IsKeyPressed(ImGuiKey_F9, false)) assemble(io.KeyCtrl);
         if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_S, false)) requestSave(io.KeyShift);
         if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_O, false)) requestOpen();
+        if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_F10, false)) runToCursor();
+        else if (!debugger.sourceLines.empty()) {
+            if (ImGui::IsKeyPressed(ImGuiKey_F10, false)) debugger.stepLine(true);
+            if (ImGui::IsKeyPressed(ImGuiKey_F11, false)) { if (io.KeyShift) debugger.stepOut(); else debugger.stepLine(false); }
+        }
     }
+    followStoppedLine();
 
     if (cRun) {
         bool done;
@@ -689,7 +1014,11 @@ void AssemblerWindow::draw(bool* open) {
     ImGui::BeginDisabled(building);
     if (after().button(c ? "Build (F9)" : "Assemble (F9)")) assemble(false);
     if (after().button(c ? "Build + run (Ctrl+F9)" : "Assemble + run (Ctrl+F9)")) assemble(true);
-    if (c) {
+    if (after().button("Run to cursor (Ctrl+F10)")) runToCursor();
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Run until the code of the cursor's line, past every breakpoint and watchpoint on the way,\n"
+                          "and pause there. A line with no code: the next line that has some.");
+    if (c && ctools.compiler != "z88dk") {
         if (after().button("Convert assets")) startCBuild(false, true);
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("Runs every asset step of the CPCtelera project again (images, maps, music, .bin files),\n"
@@ -700,6 +1029,15 @@ void AssemblerWindow::draw(bool* open) {
         if (after().button("C settings...")) ImGui::OpenPopup("C settings");
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("SDCC's folder, CPCtelera's folder, the code address");
         cSettingsPopup();
+        if (!debugger.sourceLines.empty()) {
+            after().textDisabled("|");
+            if (after().button("Line (F11)")) debugger.stepLine(false);
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Run to the next C line, into the functions it calls");
+            if (after().button("Over (F10)")) debugger.stepLine(true);
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Run to the next C line of this function (calls run through)");
+            if (after().button("Out (Shift+F11)")) debugger.stepOut();
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Run until the function returns");
+        }
     } else {
         after().field(130, "##syntax");
         ImGui::Combo("##syntax", &syntax, SYNTAX_NAMES, IM_ARRAYSIZE(SYNTAX_NAMES));
@@ -760,17 +1098,70 @@ void AssemblerWindow::draw(bool* open) {
                                 ImGuiInputTextFlags_CallbackAlways;
     // Coloured: the box's own text invisible (its cursor and selection are not), the
     // spans drawn over it.
-    if (highlight && !c) ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0, 0, 0, 0));
+    if (highlight) ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0, 0, 0, 0));
     if (ImGui::InputTextMultiline("##asmsrc", source.data(), source.capacity() + 1, ImVec2(-1, editorH), flags,
                                   &AssemblerWindow::editorCallback, this)) {
         modified = true;
         sourceRevision++;
         lineCount = countLines(source);
     }
-    if (highlight && !c) ImGui::PopStyleColor();
-    if (highlight && !c) drawHighlighted(childName, lineH, editorH);
+    if (highlight) ImGui::PopStyleColor();
+    if (highlight) drawHighlighted(childName, lineH, editorH);
+    // the mouse over a name: its address and value; the right-click menu for the line under it
+    if (ImGui::IsItemHovered()) {
+        std::string word;
+        int line = -1;
+        wordUnderMouse(childName, lineH, word, line);
+        if (!word.empty() && !ImGui::IsMouseDown(ImGuiMouseButton_Left)) symbolTooltip(word);
+        if (ImGui::IsMouseClicked(ImGuiMouseButton_Right) && line > 0) { menuLine = line; ImGui::OpenPopup("##editormenu"); }
+    }
+    if (ImGui::BeginPopup("##editormenu")) {
+        char item[64];
+        std::snprintf(item, sizeof item, "Run to line %d", menuLine);
+        if (ImGui::MenuItem(item, nullptr, false, host.booted())) runToLine(menuLine);
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Run until this line's code, past every breakpoint, and pause there");
+        if (ImGui::MenuItem("Run to cursor", "Ctrl+F10", false, host.booted())) runToCursor();
+        if (!lineFirstAddress.empty() && !path.empty() && cSyntax()) {
+            auto at = lineFirstAddress.find({ canonical(path), menuLine });
+            if (ImGui::MenuItem("Breakpoint on this line", nullptr, false, at != lineFirstAddress.end()) && at != lineFirstAddress.end())
+                debugger.toggleBreakpoint(at->second);
+        }
+        ImGui::EndPopup();
+    }
     float scrollY = 0.0f;
-    if (ImGuiWindow* child = ImGui::FindWindowByName(childName)) scrollY = child->Scroll.y;
+    ImGuiWindow* editorChild = ImGui::FindWindowByName(childName);
+    if (editorChild && scrollToLine > 0) {
+        // a stop on a line out of view: bring it to a third of the way down
+        const float y = (float)(scrollToLine - 1) * lineH;
+        if (y < editorChild->Scroll.y || y + lineH * 3 > editorChild->Scroll.y + editorH)
+            ImGui::SetScrollY(editorChild, std::max(0.0f, y - editorH / 3));
+        scrollToLine = -1;
+    }
+    if (editorChild) scrollY = editorChild->Scroll.y;
+    // the shown file as the C line table names it, the line the machine stopped on, the
+    // lines with a breakpoint
+    std::string tabKey;
+    if (!lineFirstAddress.empty() && !path.empty()) {
+        static std::string keyPath, keyCanonical;
+        if (keyPath != path) { keyPath = path; keyCanonical = canonical(path); }
+        tabKey = keyCanonical;
+    }
+    int stoppedLine = -1;
+    if (!tabKey.empty() && host.booted() && host.emu && host.paused) {
+        if (const Debugger::SourceLine* l = debugger.lineAt(host.emu->cpu->pc)) {
+            auto k = lineFileKey.find(l->file);
+            if (k != lineFileKey.end() && k->second == tabKey) stoppedLine = l->line;
+        }
+    }
+    if (stoppedLine > 0 && editorChild) {
+        ImDrawList* cdl = editorChild->DrawList;
+        const float y = ImGui::GetItemRectMin().y + style.FramePadding.y - scrollY + (float)(stoppedLine - 1) * lineH;
+        cdl->PushClipRect(editorChild->InnerClipRect.Min, editorChild->InnerClipRect.Max, true);
+        cdl->AddRectFilled(ImVec2(editorChild->InnerClipRect.Min.x, y), ImVec2(editorChild->InnerClipRect.Max.x, y + lineH), IM_COL32(255, 199, 64, 40));
+        cdl->PopClipRect();
+    }
+    std::unordered_set<int> breakAt;
+    if (!tabKey.empty()) for (const GuiBreakpoint& bp : debugger.breakpoints) if (bp.enabled) breakAt.insert(bp.address & 0xffff);
     {
         ImDrawList* dl = ImGui::GetWindowDrawList();
         ImVec2 g0 = gutterPos, g1(gutterPos.x + gutterW - 4, gutterPos.y + editorH);
@@ -786,9 +1177,25 @@ void AssemblerWindow::draw(bool* open) {
             ImU32 col = err ? IM_COL32(255, 90, 80, 255) : ImGui::GetColorU32(ImGuiCol_TextDisabled);
             float y = top + i * lineH;
             if (err) dl->AddRectFilled(ImVec2(g0.x, y), ImVec2(g1.x, y + lineH), IM_COL32(150, 30, 30, 120));
+            if (!tabKey.empty()) {
+                auto at = lineFirstAddress.find({ tabKey, i + 1 });
+                if (at != lineFirstAddress.end() && breakAt.count(at->second))
+                    dl->AddCircleFilled(ImVec2(g0.x + lineH * 0.4f, y + lineH * 0.5f), lineH * 0.3f, IM_COL32(230, 60, 50, 255));
+            }
+            if (i + 1 == stoppedLine)
+                dl->AddTriangleFilled(ImVec2(g0.x + 2, y + 2), ImVec2(g0.x + 2, y + lineH - 2), ImVec2(g0.x + lineH * 0.6f, y + lineH * 0.5f), IM_COL32(255, 199, 64, 255));
             dl->AddText(ImVec2(g1.x - w - 4, y), col, n);
         }
         dl->PopClipRect();
+        // a click on a line number: a breakpoint on the first address of that C line
+        if (!tabKey.empty() && ImGui::IsWindowHovered(ImGuiHoveredFlags_ChildWindows) && ImGui::IsMouseHoveringRect(g0, g1)) {
+            const int line = (int)((ImGui::GetIO().MousePos.y - top) / lineH) + 1;
+            auto at = lineFirstAddress.find({ tabKey, line });
+            if (at != lineFirstAddress.end()) {
+                ImGui::SetTooltip("Click: breakpoint on line %d (&%04X)", line, at->second & 0xffff);
+                if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) debugger.toggleBreakpoint(at->second);
+            }
+        }
     }
 
     // ---- result

@@ -123,6 +123,7 @@ void EmuHost::applyAudioRate() {
     if (emu && emu->playcity) emu->playcity->setOutputSampleRate((double)sampleRate);
     if (emu && emu->speech) emu->speech->setOutputSampleRate((double)sampleRate);
     if (emu && emu->dac) emu->dac->setOutputSampleRate((double)sampleRate);
+    if (emu && emu->sf3) emu->sf3->audio->setOutputSampleRate((double)sampleRate);
 }
 
 Bytes EmuHost::readFile(const std::string& path, bool& ok) {
@@ -462,6 +463,10 @@ void EmuHost::applyM4Network() {
     emu->m4->net->linked = m4Network;
     emu->m4->net->allowLan = m4NetworkLan;
     if (!m4Network) emu->m4->net->closeAll();
+    if (emu->sf3) {                                    // the SF3's WiFi: the same switch
+        emu->sf3->net->linked = m4Network;
+        if (!m4Network) emu->sf3->net->closeAll();
+    }
 }
 
 void EmuHost::applyM4() {
@@ -514,7 +519,15 @@ void EmuHost::applySymbiface() {
     bool sf2 = symbifaceModule == "sf2", sf3 = symbifaceModule == "sf3", xmass = symbifaceModule == "xmass";
     if (emu->symbifaceMouse) { emu->symbifaceMouse->setEnabled(sf2); emu->symbifaceMouse->setSensitivity(mouseSensitivity); }
     if (emu->sf2Rtc) emu->sf2Rtc->setEnabled(sf2);       // its DS12887 clock at &FD14/&FD15
-    if (emu->sf3) { emu->sf3->setEnabled(sf3); emu->sf3->setSensitivity(mouseSensitivity); }
+    if (emu->sf3) {
+        emu->sf3->setEnabled(sf3);
+        emu->sf3->setSensitivity(mouseSensitivity);
+        emu->sf3->audio->usbFolder = sf3UsbFolder;
+        emu->sf3->audio->sdFolder = sf3SdFolder;
+        emu->sf3->audio->setOutputSampleRate((double)sampleRate);
+        emu->sf3->net->linked = m4Network;
+        emu->sf3->audio->ffmpeg = MediaRecorder::findFfmpeg(ffmpegPath);   // AAC, Ogg... (sf3_audio.h)
+    }
     if (emu->ide) {
         // Both Symbifaces carry the IDE/CF interface at &FD06-&FD0F; the X-MASS is that
         // interface alone, at &FD08-&FD0F.
@@ -528,6 +541,12 @@ void EmuHost::applySymbiface() {
             emu->ide->setEnabled(true);
         } else emu->ide->setEnabled(false);
     }
+}
+
+void EmuHost::setSf3Folder(bool usb, const std::string& folder) {
+    (usb ? sf3UsbFolder : sf3SdFolder) = folder;
+    if (emu && emu->sf3) (usb ? emu->sf3->audio->usbFolder : emu->sf3->audio->sdFolder) = folder;   // the card keeps playing
+    status = std::string(usb ? "SF3 USB stick: " : "SF3 SD card: ") + folder;
 }
 
 void EmuHost::setIdeFolder(const std::string& folder) {
@@ -1577,6 +1596,60 @@ void EmuHost::reset() {
     emu->reset();
     status = "Reset";
 }
+// MC START PROGRAM (6128 OS &061C: DI, IM 1, the firmware set up again, SP &C000, EI) ends
+// at &0077, which makes HL and C a far address and FAR CALLs it (RST 3). The far address's
+// ROM byte &FF leaves the selection alone and disables both ROMs: a program in RAM. (C = 0
+// would select BASIC's ROM and enable it, and a program's reads of &C000-&FFFF would read
+// BASIC: CPCtelera's cpct_clearScreen filled the screen with it.)
+static void mcStartProgram(Z80& cpu, int run) {
+    cpu.iff1 = cpu.iff2 = false;
+    cpu.sp = 0xc000;
+    cpu.h = (run >> 8) & 0xff; cpu.l = run & 0xff;
+    cpu.c = 0xff;
+    cpu.pc = 0xbd16;
+    cpu.halted = false;
+}
+
+std::function<bool(const std::vector<uint8_t>&, int, int, std::vector<uint8_t>&, std::string&)> EmuHost::programSnapshotMaker() {
+    int index = currentModel >= 0 && models[(size_t)currentModel].computer && !models[(size_t)currentModel].plus ? currentModel : -1;
+    for (size_t i = 0; index < 0 && i < models.size(); i++)
+        if (models[i].computer && !models[i].plus && models[i].id == "cpc6128") index = (int)i;
+    if (index < 0) return nullptr;
+    const ModelProfile& m = models[(size_t)index];
+    const bool same = index == currentModel;
+    const std::string osPath = same && !osRomPath.empty() ? osRomPath : findRom(m.osKey);
+    const std::string basicPath = same && !basicRomPath.empty() ? basicRomPath : findRom(m.basicKey);
+    const std::string amsPath = !m.amsdos ? "" : same && !amsdosRomPath.empty() ? amsdosRomPath : findRom("amsdos");
+    bool a = false, b = false, c = true;
+    if (osPath.empty() || basicPath.empty()) return nullptr;
+    GX4000::LoadClassicOptions o;
+    o.lowerRom = readFile(osPath, a);
+    o.basicRom = readFile(basicPath, b);
+    if (!amsPath.empty()) o.amsdosRom = readFile(amsPath, c);
+    if (!a || !b || !c) return nullptr;
+    o.ramKiB = m.defaultRam;
+    o.ram128 = m.defaultRam >= 128;
+    o.crtcType = m.defaultCrtc;
+    o.model = m.label;
+    const bool fdc = m.amsdos;
+    const std::string label = m.label;
+    return [o, fdc, label](const std::vector<uint8_t>& bytes, int load, int run, std::vector<uint8_t>& sna, std::string& why) {
+        try {
+            GX4000 machine;
+            machine.loadClassicFirmware(o);
+            machine.hasFdc = fdc;
+            for (int i = 0; i < 170; i++) machine.runFrame();     // to "Ready", as startProgram
+            for (size_t i = 0; i < bytes.size(); i++) machine.memory->write((load + (int)i) & 0xffff, bytes[i]);
+            mcStartProgram(*machine.cpu, run);
+            sna = createSna(&machine, false);
+            return !sna.empty();
+        } catch (const std::exception& ex) {
+            why = label + ": " + ex.what();
+            return false;
+        }
+    };
+}
+
 bool EmuHost::startProgram(const std::vector<uint8_t>& bytes, int load, int run, std::string& how) {
     if (!booted() || !emu || bytes.empty()) return false;
     const bool firmware = currentModel >= 0 && models[(size_t)currentModel].computer;
@@ -1592,16 +1665,7 @@ bool EmuHost::startProgram(const std::vector<uint8_t>& bytes, int load, int run,
     for (size_t i = 0; i < bytes.size(); i++) emu->memory->write((load + (int)i) & 0xffff, bytes[i]);
     Z80* cpu = emu->cpu;
     if (firmware) {
-        // MC START PROGRAM (6128 OS &061C: DI, IM 1, the firmware set up again, SP &C000, EI)
-        // ends at &0077, which makes HL and C a far address and FAR CALLs it (RST 3). The far
-        // address's ROM byte &FF leaves the selection alone and disables both ROMs: a program
-        // in RAM. (C = 0 would select BASIC's ROM and enable it, and a program's reads of
-        // &C000-&FFFF would read BASIC: CPCtelera's cpct_clearScreen filled the screen with it.)
-        cpu->iff1 = cpu->iff2 = false;
-        cpu->sp = 0xc000;
-        cpu->h = (run >> 8) & 0xff; cpu->l = run & 0xff;
-        cpu->c = 0xff;
-        cpu->pc = 0xbd16;
+        mcStartProgram(*cpu, run);
         how = "MC START PROGRAM";
     } else {
         // the RMR (&7Fxx, bits 7-6 = 10): bit 2 lower ROM off, bit 3 upper ROM off, mode kept
@@ -2179,7 +2243,7 @@ void EmuHost::runFrame() {
     // recording: every frame's picture, so each one is drawn now
     if (recorder.active() && video) {
         render();
-        recorder.addFrame(video->pixels.data(), audioOut.data(), audioOut.size());
+        recorder.addFrame(recordPicture(), audioOut.data(), audioOut.size());
     }
 }
 
@@ -2189,15 +2253,78 @@ bool EmuHost::startRecording(const std::string& path, std::string& why) {
     std::string ext = std::filesystem::u8path(path).extension().u8string();
     for (char& c : ext) c = (char)std::tolower((unsigned char)c);
     const MediaRecorder::Format f = ext == ".wav" ? MediaRecorder::Format::Wav
+                                  : ext == ".mp4" || recordFormat == "h264" ? MediaRecorder::Format::H264
                                   : recordFormat == "zmbv" ? MediaRecorder::Format::Zmbv : MediaRecorder::Format::Mjpeg;
+    recorder.ffmpeg = ffmpegPath.empty() ? "ffmpeg" : ffmpegPath;
+    // two pictures side by side: "both", or as shown when both are on the screen: the
+    // GFX9000's beside the CPC's, or in its own GFX9000 screen window
+    const bool wide = f != MediaRecorder::Format::Wav &&
+                      (recordSource == "both" || (recordSource == "shown" && v9990Enabled && (gfx9000Monitor == "beside" || gfx9000Monitor == "window")));
+    recordWidth = video->width * (wide ? 2 : 1);
+    recordHeight = video->height;
+    if (recordSource == "screen" && f != MediaRecorder::Format::Wav) {
+        // the picture as drawn now, even sizes (H.264's 4:2:0 wants them); a window too
+        // small for one: the CPC's own size
+        recordWidth = screenPictureW >= 64 ? screenPictureW & ~1 : video->width;
+        recordHeight = screenPictureH >= 64 ? screenPictureH & ~1 : video->height;
+        screenCapture.assign((size_t)recordWidth * recordHeight, 0xff000000u);
+    }
     // one CPC frame: 312 lines of 64 usec
-    if (!recorder.start(path, f, video->width, video->height, sampleRate, 19968.0)) { why = "Could not record: " + recorder.error; return false; }
+    if (!recorder.start(path, f, recordWidth, recordHeight, sampleRate, 19968.0)) { why = "Could not record: " + recorder.error; return false; }
     status = "Recording to " + std::filesystem::u8path(path).filename().u8string();
     return true;
 }
 
+// The recorder's picture for this frame, recordWidth x recordHeight: the CPC's as it is, the
+// GFX9000's (or the Video9000's mix) fitted at 4:3 into a CPC-sized box with black bars, or the
+// two side by side.
+const uint32_t* EmuHost::recordPicture() {
+    if (recordSource == "screen") {
+        if (screenCapture.size() != (size_t)recordWidth * recordHeight) screenCapture.assign((size_t)recordWidth * recordHeight, 0xff000000u);
+        return screenCapture.data();
+    }
+    const int cw = video->width, ch = video->height;
+    const bool wide = recordWidth >= cw * 2;
+    std::string what = recordSource;
+    if (what == "shown") {
+        if (wide) what = "both";
+        else if (v9990Enabled && gfx9000Monitor == "video9000") what = "mix";
+        else what = gfx9000OnMainScreen() ? "gfx" : "cpc";
+    }
+    if (what == "cpc" && !wide) return video->pixels.data();
+    recordCanvas.assign((size_t)recordWidth * recordHeight, 0xff000000u);
+    auto copyCpc = [&](int x0) {
+        for (int y = 0; y < ch && y < recordHeight; y++)
+            std::copy(video->pixels.begin() + (size_t)y * cw, video->pixels.begin() + (size_t)y * cw + cw, recordCanvas.begin() + (size_t)y * recordWidth + x0);
+    };
+    auto fit = [&](const uint32_t* src, int sw, int sh, int x0) {
+        if (!src || sw <= 0 || sh <= 0) return;
+        const int bh = ch, bw = std::min(cw, ch * 4 / 3);            // a 4:3 box in the CPC's frame
+        const int bx = x0 + (cw - bw) / 2;
+        for (int y = 0; y < bh; y++) {
+            const uint32_t* row = src + (size_t)(y * sh / bh) * sw;
+            uint32_t* out = &recordCanvas[(size_t)y * recordWidth + bx];
+            for (int x = 0; x < bw; x++) out[x] = row[x * sw / bw] | 0xff000000u;
+        }
+    };
+    std::vector<uint32_t> mixed;
+    auto gfx = [&](int x0) {
+        if (v9990Enabled && gfx9000Monitor == "video9000") {
+            int mw = 0, mh = 0;
+            if (video9000Picture(mixed, mw, mh)) fit(mixed.data(), mw, mh, x0);
+        } else if (const V9990Picture* pic = v9990Picture()) {
+            fit(pic->pixels.data(), pic->width, pic->height, x0);
+        }
+    };
+    if (what == "both" || wide) { copyCpc(0); gfx(cw); }
+    else if (what == "mix" || what == "gfx") gfx(0);
+    else copyCpc(0);
+    return recordCanvas.data();
+}
+
 void EmuHost::stopRecording() {
     if (!recorder.active()) return;
+    if (recorder.format() == MediaRecorder::Format::H264) status = "Finishing the MP4 (ffmpeg)...";
     recorder.stop();
     char b[160];
     std::snprintf(b, sizeof b, "Recorded %.1f s (%.1f MB%s)", recorder.seconds(), recorder.bytesWritten() / (1024.0 * 1024.0),
@@ -2227,6 +2354,32 @@ void EmuHost::render() {
     if (!video->beamMode) video->render();
 }
 
+const std::vector<EmuHost::SoundLevel>& EmuHost::soundLevels() {
+    static const std::vector<SoundLevel> list = {
+        { "ay", "CPC (AY)", &EmuHost::volAy },
+        { "dac", "DigiBlaster / AmDrum", &EmuHost::volDac },
+        { "speech", "Speech", &EmuHost::volSpeech },
+        { "ls3mp3", "LambdaSpeak 3 MP3", &EmuHost::volLs3Mp3 },
+        { "sf3", "SYMBiFACE III", &EmuHost::volSf3 },
+        { "playcity", "PlayCity", &EmuHost::volPlayCity },
+        { "opl4", "OPL4", &EmuHost::volOpl4 },
+    };
+    return list;
+}
+
+bool EmuHost::soundFitted(const char* key) const {
+    const std::string k = key;
+    if (!emu) return false;
+    if (k == "ay") return true;
+    if (k == "dac") return emu->dac && (emu->dac->mode == "digiblaster" || emu->dac->mode == "amdrum");
+    if (k == "speech") return emu->speech && emu->speech->kind != SpeechSynth::Kind::None;
+    if (k == "ls3mp3") return emu->speech && emu->speech->kind == SpeechSynth::Kind::LambdaSpeak3;
+    if (k == "sf3") return emu->sf3 && emu->sf3->enabled;
+    if (k == "playcity") return emu->playcity && emu->playcity->enabled;
+    if (k == "opl4") return emu->opl4 && emu->opl4->enabled;
+    return false;
+}
+
 void EmuHost::drainAudio() {
     audioOut.clear();
     if (!audioEnabled || !emu->ay) return;
@@ -2239,7 +2392,7 @@ void EmuHost::drainAudio() {
     Opl4Card* opl = emu->opl4 && emu->opl4->enabled ? emu->opl4 : nullptr;
     size_t oplPairs = 0;
     if (opl) { opl->advanceTo(emu->machineCycles); oplPairs = opl->samples.size() / 2; }
-    const double oplGain = (double)masterVolume * 0.75;
+    const double oplGain = (double)masterVolume * 0.75 * volOpl4;
     audioOut.reserve((size_t)available * 2);
     // The PlayCity's two YMZ294: the left chip on the left, the right on the right, each
     // folded to mono, made by the same stretch of CPC time as the AY's samples.
@@ -2247,25 +2400,31 @@ void EmuHost::drainAudio() {
     const bool dacOn = emu->dac && (emu->dac->mode == "digiblaster" || emu->dac->mode == "amdrum");
     // The speech synthesiser, mono, from its own host-rate queue.
     SpeechSynth* sp = emu->speech && emu->speech->kind != SpeechSynth::Kind::None ? emu->speech : nullptr;
+    const bool sf3Sound = emu->sf3 && emu->sf3->enabled;
     for (int i = 0; i < available; i++) {
         std::array<double, 2> s = ay->readSample();
-        double l = s[0] * gain, r = s[1] * gain;
+        double l = s[0] * gain * volAy, r = s[1] * gain * volAy;
         // The printer-port DACs (DigiBlaster, AmDrum): mono, from their own queue. They were
         // never mixed in -- the DAC filled its queue and nothing read it, so both were silent.
-        if (dacOn) { const double v = emu->dac->readSample() * gain * 1.6; l += v; r += v; }
+        if (dacOn) { const double v = emu->dac->readSample() * gain * 1.6 * volDac; l += v; r += v; }
         if (sp) {
-            const double v = sp->readSample() * gain * 0.9; l += v; r += v;
+            const double v = sp->readSample() * gain * 0.9 * volSpeech; l += v; r += v;
             // LambdaSpeak 3's MP3 module, stereo, at line level next to the AY.
             if (sp->kind == SpeechSynth::Kind::LambdaSpeak3) {
                 float ml, mr; sp->mp3.readSample(ml, mr);
-                l += ml * masterVolume * 26000.0; r += mr * masterVolume * 26000.0;
+                l += ml * masterVolume * 26000.0 * volLs3Mp3; r += mr * masterVolume * 26000.0 * volLs3Mp3;
             }
+        }
+        // The SYMBiFACE III's VS1053 (SymAmp's MP3, the SE-ONE player) and its buzzer, stereo.
+        if (sf3Sound) {
+            float ml, mr; emu->sf3->audio->readSample(ml, mr);
+            l += ml * masterVolume * 26000.0 * volSf3; r += mr * masterVolume * 26000.0 * volSf3;
         }
         if (pc) {
             const bool haveL = pc->left.sampleReadIndex < (int)pc->left.sampleQueue.size();
             const bool haveR = pc->right.sampleReadIndex < (int)pc->right.sampleQueue.size();
-            if (haveL) { auto v = pc->left.readSample(); l += (v[0] + v[1]) * 0.5 * gain; }
-            if (haveR) { auto v = pc->right.readSample(); r += (v[0] + v[1]) * 0.5 * gain; }
+            if (haveL) { auto v = pc->left.readSample(); l += (v[0] + v[1]) * 0.5 * gain * volPlayCity; }
+            if (haveR) { auto v = pc->right.readSample(); r += (v[0] + v[1]) * 0.5 * gain * volPlayCity; }
         }
         if (oplPairs) {
             const size_t k = std::min(oplPairs - 1, (size_t)((double)i * oplPairs / available));

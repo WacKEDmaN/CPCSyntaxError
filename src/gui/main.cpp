@@ -261,7 +261,7 @@ int main(int argc, char** argv) {
     // uses, with no window. --shot out.bmp [--model id] [--sna f] [--crtc N] [--gate-array 40007|40008|40010]
     // [--frames N] [--beam] [--gfx9000] [--v9990-shot out.bmp] (the GFX9000's own monitor).
     {
-        std::string shot, modelId, snaPath, saveSnaPath, dumpRamPath, diskPath, cartPath, tapePath, typeStr, keysStr; int croGroup = -1, wantCrtc = -1, wantGa = 0, frames = 200, f1at = -1, wantRam = -1, seq = 0; bool beam = false, diag = false, gfx9000 = false, opl4 = false, playcity = false; std::string v9990Shot, video9000Shot, m4Folder, ideFolder, mouseScript, mouseInterface, cbuildPath, cbuildCpct, cbuildSdcc, wavPath, speechKind, mp3Card, dacType; int cbuildLoc = -1; bool cbuildForce = false; bool sf2 = false, sf3 = false, xmass = false, multiface = false, diskWriteBack = false; int monitorHHold = std::getenv("CPCSE_MONITOR_HHOLD") ? std::atoi(std::getenv("CPCSE_MONITOR_HHOLD")) : 0; int monitorVHold = std::getenv("CPCSE_MONITOR_VHOLD") ? std::atoi(std::getenv("CPCSE_MONITOR_VHOLD")) : 0; std::vector<std::string> xroms; std::string serialLine, recordTape, tapeFast, recordPath, recordFormat = "mjpeg"; bool rasterOverlayOn = false; bool z80Cmos = false, gx4000Ram128 = false, plusExpansionClassic = true; std::string monitorSet; TubeKnobs monitorKnobs; std::array<int, 3> monitorIntensity = TubeKnobs().intensity;
+        std::string shot, modelId, snaPath, saveSnaPath, dumpRamPath, diskPath, cartPath, tapePath, typeStr, keysStr; int croGroup = -1, wantCrtc = -1, wantGa = 0, frames = 200, f1at = -1, wantRam = -1, seq = 0; bool beam = false, diag = false, gfx9000 = false, opl4 = false, playcity = false; std::string v9990Shot, video9000Shot, m4Folder, ideFolder, mouseScript, mouseInterface, cbuildPath, cbuildCpct, cbuildSdcc, wavPath, speechKind, mp3Card, dacType; int cbuildLoc = -1; bool cbuildForce = false; std::string cbuildZ88dk, sf3Usb, sf3Sd; bool cbuildSccz80 = false; bool cbuildUseZ88dk = false; bool sf2 = false, sf3 = false, xmass = false, multiface = false, diskWriteBack = false; int monitorHHold = std::getenv("CPCSE_MONITOR_HHOLD") ? std::atoi(std::getenv("CPCSE_MONITOR_HHOLD")) : 0; int monitorVHold = std::getenv("CPCSE_MONITOR_VHOLD") ? std::atoi(std::getenv("CPCSE_MONITOR_VHOLD")) : 0; std::vector<std::string> xroms; std::string serialLine, recordTape, tapeFast, recordPath, recordFormat = "mjpeg", recordSource = "shown", gfx9000Monitor; bool rasterOverlayOn = false; bool z80Cmos = false, gx4000Ram128 = false, plusExpansionClassic = true; std::string monitorSet; TubeKnobs monitorKnobs; std::array<int, 3> monitorIntensity = TubeKnobs().intensity;
         for (int i = 1; i < argc; i++) { std::string a = argv[i];
             if (a == "--shot" && i + 1 < argc) shot = argv[++i];
             else if (a == "--ram" && i + 1 < argc) wantRam = std::atoi(argv[++i]);
@@ -277,6 +277,8 @@ int main(int argc, char** argv) {
             else if (a == "--sdcc" && i + 1 < argc) cbuildSdcc = argv[++i];          // ...SDCC from this folder (default: found)
             else if (a == "--codeloc" && i + 1 < argc) cbuildLoc = (int)std::strtol(argv[++i], nullptr, 0);   // without cfg/build_config.mk
             else if (a == "--force-assets") cbuildForce = true;                    // run every CPCtelera asset step again
+            else if (a == "--z88dk" && i + 1 < argc) { cbuildZ88dk = argv[++i]; cbuildUseZ88dk = true; }   // build with z88dk (folder, or "" = find it)
+            else if (a == "--sccz80") { cbuildSccz80 = true; cbuildUseZ88dk = true; }   // ...with its sccz80, not zsdcc
             else if (a == "--tape" && i + 1 < argc) tapePath = argv[++i];   // .cdt/.tzx/.wav in the deck
             else if (a == "--record-tape" && i + 1 < argc) recordTape = argv[++i];   // a blank tape, REC down; saved here at the end
             else if (a == "--tape-fast" && i + 1 < argc) tapeFast = argv[++i];   // fast loading: a baud rate, instant, or off
@@ -300,6 +302,7 @@ int main(int argc, char** argv) {
             else if (a == "--plus-expansion" && i + 1 < argc) plusExpansionClassic = std::string(argv[++i]) != "internal";   // classic (default) or internal
             else if (a == "--z80" && i + 1 < argc) z80Cmos = std::string(argv[++i]) == "cmos";   // nmos (default) or cmos
             else if (a == "--gfx9000") gfx9000 = true;
+            else if (a == "--gfx9000-monitor" && i + 1 < argc) gfx9000Monitor = argv[++i];   // beside, window, switch (default) or video9000
             else if (a == "--opl4") opl4 = true;                              // an OPL4 card on the AMSDAP
             else if (a == "--playcity") playcity = true;                      // a PlayCity
             else if (a == "--dac" && i + 1 < argc) dacType = argv[++i];        // digiblaster / amdrum
@@ -307,11 +310,14 @@ int main(int argc, char** argv) {
             else if (a == "--mp3card" && i + 1 < argc) mp3Card = argv[++i];   // LambdaSpeak 3's MP3 card folder
             else if (a == "--wav" && i + 1 < argc) wavPath = argv[++i];        // the sound of the whole run
             else if (a == "--record" && i + 1 < argc) recordPath = argv[++i];  // the whole run to .avi (or .wav)
-            else if (a == "--record-format" && i + 1 < argc) recordFormat = argv[++i];   // mjpeg (default) or zmbv
+            else if (a == "--record-source" && i + 1 < argc) recordSource = argv[++i];   // shown (default), cpc, gfx or both
+            else if (a == "--record-format" && i + 1 < argc) recordFormat = argv[++i];   // mjpeg (default), zmbv or h264 (ffmpeg)
             else if (a == "--m4" && i + 1 < argc) m4Folder = argv[++i];   // an M4 board, this folder its SD card
             else if (a == "--sf2") sf2 = true;                                // a Symbiface II (its PS/2 mouse)
             else if (a == "--ide" && i + 1 < argc) { ideFolder = argv[++i]; sf2 = true; }   // its IDE, this folder the disc
             else if (a == "--xmass") xmass = true;                            // an X-MASS IDE interface (with --ide)
+            else if (a == "--sf3-usb" && i + 1 < argc) { sf3Usb = argv[++i]; sf3 = true; }   // its USB stick, this folder
+            else if (a == "--sf3-sd" && i + 1 < argc) { sf3Sd = argv[++i]; sf3 = true; }     // its SD card, this folder
             else if (a == "--sf3") sf3 = true;                                // a Symbiface III instead (with --ide too)
             else if (a == "--disk-writeback") diskWriteBack = true;              // save the disc's writes into its .dsk (headless: off)
             else if (a == "--multiface") multiface = true;                    // a Multiface II (its ROM from roms/); n in --mouse is STOP
@@ -357,6 +363,8 @@ int main(int argc, char** argv) {
                 if (slot < 0 || !host.fitExpansionRom(slot, x.substr(eq + 1))) { std::printf("[shot] --xrom %s: %s\n", x.c_str(), host.status.c_str()); return 2; }
             }
             if (!ideFolder.empty()) host.ideFolder = ideFolder;
+            if (!sf3Usb.empty()) host.sf3UsbFolder = sf3Usb;
+            if (!sf3Sd.empty()) host.sf3SdFolder = sf3Sd;
             int mi = 0; for (int i = 0; i < (int)host.models.size(); i++) if (host.models[i].id == modelId) mi = i;
             if (!host.bootModel(mi, wantRam, wantCrtc)) { std::printf("[shot] %s\n", host.status.c_str()); return 2; }
             if (monitorIntensity != TubeKnobs().intensity) host.setMonitorIntensity(monitorIntensity);   // for the set now plugged in
@@ -382,8 +390,10 @@ int main(int argc, char** argv) {
                     if (!wavPath.empty()) wav.insert(wav.end(), host.audioOut.begin(), host.audioOut.end());
                 }
             };
+            if (!gfx9000Monitor.empty()) host.gfx9000Monitor = gfx9000Monitor;
             if (!recordPath.empty()) {
                 host.recordFormat = recordFormat;
+                host.recordSource = recordSource;
                 std::string why;
                 if (!host.startRecording(recordPath, why)) { std::printf("[record] %s\n", why.c_str()); return 2; }
             }
@@ -397,12 +407,17 @@ int main(int argc, char** argv) {
                 t.cpcteleraFolder = cbuildCpct;
                 if (cbuildLoc >= 0) t.codeLoc = cbuildLoc;
                 t.forceAssets = cbuildForce;
+                if (cbuildUseZ88dk) { t.compiler = "z88dk"; t.z88dkFolder = cbuildZ88dk; t.z88dkSccz80 = cbuildSccz80; }
+                t.makeSnapshot = host.programSnapshotMaker();
                 std::error_code ec;
                 const CBuildResult res = buildC(t, cbuildPath, (std::filesystem::temp_directory_path(ec) / "cpcse-cbuild").u8string(), nullptr);
                 for (const CBuildMessage& m : res.messages)
                     std::printf("[cbuild] %s%s%s\n", m.file.empty() ? "" : (m.file + ":" + std::to_string(m.line) + ": ").c_str(), m.text.c_str(), m.error ? "" : " (warning)");
                 if (diag) std::printf("%s", res.log.c_str());
                 if (!res.ok) { std::printf("[cbuild] FAILED\n"); return 3; }
+                for (const std::string* p : { &res.dskPath, &res.cdtPath, &res.snaPath }) if (!p->empty()) std::printf("[cbuild] wrote %s\n", p->c_str());
+                // its disc in drive A when the program reads it (EmuHost::loadDiskFile), as the window does
+                if (res.discNeeded && !res.dskPath.empty() && host.emu && host.emu->hasFdc) host.loadDiskFile(res.dskPath, 0);
                 std::string how;
                 host.startProgram(res.bytes, res.loadAddress, res.runAddress, how);
                 std::printf("[cbuild] %s: %d bytes at &%04X, run &%04X (%s)\n", res.project.c_str(), (int)res.bytes.size(),
@@ -501,6 +516,12 @@ int main(int argc, char** argv) {
                     case 'k': if (kb) { kb->setKey(tok.substr(1), true); run(4); kb->setKey(tok.substr(1), false); run(4); } break;
                     case 'n': host.multifaceStop(); run(2); break;   // n: the Multiface II's STOP
                     case 's': host.render(); host.saveScreenshotBmp(tok.substr(1)); std::printf("[mouse] shot %s\n", tok.c_str() + 1); break;
+                    case 'v': {                    // v<file.bmp>: the GFX9000's picture now
+                        const V9990Picture* pic = host.v9990Picture();
+                        const bool ok = pic && writeVideoBmp(tok.substr(1), pic->pixels, pic->width, pic->height);
+                        std::printf("[mouse] v9990 shot %s (%s)\n", tok.c_str() + 1, ok ? "ok" : "not displaying");
+                        break;
+                    }
                     default: break;
                 }
                 if (e == std::string::npos) break;
@@ -790,6 +811,7 @@ int main(int argc, char** argv) {
     }
     host.audioEnabled   = geti("audio", 1) != 0;
     host.masterVolume   = level("volume", 0.6, 0.0, 1.0);
+    for (const auto& s : EmuHost::soundLevels()) host.*(s.level) = (float)level(("vol_" + std::string(s.key)).c_str(), 1.0, 0.0, 2.0);
     host.driveSounds    = geti("drive_sounds", 1) != 0;
     host.keySounds      = geti("key_sounds", 0) != 0;
     host.mechanicsVolume = level("noises_volume", 0.5, 0.0, 1.0);
@@ -822,6 +844,8 @@ int main(int argc, char** argv) {
     host.symbifaceModule = gets("symbiface", "none");
     host.mouseInterface = gets("mouseinterface", "none");   // applied by applySettings (kept out while an SF2/SF3 is fitted)
     host.ideFolder = gets("idefolder", (homeDir() + "symide").c_str());   // the IDE's disc
+    if (ini.count("sf3usb")) host.sf3UsbFolder = ini.at("sf3usb");
+    if (ini.count("sf3sd")) host.sf3SdFolder = ini.at("sf3sd");
     host.mouseSensitivity = level("mousesens", 1.0, 0.25, 4.0);
     host.lightgunType   = gets("lightgun", "none");       // these four are applied by applySettings
     host.v9990Enabled   = geti("v9990", 0) != 0;
@@ -842,7 +866,15 @@ int main(int argc, char** argv) {
     host.tapeFastBaud   = std::clamp(geti("tapefastbaud", host.tapeFastBaud), (int)CPCTapeDrive::FAST_BAUD_MIN, (int)CPCTapeDrive::FAST_BAUD_MAX);
     host.tapeTurbo      = std::clamp(geti("tapeturbo", 1), 1, (int)EmuHost::TAPE_TURBO_UNLIMITED);
     host.beamRenderer   = geti("beam", 0) != 0;
-    host.recordFormat   = gets("recordformat", "mjpeg") == "zmbv" ? "zmbv" : "mjpeg";
+    {
+        const std::string rf = gets("recordformat", "mjpeg");
+        host.recordFormat = rf == "h264" ? rf : "mjpeg";   // ZMBV left the menu: an old setting is MJPEG
+    }
+    host.ffmpegPath     = gets("ffmpeg", "");
+    {
+        const std::string rs = gets("recordsource", "shown");
+        host.recordSource = rs == "cpc" || rs == "gfx" || rs == "both" || rs == "screen" ? rs : "shown";
+    }
     host.stateDir       = homeDir() + "states";     // the quick save slots
     host.ls3EepromFile  = homeDir() + "ls3eeprom.bin";   // LambdaSpeak 3's EEPROM
     host.recordDir      = homeDir() + "recordings";
@@ -1007,7 +1039,7 @@ int main(int argc, char** argv) {
             // Releases always go through, so a key held while the focus moves never sticks.
             if (ev.type == SDL_KEYUP && !ev.key.repeat) host.setKey(ev.key.keysym.scancode, false);
             if (ev.type == SDL_KEYDOWN && !ev.key.repeat && !io.WantTextInput) {
-                if (ev.key.keysym.scancode == SDL_SCANCODE_F11) toggleFullscreen();
+                if (ev.key.keysym.scancode == SDL_SCANCODE_F11) shell.f11();
                 else if (ev.key.keysym.scancode == SDL_SCANCODE_F12) releaseMouse();
                 else if (ev.key.keysym.scancode == SDL_SCANCODE_F10 && host.multifaceEnabled) host.multifaceStop();   // its STOP button
                 else if (shell.keyboardToCpc()) {
@@ -1114,6 +1146,39 @@ int main(int argc, char** argv) {
         glClearColor(0.055f, 0.067f, 0.090f, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT);
         ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+        // The recorder's "screen" source: the Screen window's picture as drawn (its CRT
+        // effects with it), read back from the frame just drawn and scaled to the
+        // recording's size; the next emulated frame records it.
+        {
+            const ImVec2 fbScale = io.DisplayFramebufferScale;
+            const ImGuiViewport* vp = ImGui::GetMainViewport();
+            const int px = (int)std::lround((shell.screenRect[0] - vp->Pos.x) * fbScale.x), py = (int)std::lround((shell.screenRect[1] - vp->Pos.y) * fbScale.y);
+            const int pw = (int)std::lround(shell.screenRect[2] * fbScale.x), ph = (int)std::lround(shell.screenRect[3] * fbScale.y);
+            host.screenPictureW = shell.screenRectMain ? pw : 0;
+            host.screenPictureH = shell.screenRectMain ? ph : 0;
+            if (host.recording() && host.recordSource == "screen" && shell.screenRectMain && pw > 0 && ph > 0) {
+                const int x0 = std::max(0, px), y0 = std::max(0, py), x1 = std::min(w, px + pw), y1 = std::min(h, py + ph);
+                if (x1 > x0 && y1 > y0) {
+                    static std::vector<uint32_t> grab;
+                    grab.resize((size_t)(x1 - x0) * (y1 - y0));
+                    glPixelStorei(GL_PACK_ALIGNMENT, 4);
+                    glReadPixels(x0, h - y1, x1 - x0, y1 - y0, GL_RGBA, GL_UNSIGNED_BYTE, grab.data());
+                    const int gw = x1 - x0, gh = y1 - y0, rw = host.recordWidth, rh = host.recordHeight;
+                    if (host.screenCapture.size() != (size_t)rw * rh) host.screenCapture.assign((size_t)rw * rh, 0xff000000u);
+                    // GL's rows run upwards; the picture's rectangle may be cut by the window's edge
+                    for (int y = 0; y < rh; y++) {
+                        const int sy = py + (int)((long long)y * ph / rh) - y0;
+                        uint32_t* out = &host.screenCapture[(size_t)y * rw];
+                        if (sy < 0 || sy >= gh) { std::fill(out, out + rw, 0xff000000u); continue; }
+                        const uint32_t* row = &grab[(size_t)(gh - 1 - sy) * gw];
+                        for (int x = 0; x < rw; x++) {
+                            const int sx = px + (int)((long long)x * pw / rw) - x0;
+                            out[x] = sx >= 0 && sx < gw ? row[sx] | 0xff000000u : 0xff000000u;
+                        }
+                    }
+                }
+            }
+        }
         // Windows pulled out of the main window live in OS windows of their own.
         if (io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable) {
             SDL_Window* backupWindow = SDL_GL_GetCurrentWindow();
@@ -1161,6 +1226,7 @@ int main(int argc, char** argv) {
             f << "plusexpansionclassic=" << (host.plusExpansionClassic ? 1 : 0) << "\n";
             f << "audio=" << (host.audioEnabled ? 1 : 0) << "\n";
             f << "volume=" << host.masterVolume << "\n";
+            for (const auto& s : EmuHost::soundLevels()) f << "vol_" << s.key << "=" << host.*(s.level) << "\n";
             f << "drive_sounds=" << (host.driveSounds ? 1 : 0) << "\n";
             f << "key_sounds=" << (host.keySounds ? 1 : 0) << "\n";
             f << "noises_volume=" << host.mechanicsVolume << "\n";
@@ -1193,6 +1259,8 @@ int main(int argc, char** argv) {
             f << "symbiface=" << host.symbifaceModule << "\n";
             f << "mouseinterface=" << host.mouseInterface << "\n";
             f << "idefolder=" << host.ideFolder << "\n";
+            f << "sf3usb=" << host.sf3UsbFolder << "\n";
+            f << "sf3sd=" << host.sf3SdFolder << "\n";
             f << "mousesens=" << host.mouseSensitivity << "\n";
             f << "lightgun=" << host.lightgunType << "\n";
             f << "v9990=" << (host.v9990Enabled ? 1 : 0) << "\n";
@@ -1213,6 +1281,8 @@ int main(int argc, char** argv) {
             f << "tapeturbo=" << host.tapeTurbo << "\n";
             f << "beam=" << (host.beamRenderer ? 1 : 0) << "\n";
             f << "recordformat=" << host.recordFormat << "\n";
+            f << "ffmpeg=" << host.ffmpegPath << "\n";
+            f << "recordsource=" << host.recordSource << "\n";
             for (size_t i = 0; i < host.recentFiles.size(); i++) f << "recent." << i << "=" << host.recentFiles[i] << "\n";
             shell.saveSettings(f);
             f << "winx=" << normalX << "\n";

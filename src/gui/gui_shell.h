@@ -89,6 +89,16 @@ public:
     bool screenHovered = false;               // the mouse is over the emulated picture (Symbiface mouse)
     // Keys go to the CPC unless a debugger or assembler window has the focus.
     bool keyboardToCpc() const { return !toolFocused; }
+    // Where the Screen window's picture was drawn last (main-viewport coordinates, the
+    // picture and a GFX9000 beside it), and whether in the main window: the recorder's
+    // "screen" source reads it back after the frame is drawn.
+    float screenRect[4] = { 0, 0, 0, 0 };
+    bool screenRectMain = false;
+    // F11: the GFX9000 screen's full screen while it has the focus, nothing while a tool
+    // window has the keys (the assembler's F11 steps a line), else the main window's.
+    bool fullscreenPictureOnly = true;
+    bool gfxScreenFull = false, gfxScreenFocused = false;
+    void f11();
     // External development (devserver.h): the GDB server, the command API, file watching.
     // main() polls it every iteration.
     DevServer& devServer() { return *dev; }
@@ -156,6 +166,12 @@ private:
 
     // settings windows (gui_shell.cpp)
     void windowScreen(const ShellFrameInfo& info);
+    void screenPicture(const ShellFrameInfo& info);   // the Screen window's inside: the picture and its effects
+    // Full screen with the picture alone (fullscreenPictureOnly): one borderless window over
+    // the whole display, no menus, panels or status bar; F11 or a double-click goes back.
+    void drawFullscreenPicture(const ShellFrameInfo& info);
+    double fullscreenHintUntil = 0.0;
+    bool fullscreenWas = false;
     void windowMachine();
     void windowMedia();                 // the media windows (MEDIA_WINDOWS), each dockable on its own
     // What is in the machine: a window each, tabbed together by default where "Media" was.
@@ -191,7 +207,18 @@ private:
     void printerPortItems(bool asMenu);
     void lightgunItems(bool asMenu);
     void windowPrinter();
+    void windowSf3Oled();
     void windowGfx9000();
+    // The GFX9000's picture alone, in a window of its own that can float onto another
+    // display; its own full screen covers the display it is on, borderless, on top.
+    void windowGfxScreen();
+    int gfxScreenMonitor = -1;
+    // its place and size before full screen, put back when it leaves (once)
+    float gfxRestore[4] = { 0, 0, 0, 0 };
+    bool gfxRestorePending = false;
+public:
+    void toggleGfxScreenFull();
+private:
     void windowCslScripts();
     // A ROM a device needs and the ROM folder lacks: fetch it (a URL) or choose it.
     void romPrompt();

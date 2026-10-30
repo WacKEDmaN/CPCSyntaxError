@@ -59,12 +59,14 @@ GuiShell::GuiShell(EmuHost& h) : host(h), debugger(h) {
         { "Graphics finder", "win_gfx_finder", false, false },
         { "CPC keyboard", "win_cpc_keyboard", false, false },
         { "GFX9000", "win_gfx9000", false, false },
+        { "GFX9000 screen", "win_gfx9000screen", false, false },
         { "Assembler", "win_asm", false, false },
         { "BASIC", "win_basic", false, false },
         { "DSK editor", "win_dsk_editor", false, false },
         { "Cheats", "win_cheats", false, false },
         { "CSL scripts", "win_csl", false, false },
         { "Printer", "win_printer", false, false },
+        { "SF3 OLED", "win_sf3oled", false, false },
         // The settings, one window per section: they open docked together as tabs, and a
         // tab can be dragged out to float or dock anywhere.
         { "Video settings", "win_set_video", false, false },
@@ -104,6 +106,8 @@ void GuiShell::loadSettings(const std::map<std::string, std::string>& ini) {
         resetLayout = true;
         for (auto& p : panels) p.open = p.byDefault;
     }
+    auto fp = ini.find("fullscreenpicture");
+    if (fp != ini.end()) fullscreenPictureOnly = std::atoi(fp->second.c_str()) != 0;
     auto us = ini.find("ui_scale");
     if (us != ini.end()) uiScale = std::clamp((float)std::atof(us->second.c_str()), 0.75f, 2.5f);
     auto str = [&](const char* k, std::string& v) { auto i = ini.find(k); if (i != ini.end()) v = i->second; };
@@ -119,6 +123,7 @@ void GuiShell::saveSettings(std::ostream& out) const {
     out << "layout_version=" << LAYOUT_VERSION << "\n";
     for (const auto& p : panels) out << p.iniKey << "=" << (p.open ? 1 : 0) << "\n";
     out << "statusbar=" << (showStatusBar ? 1 : 0) << "\n";
+    out << "fullscreenpicture=" << (fullscreenPictureOnly ? 1 : 0) << "\n";
     out << "ui_scale=" << uiScale << "\n";
     out << "csl_script=" << cslScript << "\n" << "csl_out=" << cslOut << "\n"
         << "csl_diskdir=" << cslDiskDir << "\n" << "csl_crtc=" << cslCrtc << "\n";
@@ -202,6 +207,17 @@ void GuiShell::draw(const ShellFrameInfo& info) {
     handleShortcuts();
     toolFocusedNow = false;
 
+    // full screen, the picture alone: nothing else drawn (the windows keep their places)
+    const bool pictureOnly = host.fullscreen && fullscreenPictureOnly;
+    if (pictureOnly && !fullscreenWas) fullscreenHintUntil = ImGui::GetTime() + 3.0;
+    fullscreenWas = pictureOnly;
+    if (pictureOnly) {
+        drawFullscreenPicture(info);
+        windowGfxScreen();
+        toolFocused = false;
+        return;
+    }
+
     drawMenuBar();
     if (showStatusBar) drawStatusBar(info);
 
@@ -236,8 +252,10 @@ void GuiShell::draw(const ShellFrameInfo& info) {
         if (basicWindow->focused) toolFocusedNow = true;   // keys go to the editor, not the CPC
     }
     windowPrinter();
+    windowSf3Oled();
     romPrompt();
     windowGfx9000();
+    windowGfxScreen();
     windowProfiler();
     windowGraphicsFinder();
     windowCpcKeyboard();
@@ -347,7 +365,12 @@ void GuiShell::windowScreen(const ShellFrameInfo& info) {
     bool visible = ImGui::Begin("Screen", &open, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
     ImGui::PopStyleColor();
     ImGui::PopStyleVar();
-    if (visible && info.screenTexture && info.textureWidth > 0) {
+    if (visible) screenPicture(info);
+    ImGui::End();
+}
+
+void GuiShell::screenPicture(const ShellFrameInfo& info) {
+    if (info.screenTexture && info.textureWidth > 0) {
         ImVec2 avail = ImGui::GetContentRegionAvail();
         ImVec2 origin = ImGui::GetCursorScreenPos();
         // With a GFX9000 fitted its own monitor stands beside the CPC's: the two share the
@@ -371,6 +394,16 @@ void GuiShell::windowScreen(const ShellFrameInfo& info) {
         float ox = origin.x + (avail.x - totalW) * 0.5f, oy = origin.y + (avail.y - drawH) * 0.5f;
         ImDrawList* dl = ImGui::GetWindowDrawList();
         ImTextureID tex = (ImTextureID)(intptr_t)info.screenTexture;
+        // the picture's rectangle, for the recorder's "screen" source
+        if (gfxOnMain) {
+            float gw = avail.x, gh = avail.y;
+            if (host.maintainAspect) { gh = std::min(avail.y, avail.x * 0.75f); gw = gh * 4.0f / 3.0f; }
+            screenRect[0] = origin.x + (avail.x - gw) * 0.5f; screenRect[1] = origin.y + (avail.y - gh) * 0.5f;
+            screenRect[2] = gw; screenRect[3] = gh;
+        } else {
+            screenRect[0] = ox; screenRect[1] = oy; screenRect[2] = totalW; screenRect[3] = drawH;
+        }
+        screenRectMain = ImGui::GetWindowViewport() == ImGui::GetMainViewport();
         if (gfxOnMain) {
             // One monitor, switched to the GFX9000: its picture, a 4:3 set filling the window.
             float gw = avail.x, gh = avail.y;
@@ -489,7 +522,39 @@ void GuiShell::windowScreen(const ShellFrameInfo& info) {
         if (screenHovered && ImGui::IsMouseDoubleClicked(0) && !host.emulatedMouseActive() && !host.lightgunActive()
             && toggleFullscreen) toggleFullscreen();
     }
+}
+
+void GuiShell::drawFullscreenPicture(const ShellFrameInfo& info) {
+    ImGuiViewport* vp = ImGui::GetMainViewport();
+    ImGui::SetNextWindowPos(vp->Pos);
+    ImGui::SetNextWindowSize(vp->Size);
+    ImGui::SetNextWindowViewport(vp->ID);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0, 0, 0, 1));
+    const ImGuiWindowFlags flags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoMove |
+                                   ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoBringToFrontOnFocus;
+    if (ImGui::Begin("##fullscreenpicture", nullptr, flags)) {
+        screenPicture(info);
+        if (ImGui::GetTime() < fullscreenHintUntil) {
+            const char* hint = "F11 or a double-click: back to the window";
+            const ImVec2 ts = ImGui::CalcTextSize(hint);
+            ImDrawList* dl = ImGui::GetForegroundDrawList(vp);
+            const ImVec2 at(vp->Pos.x + (vp->Size.x - ts.x) * 0.5f, vp->Pos.y + vp->Size.y - ts.y - 24);
+            dl->AddRectFilled(ImVec2(at.x - 10, at.y - 6), ImVec2(at.x + ts.x + 10, at.y + ts.y + 6), IM_COL32(0, 0, 0, 190), 4.0f);
+            dl->AddText(at, ImGui::GetColorU32(kAccent), hint);
+        }
+    }
     ImGui::End();
+    ImGui::PopStyleColor();
+    ImGui::PopStyleVar(3);
+}
+
+void GuiShell::f11() {
+    if (gfxScreenFocused) { toggleGfxScreenFull(); return; }
+    if (toolFocused) return;                    // the tool's own key (the assembler: step a line)
+    if (toggleFullscreen) toggleFullscreen();
 }
 
 // ============================================================== status bar
@@ -1004,7 +1069,7 @@ void GuiShell::menuWindow() {
         ImGui::EndMenu();
     }
     ImGui::Separator();
-    for (const char* w : { "Debugger", "Chips", "Memory", "Logic analyser", "Profiler", "GFX9000" }) ImGui::MenuItem(w, nullptr, &panelOpen(w));
+    for (const char* w : { "Debugger", "Chips", "Memory", "Logic analyser", "Profiler", "GFX9000", "GFX9000 screen" }) ImGui::MenuItem(w, nullptr, &panelOpen(w));
     ImGui::Separator();
     for (const char* w : { "Assembler", "BASIC", "DSK editor", "Cheats", "Graphics finder", "CSL scripts", "Printer" }) ImGui::MenuItem(w, nullptr, &panelOpen(w));
     ImGui::Separator();
@@ -1158,7 +1223,7 @@ void GuiShell::startRecordingDialog(bool video) {
     const std::time_t t = std::time(nullptr);
     char when[32] = "";
     if (const std::tm* tm = std::localtime(&t)) std::strftime(when, sizeof when, "_%Y%m%d_%H%M%S", tm);
-    const std::string name = host.slotProgram() + when + (video ? ".avi" : ".wav");
+    const std::string name = host.slotProgram() + when + (!video ? ".wav" : host.recordFormat == "h264" ? ".mp4" : ".avi");
     saver.open(video ? "Record video" : "Record sound", host.recordDir, name, [this](const std::string& p) {
         std::string why;
         if (!host.startRecording(p, why)) host.status = why;
@@ -1168,18 +1233,39 @@ void GuiShell::startRecordingDialog(bool video) {
 void GuiShell::recordMenu() {
     if (!ImGui::BeginMenu("Record", host.booted())) return;
     ImGui::BeginDisabled(host.recording());
-    if (ImGui::MenuItem("Video and sound (.avi)...")) startRecordingDialog(true);
+    if (ImGui::MenuItem(host.recordFormat == "h264" ? "Video and sound (.mp4)..." : "Video and sound (.avi)...")) startRecordingDialog(true);
     if (ImGui::MenuItem("Sound only (.wav)...")) startRecordingDialog(false);
     ImGui::EndDisabled();
     if (ImGui::MenuItem("Stop recording", nullptr, false, host.recording())) host.stopRecording();
     ImGui::Separator();
+    ImGui::TextDisabled("Picture");
+    {
+        static const char* const sources[][3] = {
+            { "As shown", "shown", "As the screen shows it: the GFX9000's picture when it is on the monitor,\nthe two side by side when it has its own picture (beside the CPC's, or its own window)." },
+            { "CPC", "cpc", "The CPC's own picture only." },
+            { "GFX9000", "gfx", "The GFX9000's picture only (its Video9000 mix when it has one), at 4:3 in the CPC's frame." },
+            { "Both, side by side", "both", "The CPC's picture and the GFX9000's next to it: a frame twice as wide." },
+            { "Screen, with its effects", "screen", "The Screen window's picture as it is drawn: the CRT effect or the advanced\nCRT filter included, at the size it is shown when the recording starts\n(the Screen window in the main window, or full screen)." } };
+        for (const auto& src : sources) {
+            const bool needsGfx = std::string(src[1]) == "gfx" || std::string(src[1]) == "both";
+            if (ImGui::MenuItem(src[0], nullptr, host.recordSource == src[1], !host.recording() && (!needsGfx || host.v9990Enabled)))
+                host.recordSource = src[1];
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip("%s", src[2]);
+        }
+    }
+    ImGui::Separator();
     ImGui::TextDisabled("Video format");
+    {
+        static bool looked = false;
+        static std::string found;
+        if (!looked || ImGui::IsWindowAppearing()) { found = MediaRecorder::findFfmpeg(host.ffmpegPath); looked = true; }
+        if (ImGui::MenuItem("H.264 MP4 (small; every player)", nullptr, host.recordFormat == "h264", !host.recording() && !found.empty())) host.recordFormat = "h264";
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("%s", found.empty() ? "Needs ffmpeg (ffmpeg.org): install it, or put ffmpeg=<its program> in cpcse.ini."
+                                                  : ("x264 by ffmpeg (" + found + "): a minute of CPC is some 10-30 MB.").c_str());
+    }
     if (ImGui::MenuItem("MJPEG (plays in most players)", nullptr, host.recordFormat == "mjpeg", !host.recording())) host.recordFormat = "mjpeg";
-    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Every frame a JPEG: Windows' own player plays it. About 4 MB a second.");
-    if (ImGui::MenuItem("ZMBV, lossless (VLC, ffmpeg, editors)", nullptr, host.recordFormat == "zmbv", !host.recording())) host.recordFormat = "zmbv";
-    if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Every pixel exact, and only the changes stored: small files.\n"
-                          "VLC, ffmpeg and the video editors built on them play it; Windows' own player does not.");
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Every frame a JPEG: Windows' own player plays it. About 9 MB a second.");
     ImGui::EndMenu();
 }
 
