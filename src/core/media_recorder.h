@@ -56,8 +56,14 @@ public:
     // One emulated frame: its picture (width x height, as given to start) and its sound
     // (interleaved stereo; empty when the sound is off: silence of the frame's length).
     void addFrame(const uint32_t* pixels, const int16_t* audio, size_t audioValues);
-    // Every frame written, the file closed. Safe to call twice.
+    // Every frame written, the file closed. Safe to call twice. For H264 the end (ffmpeg
+    // finishing the video, then joining the sound) runs on a thread of its own and stop()
+    // returns at once: finishing() while it runs, takeFinished() gives its result once (for
+    // the status line), waitFinished() waits for every one (at exit).
     void stop();
+    bool finishing() const;
+    bool takeFinished(std::string& message);
+    void waitFinished();
 
     bool active() const { return running; }
     Format format() const { return fmt; }
@@ -105,7 +111,12 @@ private:
     struct Encoder;
     std::unique_ptr<Encoder> encoder;
     std::string tempVideo, tempAudio;
-    bool finishH264();                       // ffmpeg ends, joins the two into basePath
+    // ffmpeg ends, the two joined into `out`; the status line's text
+    static std::string finishH264(Encoder& encoder, const std::string& program, const std::string& video,
+                                  const std::string& audio, const std::string& out, double seconds);
+    struct Finish;
+    std::vector<std::shared_ptr<Finish>> finishes;
+    mutable std::mutex finishLock;
 
     // the file
     std::FILE* file = nullptr;

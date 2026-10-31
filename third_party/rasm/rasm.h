@@ -59,6 +59,7 @@ struct s_parameter {
 	char *inline_asm;
 	int npath,mpath;
 	int noampersand;
+	int winape;          /* CPCSyntaxError: WinAPE's directives and their meanings */
 	int cprinfo,cprinfoexport;
 	char module_separator;
 	int enforce_symbol_case;
@@ -90,6 +91,10 @@ struct s_rasm_info {
 	// export snapshot or Cartridhe informations to emulator
 	unsigned char *emurom;
 	int lenrom;
+	/* CPCSyntaxError: the breakpoints the source sets (BREAKPOINT, BRK labels with -eb,
+	 * WinAPE's BRK and RUN address,breakpoint), as addresses */
+	int *breakpoint;
+	int nbbreakpoint;
 };
 
 #ifndef INSIDE_RASM

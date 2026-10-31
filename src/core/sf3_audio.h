@@ -69,7 +69,7 @@ public:
     void setOutputSampleRate(double rate) { outputRate = rate > 0 ? rate : 44100.0; }
     void advanceMicrosecond();
     void readSample(float& l, float& r);
-    void setBeep(int a, int b);
+    void setBeep(int tone, int rhythm);
     // Web radio (the SF3's route 5, WEB-DK.BAS): the SF3 copies a socket's data into the
     // decoder (WiFi function 21). Its ARM buffers it; here 16 KB fill before the sound
     // starts, and again after the stream ran dry (this emulator's choice).
@@ -132,8 +132,8 @@ private:
 
     // the buzzer
     bool beepOn = false;
-    float beepLevel = 0;
     double beepHz = 1000, beepPhase = 0;
+    double beepGate = 0, beepPeriod = 0;   // the rhythm: seconds on and off (0 = continuous)
 
     // output
     double sourcePhase = 0.0, outPhase = 0.0;

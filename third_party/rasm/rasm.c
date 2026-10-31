@@ -363,6 +363,7 @@ struct s_compute_core_data {
 	/* evaluator v3 may be recursive */
 	char *varbuffer;
 	//int maxivar;
+	int varbuffersize;   /* CPCSyntaxError: its size (VarBufferFits grows it) */
 	struct s_compute_element *tokenstack;
 	int maxtokenstack;
 	struct s_compute_element *operatorstack;
@@ -423,7 +424,8 @@ enum e_expression {
 	E_EXPRESSION_RUN,    /* delayed RUN value */
 	E_EXPRESSION_ZXRUN,  /* delayed RUN value for ZX snapshot */
 	E_EXPRESSION_ZXSTACK,/* delayed STACK value for ZX snapshot */
-	E_EXPRESSION_BRS     /* delayed shifting for BIT, RES, SET */
+	E_EXPRESSION_BRS,    /* delayed shifting for BIT, RES, SET */
+	E_EXPRESSION_RUNBRK  /* CPCSyntaxError: WinAPE's RUN address,breakpoint: the breakpoint */
 };
 
 struct s_expression {
@@ -1258,6 +1260,7 @@ struct s_assenv {
 	float rough;
 	struct s_compute_core_data *computectx,ctx1,ctx2;
 	char *fastVarBuffer;
+	int fastVarBufferSize;   /* CPCSyntaxError: its size, for ExpressionFastTranslate to grow it */
 	struct s_crcstring_tree stringtree;
 	/* label */
 	struct s_label *label;
@@ -1346,6 +1349,7 @@ struct s_assenv {
 	unsigned char dmatab[256];
 	unsigned char psgfine[256];
 	int noampersand;
+	int winape;          /* CPCSyntaxError: WinAPE's directives (see WinapeRenameWord) */
 	/* output */
 	char *outputfilename;
 	int export_sym,export_local,export_multisym;
@@ -1951,19 +1955,22 @@ char *TxtReplace(char *in_str, const char *in_substr, const char *out_substr, co
 				m1=out_str+sl;
 				m2=m1+dif;
 				sl+=dif;
-				while (m1!=str_look+l1-dif)
+				/* CPCSyntaxError: the tail after the match (its 0 included) moves dif on; the
+				 * loop stopped at str_look+l1-dif, before the match or the buffer's start
+				 * when the new text was longer than l1 */
+				while (m1>=str_look+l1)
 				{
 					*m2=*m1;
 					m1--;m2--;
 				}
 				/* then we copy the replace string (can't be NULL in this case) */
 				memcpy(str_look,out_substr,l2);
-				
+
 				/* look for next replace */
 				if (!recurse)
 					str_look=strstr(str_look+l2,in_substr);
 				else
-					str_look=strstr(in_str,in_substr);
+					str_look=strstr(out_str,in_substr);   /* CPCSyntaxError: in_str may be freed by the realloc */
 					
 				/* to prevent from naughty overlap */
 				cpt--;
@@ -3182,6 +3189,11 @@ void _internal_RasmFreeInfoStruct(struct s_rasm_info *debug)
 			MemFree(debug->symbol[i].name);
 		}
 		MemFree(debug->symbol);
+	}
+	if (debug->breakpoint) {
+		MemFree(debug->breakpoint);
+		debug->breakpoint=NULL;
+		debug->nbbreakpoint=0;
 	}
 	memset(debug,0,sizeof(struct s_rasm_info));
 }
@@ -4533,7 +4545,7 @@ char *TranslateTag(struct s_assenv *ae, char *varbuffer, int *touched, const int
 	while ((starttag=strchr(varbuffer+1,'{'))!=NULL) {
 		if ((endtag=strchr(starttag,'}'))==NULL) {
 			MakeError(ae,ae->idx,GetCurrentFile(ae),GetExpLine(ae,0),"invalid tag in string [%s]\n",varbuffer);
-			return NULL;
+			return varbuffer;   /* CPCSyntaxError: never NULL: 22 callers use it unchecked; the error is made */
 		}
 		/* allow inception */
 		tagcount=1;
@@ -4544,7 +4556,7 @@ char *TranslateTag(struct s_assenv *ae, char *varbuffer, int *touched, const int
 		}
 		if (tagcount) {
 			MakeError(ae,ae->idx,GetCurrentFile(ae),GetExpLine(ae,0),"invalid brackets combination in string [%s]\n",varbuffer);
-			return NULL;
+			return varbuffer;   /* CPCSyntaxError: never NULL (see above) */
 		} else {
 			endtag=tagcheck-1;
 		}
@@ -6181,6 +6193,16 @@ char *getOperatorStr(const int operator) {
 	return opStr;
 }
 
+/* CPCSyntaxError: the context's varbuffer holds `need` bytes. It was sized from the longest
+ * source line, but a macro or a {tag} makes longer text; the callers reach it through the
+ * context each time, never by a pointer kept, so it may move. */
+static void VarBufferFits(struct s_compute_core_data *ctx, int need) {
+	if (need>ctx->varbuffersize) {
+		ctx->varbuffer=MemRealloc(ctx->varbuffer,need);
+		ctx->varbuffersize=need;
+	}
+}
+
 double ComputeExpressionCore(struct s_assenv *ae,char *original_zeexpression,const int ptr, const int didx)
 {
 	#undef FUNC
@@ -6247,6 +6269,7 @@ double ComputeExpressionCore(struct s_assenv *ae,char *original_zeexpression,con
 	if (!zeexpression[0]) {
 		return 0;
 	}
+	VarBufferFits(ae->computectx,(int)strlen(zeexpression)+256);
 	/* double hack if the first value is negative */
 	if (zeexpression[0]=='-') {
 		if (ae->AutomateExpressionValidCharFirst[(int)zeexpression[1]&0xFF]) {
@@ -6746,6 +6769,7 @@ double ComputeExpressionCore(struct s_assenv *ae,char *original_zeexpression,con
 	printf("après curly [%s]\n",minivarbuffer);
 #endif
 						ae->computectx=&ae->ctx1;
+						VarBufferFits(ae->computectx,minusptr+(int)strlen(minivarbuffer)+256);
 						strcpy(ae->computectx->varbuffer+minusptr,minivarbuffer);
 						//if (!touched) {
 						//	strcpy(ae->computectx->varbuffer+minusptr,minivarbuffer);
@@ -7633,7 +7657,7 @@ printf("=== STACK EXECUTION ===\n");
 					paccu--;
 					break;
 				case E_COMPUTE_OPERATION_SHL:if (paccu>1) accu[paccu-2]=((int)accu[paccu-2])<<((int)accu[paccu-1]);
-								if (((int)accu[paccu-1])>31 || ((int)accu[paccu-1])<-31) {
+								if (paccu>1 && (((int)accu[paccu-1])>31 || ((int)accu[paccu-1])<-31)) {   /* CPCSyntaxError: only with both operands */
 									if (!ae->nowarning) {
 										rasm_printf(ae,KWARNING"[%s:%d] Warning - shifting %d is architecture dependant, result forced to ZERO\n",GetExpFile(ae,didx),GetExpLine(ae,didx),(int)accu[paccu-1]);
 										if (ae->erronwarn) MaxError(ae);
@@ -7642,7 +7666,7 @@ printf("=== STACK EXECUTION ===\n");
 								}
 								paccu--;break;
 				case E_COMPUTE_OPERATION_SHR:if (paccu>1) accu[paccu-2]=((int)accu[paccu-2])>>((int)accu[paccu-1]);
-								if (((int)accu[paccu-1])>31 || ((int)accu[paccu-1])<-31) {
+								if (paccu>1 && (((int)accu[paccu-1])>31 || ((int)accu[paccu-1])<-31)) {   /* CPCSyntaxError: only with both operands */
 									if (!ae->nowarning) {
 										rasm_printf(ae,KWARNING"[%s:%d] Warning - shifting %d is architecture dependant, result forced to ZERO\n",GetExpFile(ae,didx),GetExpLine(ae,didx),(int)accu[paccu-1]);
 										if (ae->erronwarn) MaxError(ae);
@@ -7958,7 +7982,7 @@ printf("=== STACK EXECUTION ===\n");
 								  break;
 				default:MakeError(ae,GetExpIdx(ae,didx),GetCurrentFile(ae),GetExpLine(ae,didx),"invalid computing state! (%d)\n",computestack[i].operator);paccu=0;
 			}
-			if (!paccu) {
+			if (paccu<=0) {   /* CPCSyntaxError: an operator with too few operands takes it below 0 */
 				if (zeexpression[0]=='&') {
 					MakeError(ae,GetExpIdx(ae,didx),GetExpFile(ae,didx),GetExpLine(ae,didx),"Missing operand for calculation [%s] Did you use & for an hexadecimal value?\n",TradExpression(zeexpression));
 				} else {
@@ -8112,7 +8136,7 @@ printf("=== STACK EXECUTION ===\n");
 					paccu--;
 					break;
 				case E_COMPUTE_OPERATION_SHL:if (paccu>1) accu[paccu-2]=((int)floor(accu[paccu-2]+0.5))<<((int)floor(accu[paccu-1]+0.5));
-								if (((int)accu[paccu-1])>31 || ((int)accu[paccu-1])<-31) {
+								if (paccu>1 && (((int)accu[paccu-1])>31 || ((int)accu[paccu-1])<-31)) {   /* CPCSyntaxError: only with both operands */
 									if (!ae->nowarning) {
 										rasm_printf(ae,KWARNING"[%s:%d] Warning - shifting %d is architecture dependant, result forced to ZERO\n",GetExpFile(ae,didx),GetExpLine(ae,didx),(int)accu[paccu-1]);
 										if (ae->erronwarn) MaxError(ae);
@@ -8121,7 +8145,7 @@ printf("=== STACK EXECUTION ===\n");
 								}
 								paccu--;break;
 				case E_COMPUTE_OPERATION_SHR:if (paccu>1) accu[paccu-2]=((int)floor(accu[paccu-2]+0.5))>>((int)floor(accu[paccu-1]+0.5));
-								if (((int)accu[paccu-1])>31 || ((int)accu[paccu-1])<-31) {
+								if (paccu>1 && (((int)accu[paccu-1])>31 || ((int)accu[paccu-1])<-31)) {   /* CPCSyntaxError: only with both operands */
 									if (!ae->nowarning) {
 										rasm_printf(ae,KWARNING"[%s:%d] Warning - shifting %d is architecture dependant, result forced to ZERO\n",GetExpFile(ae,didx),GetExpLine(ae,didx),(int)accu[paccu-1]);
 										if (ae->erronwarn) MaxError(ae);
@@ -8439,7 +8463,7 @@ printf("=== STACK EXECUTION ===\n");
 								  break;
 				default:MakeError(ae,GetExpIdx(ae,didx),GetCurrentFile(ae),GetExpLine(ae,didx),"invalid computing state! (%d)\n",computestack[i].operator);paccu=0;
 			}
-			if (!paccu) {
+			if (paccu<=0) {   /* CPCSyntaxError: an operator with too few operands takes it below 0 */
 				if (zeexpression[0]=='&') {
 					MakeError(ae,GetExpIdx(ae,didx),GetExpFile(ae,didx),GetExpLine(ae,didx),"Missing operand for calculation [%s] Did you use & for an hexadecimal value?\n",TradExpression(zeexpression));
 				} else {
@@ -8549,6 +8573,12 @@ printf("MakeAlias (2) EXPR=[%s EQU %s]\n",expr,ptr_exp2);
 #endif
 			} else {
 				curalias.alias=TxtStrDup(expr);
+			}
+			/* CPCSyntaxError: a tag TranslateTag refuses (a { never closed: "y{ equ 1") gave
+			 * NULL, read just below */
+			if (!curalias.alias) {
+				MakeError(ae,ae->idx,GetCurrentFile(ae),GetExpLine(ae,0),"invalid {tag} in alias name [%s]\n",expr);
+				return 0;
 			}
 
 			/* handle module prefix */
@@ -8805,6 +8835,16 @@ void ExpressionFastTranslate(struct s_assenv *ae, char **ptr_expr, const int ful
 	int recurse=-1,recursecount=0;
 
 	//StateMachineResizeBuffer(&varbuffer,128,&maxivar);
+	/* CPCSyntaxError: the buffer was sized from the longest source line; an expression made
+	 * later (a macro, a tag) can be longer, and a source of empty lines gave 0 bytes. It
+	 * grows to hold this expression (a name in it is never longer than the expression). */
+	{
+		int need=(int)strlen(*ptr_expr)+256;
+		if (need>ae->fastVarBufferSize) {
+			ae->fastVarBuffer=MemRealloc(ae->fastVarBuffer,need);
+			ae->fastVarBufferSize=need;
+		}
+	}
 	varbuffer=ae->fastVarBuffer;
 	expr=*ptr_expr;
 
@@ -9400,6 +9440,7 @@ void PushExpression(struct s_assenv *ae,const int iw,const enum e_expression zet
 			case E_EXPRESSION_RSTC:curexp.ptr=ae->codeadr;ae->outputadr++;ae->codeadr++;ae->external_mapping_size=0;break;
 			case E_EXPRESSION_IM:  curexp.ptr=ae->codeadr;ae->outputadr++;ae->codeadr+=2;ae->external_mapping_size=0;break;
 			case E_EXPRESSION_RUN:
+			case E_EXPRESSION_RUNBRK:
 			case E_EXPRESSION_ZXRUN:
 			case E_EXPRESSION_ZXSTACK:ae->external_mapping_size=0;break;
 			case E_EXPRESSION_BRS:curexp.ptr=ae->codeadr;ae->external_mapping_size=0;break; // minimum syndical
@@ -9469,6 +9510,7 @@ void PushExpression(struct s_assenv *ae,const int iw,const enum e_expression zet
 			case E_EXPRESSION_RSTC:
 			case E_EXPRESSION_IM:ae->outputadr++;ae->codeadr++;break;
 			case E_EXPRESSION_RUN:break;
+			case E_EXPRESSION_RUNBRK:break;
 			case E_EXPRESSION_ZXRUN:break;
 			case E_EXPRESSION_ZXSTACK:break;
 			case E_EXPRESSION_BRS:break;
@@ -10444,6 +10486,13 @@ void PopAllExpression(struct s_assenv *ae, const int crunched_zone)
 				ae->snapshot.registers.LPC=r&0xFF;
 				ae->snapshot.registers.HPC=(r>>8)&0xFF;
 				break;			
+			case E_EXPRESSION_RUNBRK:
+				{
+					struct s_breakpoint breakpoint={0};
+					breakpoint.address=r&0xFFFF;
+					ObjectArrayAddDynamicValueConcat((void **)&ae->breakpoint,&ae->ibreakpoint,&ae->maxbreakpoint,&breakpoint,sizeof(struct s_breakpoint));
+				}
+				break;
 			case E_EXPRESSION_ZXRUN:
 				if (r<0 || r>65535) {
 					if (!ae->nowarning) {
@@ -10564,6 +10613,11 @@ void PushLabel(struct s_assenv *ae)
 					i++;
 					if (ae->wl[ae->idx].w[i]=='}') tagcount--;
 				} while (tagcount && ae->wl[ae->idx].w[i]);
+				if (tagcount) {
+					/* CPCSyntaxError: a { never closed was read on, past the label's end */
+					MakeError(ae,ae->idx,GetCurrentFile(ae),ae->wl[ae->idx].l,"missing } in label declaration\n");
+					return;
+				}
 				continue;
 			}
 			if (!ae->AutomateValidLabel[(int)ae->wl[ae->idx].w[i]&0xFF]) {
@@ -19623,12 +19677,73 @@ printf("<== PopGlobal on Stack [%s] igs=%d\n",ae->globalLabelStack[ae->igs].labe
 }
 
 
+/* CPCSyntaxError: WinAPE mode.
+ * Its words with another name in RASM, renamed as the preprocessor reads them, where a
+ * statement's directive goes: first in the statement, or second after a label (a word that
+ * is no directive or instruction). An operand of the same name (CALL TEXT) is left alone. */
+static void WinapeRenameWord(char *w, int *lw, struct s_wordlist *wordlist, int nbword) {
+	static const char *map[][2]={
+		{"BYTE","DEFB"},{"TEXT","DEFB"},{"WORD","DEFW"},{"RMEM","DEFS"},
+		{"END","WINAPEEND"},{"STOP","WINAPESTOP"},
+		{"PAUSE","WINAPENOP"},{"TITLE","WINAPENOP"},{"DUMP","WINAPENOP"},{"WRITE","WINAPENOP"},{"CLOSE","WINAPENOP"},
+		{"CHECKSUM","WINAPECHECKSUM"},
+		{NULL,NULL}};
+	int i,first;
+	for (i=0;map[i][0];i++) if (strcmp(w,map[i][0])==0) break;
+	if (!map[i][0]) return;
+	first=nbword==0 || wordlist[nbword-1].t;
+	if (!first && !((nbword<2 || wordlist[nbword-2].t) && !IsDirective(wordlist[nbword-1].w))) return;
+	strcpy(w,map[i][1]);
+	*lw=strlen(w);
+}
+/* SWITCH's words are not WinAPE's: there they are labels (its own sample names one BREAK). */
+static int WinapeHidden(const char *mnemo) {
+	return strcmp(mnemo,"BREAK")==0 || strcmp(mnemo,"CASE")==0 || strcmp(mnemo,"DEFAULT")==0
+		|| strcmp(mnemo,"SWITCH")==0 || strcmp(mnemo,"ENDSWITCH")==0;
+}
+/* A WinAPE macro uses its parameters by name; RASM's are {name}. Each whole word of the
+ * body equal to a parameter gets its braces, before the definition is read. */
+static int WinapeIdChar(char c) { return isalnum((unsigned char)c) || c=='_' || c=='@' || c=='.' || c=='{' || c=='}'; }
+static char *WinapeBraceWord(char *w, const char *name) {
+	int ln=strlen(name),lw=strlen(w),i,n=0,o=0;
+	char *out;
+	for (i=0;i+ln<=lw;i++) if (strncmp(w+i,name,ln)==0 && (i==0 || !WinapeIdChar(w[i-1])) && !WinapeIdChar(w[i+ln])) n++;
+	if (!n) return w;
+	out=MemMalloc(lw+2*n+1);
+	for (i=0;i<lw;) {
+		if (i+ln<=lw && strncmp(w+i,name,ln)==0 && (i==0 || !WinapeIdChar(w[i-1])) && !WinapeIdChar(w[i+ln])) {
+			out[o++]='{'; memcpy(out+o,name,ln); o+=ln; out[o++]='}'; i+=ln;
+		} else out[o++]=w[i++];
+	}
+	out[o]=0;
+	MemFree(w);
+	return out;
+}
+static void WinapeMacroParams(struct s_assenv *ae) {
+	int k,body,p;
+	if (ae->wl[ae->idx].t || ae->wl[ae->idx+1].t) return;          /* no name, or no parameter */
+	/* the parameters: after the name, to the end of the statement */
+	for (body=ae->idx+2;ae->wl[body].t==0;body++);
+	if (ae->wl[body].t==2) return;
+	body++;
+	for (k=body;ae->wl[k].t!=2;k++) {
+		if (strcmp(ae->wl[k].w,"MEND")==0 || strcmp(ae->wl[k].w,"ENDM")==0) break;
+		for (p=ae->idx+2;p<body;p++) {
+			if (ae->wl[p].w[0]=='{' || strcmp(ae->wl[p].w,"...")==0) continue;
+			ae->wl[k].w=WinapeBraceWord(ae->wl[k].w,ae->wl[p].w);
+		}
+		ae->wl[k].len=strlen(ae->wl[k].w);
+	}
+}
+
 void __MACRO(struct s_assenv *ae) {
 	struct s_macro curmacro={0};
 	char *referentfilename,*zeparam;
 	int refidx,idx,getparam=1,i,redo=1;
 	struct s_wordlist curwl;
 	int enumCount=0;
+
+	if (ae->winape) WinapeMacroParams(ae);
 
 	if (ae->getstruct==1) {
 		MakeError(ae,ae->idx,GetCurrentFile(ae),ae->wl[ae->idx].l,"Please, why define a MACRO inside a structure declaration?\n");
@@ -20178,7 +20293,11 @@ void __RUN(struct s_assenv *ae) {
 		} else {
 			PushExpression(ae,ae->idx+1,E_EXPRESSION_RUN); // delayed RUN value
 			ae->idx++;
-			if (!ae->wl[ae->idx].t) {
+			if (!ae->wl[ae->idx].t && ae->winape) {
+				/* WinAPE: RUN address,breakpoint */
+				PushExpression(ae,ae->idx+1,E_EXPRESSION_RUNBRK);
+				ae->idx++;
+			} else if (!ae->wl[ae->idx].t) {
 				//ExpressionFastTranslate(ae,&ae->wl[ae->idx+1].w,0);
 				ramconf=RoundComputeExpression(ae,ae->wl[ae->idx+1].w,ae->codeadr,0,0);
 				ae->idx++;
@@ -20582,7 +20701,15 @@ void __BRK(struct s_assenv *ae) {
 	if (!ae->wl[ae->idx].t) {
 		MakeError(ae,ae->idx,GetCurrentFile(ae),ae->wl[ae->idx].l,"BRK Winape directive does not need parameter\n");
 	} else {
-		if (!ae->winapeBRKidx) {
+		if (!ae->winapeBRKidx && ae->winape) {
+			/* WinAPE: "an rst #30 Maxam-style breakpoint", and a breakpoint on it */
+			struct s_breakpoint breakpoint={0};
+			breakpoint.address=ae->codeadr;
+			if (ae->activebank>3) breakpoint.bank=1;
+			ObjectArrayAddDynamicValueConcat((void **)&ae->breakpoint,&ae->ibreakpoint,&ae->maxbreakpoint,&breakpoint,sizeof(struct s_breakpoint));
+			___output(ae,0xF7);
+			ae->nop+=4;
+		} else if (!ae->winapeBRKidx) {
 			___output(ae,0xED);
 			___output(ae,0xFF);
 			ae->nop+=2;
@@ -20598,6 +20725,29 @@ void __BRK(struct s_assenv *ae) {
 
 void __STOP(struct s_assenv *ae) {
 	rasm_printf(ae,"[%s:%d] STOP assembling requested\n",GetCurrentFile(ae),ae->wl[ae->idx].l);
+	while (ae->wl[ae->idx].t!=2) ae->idx++;
+	ae->idx--;
+	ae->stop=1;
+}
+
+/* CPCSyntaxError: WinAPE's directives with no RASM twin (the preprocessor renames them, in
+ * WinAPE mode only). PAUSE, TITLE and DUMP are "not implemented" in WinAPE itself; WRITE /
+ * WRITE DIRECT / CLOSE choose where WinAPE puts the code, here it goes into the machine as
+ * always: their parameters are passed over. END ignores the rest, in every file; STOP halts
+ * with an error. */
+void __WINAPENOP(struct s_assenv *ae) {
+}
+void __WINAPEEND(struct s_assenv *ae) {
+	/* the rest of the source passed over; what came before is the program */
+	while (ae->wl[ae->idx+1].t!=2) ae->idx++;
+}
+/* CHECKSUM RESET and the checksum() / memory() functions are not here: an error, never a
+ * wrong value (RASM would take CHECKSUM for a label). */
+void __WINAPECHECKSUM(struct s_assenv *ae) {
+	MakeError(ae,ae->idx,GetCurrentFile(ae),ae->wl[ae->idx].l,"WinAPE's CHECKSUM is not supported\n");
+}
+void __WINAPESTOP(struct s_assenv *ae) {
+	MakeError(ae,ae->idx,GetCurrentFile(ae),ae->wl[ae->idx].l,"Assembly Stopped\n");
 	while (ae->wl[ae->idx].t!=2) ae->idx++;
 	ae->idx--;
 	ae->stop=1;
@@ -20982,6 +21132,13 @@ void ___internal_skip_loop_block(struct s_assenv *ae, const int eloopstyle) {
 	IntArrayAddDynamicValueConcat(&loopstyle,&iloop,&mloop,eloopstyle);
 	/* look for WEND */
 	while (iloop) {
+		/* CPCSyntaxError: the source ends first (a WHILE or REPEAT on the last line read on
+		 * past the last word, into whatever memory followed) */
+		if (cidx>=ae->nbword || ae->wl[cidx-1].t==2) {
+			MakeError(ae,ae->idx,GetCurrentFile(ae),ae->wl[ae->idx].l,"loop with no end (WEND, REND or UNTIL missing)\n");
+			cidx=ae->nbword-1;          /* ae->idx on the word before the final END */
+			break;
+		}
 		if (strcmp(ae->wl[cidx].w,"REPEAT")==0) {
 			if (ae->wl[cidx].t) {
 				IntArrayAddDynamicValueConcat(&loopstyle,&iloop,&mloop,E_LOOPSTYLE_REPEATUNTIL);
@@ -24266,6 +24423,10 @@ struct s_asm_keyword instruction[]={
 {"EDSK",0,0,__EDSK},
 {"HFE",0,0,__HFE},
 {"ERRRD",0,0,__ERRRD},
+{"WINAPENOP",0,0,__WINAPENOP},
+{"WINAPEEND",0,0,__WINAPEEND},
+{"WINAPESTOP",0,0,__WINAPESTOP},
+{"WINAPECHECKSUM",0,0,__WINAPECHECKSUM},
 {"",0,0,NULL}
 };
 
@@ -24890,6 +25051,7 @@ int Assemble(struct s_assenv *ae, unsigned char **dataout, int *lenout, struct s
 					// we have no collision with CRC on our list so we will break even it's not the directive
 					if (instruction[ifast].crc==curcrc) {
 						if (strcmp(instruction[ifast].mnemo+1,wordlist[ae->idx].w+1)==0) {
+							if (ae->winape && WinapeHidden(instruction[ifast].mnemo)) break;
 							instruction[ifast].makemnemo(ae);
 							wordlist=ae->wl;
 							// normalement inutile => boucles!
@@ -25078,6 +25240,7 @@ int Assemble(struct s_assenv *ae, unsigned char **dataout, int *lenout, struct s
 			if (ilength<INSTRUCTION_MAXLENGTH && (ifast=ae->fastmatch[(int)wordlist[ae->idx].w[0]][ilength])!=-1) {
 				while (instruction[ifast].mnemo[0]==wordlist[ae->idx].w[0]) {
 					if (instruction[ifast].crc==curcrc && strcmp(instruction[ifast].mnemo,wordlist[ae->idx].w)==0) {
+						if (ae->winape && WinapeHidden(instruction[ifast].mnemo)) break;
 						if (curcrc==CRC_REND) {
 							if (ae->ir) {
 								printf(KBOLD"----- "KLWHITE"REND"KNORMAL" "KBOLD"----- ;"KNORMAL" counter=%d Level %d ",ae->repeat[ae->ir-1].repeat_counter,ae->ir-1);
@@ -27201,6 +27364,12 @@ printf("lab[%s]\n",ae->label[i].name);
 			ae->debug.run=-1;
 		}
 		ae->debug.start=minmem;
+		/* CPCSyntaxError: the breakpoints, for the emulator's debugger */
+		if (ae->ibreakpoint && !ae->debug.breakpoint) {
+			ae->debug.breakpoint=MemMalloc(sizeof(int)*ae->ibreakpoint);
+			for (i=0;i<ae->ibreakpoint;i++) ae->debug.breakpoint[i]=ae->breakpoint[i].address&0xFFFF;
+			ae->debug.nbbreakpoint=ae->ibreakpoint;
+		}
 	}
 	ae->debug.warnerr=ae->nberr;
 /*******************************************************************************************
@@ -27728,6 +27897,7 @@ printf("paramz 1\n");
 		ae->rom_name=param->rom_name;
 		ae->checkmode=param->checkmode;
 		ae->noampersand=param->noampersand;
+		ae->winape=param->winape;
 		ae->module_separator[0]=param->module_separator;
 		ae->enforce_symbol_case=param->enforce_symbol_case;
 		if (param->rough) ae->maxam=0; else ae->maxam=1;
@@ -28832,6 +29002,7 @@ printf("*** separator='%c'   texpr=%d wordlist.t=%d wordlist.e=%d hadcomma=%d\n"
 				
 				if (lw) {
 					w[lw]=0;
+					if (ae->winape && lw==4 && strcmp(w,"DEFL")==0) {strcpy(w,"EQU");lw=3;}   /* WinAPE: DEFL is EQU */
 					if (lw==3 && strcmp(w,"EQU")==0) {
 #if TRACE_PREPRO
 printf("separator => test EQU match!\n");
@@ -28859,6 +29030,7 @@ printf("separator => test EQU match!\n");
 						}
 					} else {
 						int keymatched=0;
+						if (ae->winape) WinapeRenameWord(w,&lw,wordlist,nbword);
 						curw.len=lw; curw.w=MemMalloc(lw+1); memcpy(curw.w,w,lw+1);
 						curw.l=listing[l].iline;
 						curw.ifile=listing[l].ifile;
@@ -28972,6 +29144,7 @@ printf("after concat [%s]\n",wordlist[nbword].w);
 #endif
 						{
 						/* mot de fin de ligne */
+						if (ae->winape) {int wl_=strlen(w); WinapeRenameWord(w,&wl_,wordlist,nbword);}
 						curw.len=strlen(w); curw.w=MemMalloc(curw.len+1); memcpy(curw.w,w,curw.len+1);
 						curw.l=listing[l].iline;
 						curw.ifile=listing[l].ifile;
@@ -29150,9 +29323,11 @@ printf("END\n");
 
 //printf("maxLen=%d\n",midx);
 
-	ae->ctx1.varbuffer=MemMalloc(midx*10);
-	ae->ctx2.varbuffer=MemMalloc(midx*10);
-	ae->fastVarBuffer=MemMalloc(midx*10);
+	ae->ctx1.varbuffersize=ae->ctx2.varbuffersize=midx*10+4096;   /* CPCSyntaxError: never 0 bytes */
+	ae->ctx1.varbuffer=MemMalloc(ae->ctx1.varbuffersize);
+	ae->ctx2.varbuffer=MemMalloc(ae->ctx2.varbuffersize);
+	ae->fastVarBufferSize=midx*10+4096;
+	ae->fastVarBuffer=MemMalloc(ae->fastVarBufferSize);
 
 	/* switch words for macro declaration with AS80 & UZ80 */
 	if (param && param->as80) {

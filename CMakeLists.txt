@@ -199,6 +199,7 @@ endif()
 # --------------------------------------------------------------- the emulator
 add_executable(cpcse
   src/gui/main.cpp
+  src/gui/crash_report.cpp
   src/gui/emuhost.cpp
   src/gui/crt_filter.cpp
   src/gui/gui_shell.cpp
@@ -212,6 +213,7 @@ add_executable(cpcse
   src/gui/gui_logic.cpp
   src/gui/gui_profiler.cpp
   src/gui/gui_gfx_finder.cpp
+  src/gui/gui_cro.cpp
   src/gui/gui_keyboard.cpp
   src/gui/gui_assembler.cpp
   src/gui/c_build.cpp

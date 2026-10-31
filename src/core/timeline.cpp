@@ -257,7 +257,7 @@ MachineSnapshot::~MachineSnapshot() {
     GX4000& c = parts->coreCopy();
     c.memory = nullptr; c.asic = nullptr; c.gateArray = nullptr; c.m4 = nullptr; c.v9990 = nullptr; c.opl4 = nullptr;
     c.playcity = nullptr; c.serial = nullptr; c.speech = nullptr; c.symbifaceMouse = nullptr; c.sf2Rtc = nullptr;
-    c.sf3 = nullptr; c.ide = nullptr; c.multiface = nullptr; c.monitorRenderer = nullptr; c.crtc = nullptr;
+    c.sf3 = nullptr; c.ide = nullptr; c.hd20 = nullptr; c.multiface = nullptr; c.monitorRenderer = nullptr; c.crtc = nullptr;
     c.keyboard = nullptr; c.ay = nullptr; c.dac = nullptr; c.tape = nullptr; c.ppi = nullptr; c.gamepad = nullptr;
     c.fdc = nullptr; c.cpu = nullptr;
     c.~GX4000();

@@ -206,6 +206,10 @@ void HostProcess::write(const unsigned char* data, size_t n) {
     {
         std::lock_guard<std::mutex> l(impl->m);
         if (impl->inputClosing || impl->stopping) return;
+        // a program that stopped reading cannot make this grow without end: 8 MB waiting at most
+        size_t queued = 0;
+        for (const auto& c : impl->toWrite) queued += c.size();
+        if (queued + n > (8u << 20)) return;
         impl->toWrite.emplace_back(data, data + n);
     }
     impl->cv.notify_all();
@@ -226,7 +230,7 @@ size_t HostProcess::read(unsigned char* to, size_t n) {
     {
         std::lock_guard<std::mutex> l(impl->m);
         k = std::min(n, impl->out.size() - impl->outAt);
-        std::memcpy(to, impl->out.data() + impl->outAt, k);
+        if (k) std::memcpy(to, impl->out.data() + impl->outAt, k);   // (an empty buffer has no data(): UB even for 0)
         impl->outAt += k;
     }
     impl->cv.notify_all();                             // room again for the output thread

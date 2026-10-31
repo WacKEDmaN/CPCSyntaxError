@@ -33,6 +33,7 @@
 #include "emuhost.h"
 #include "gui_debugger.h"
 #include "gui_widgets.h"
+#include "core/cpr_loader.h"
 #include "core/profiler.h"
 
 namespace cpcse {
@@ -80,8 +81,10 @@ public:
     // Set by main (it owns GL): the emulated screen through the advanced CRT filter, into a
     // texture of outW x outH pixels; newFrame moves its rolling lines on. 0: not drawn
     // (the plain picture is drawn instead).
-    std::function<unsigned(int outW, int outH, float pixelScale, bool newFrame)> crtFilterRender;
-    uint64_t crtFilterFrame = ~0ull;   // the emulated frame the filter last drew
+    // `screen` 0 is the CPC's, 1 the GFX9000's (each has its own filter, for its rolling lines);
+    // `source` is the picture's texture, sourceW x sourceH, each line `rowStep` rows.
+    std::function<unsigned(int screen, unsigned source, int sourceW, int sourceH, int rowStep, int outW, int outH,
+                           float pixelScale, bool newFrame, const CrtFilterSettings& settings)> crtFilterRender;
     // ...and one after which draws MULTIPLY what is under them (the CRT effect's slot mask).
 
     bool quitRequested = false;
@@ -96,6 +99,10 @@ public:
     bool screenRectMain = false;
     // F11: the GFX9000 screen's full screen while it has the focus, nothing while a tool
     // window has the keys (the assembler's F11 steps a line), else the main window's.
+    // The CPU view's TIMING: the machine's clock counted from a zero the user set (the clock
+    // itself runs on: the devices keep time by it), in T-states or NOPs (4 T-states, 1 usec).
+    long long timingZero = 0;
+    bool timingNops = false;
     bool fullscreenPictureOnly = true;
     bool gfxScreenFull = false, gfxScreenFocused = false;
     void f11();
@@ -197,6 +204,9 @@ private:
     // settings sections and tool windows (gui_panels.cpp)
     void sectionVideo(bool asMenu);
     void crtFilterItems(bool asMenu);   // the advanced CRT filter's settings, in Video
+    // The screen whose scaling, CRT effect and filter Video shows: 0 the CPC's, 1 the GFX9000's.
+    int lookScreen = 0;
+    ScreenLook& editedLook() { return lookScreen == 1 && host.v9990Enabled ? host.gfxLook : host.cpcLook; }
     void sectionAudio(bool asMenu);
     void sectionInput(bool asMenu);
     void joystickDeviceItems(int port, bool asMenu);
@@ -233,8 +243,6 @@ private:
 
     // printer / GFX9000 textures
     unsigned printerTexture = 0, gfxTexture = 0;
-    unsigned maskTexture = 0;           // the picture through the slot mask (texture slot 4)
-    std::vector<uint32_t> maskPixels;
     // made again only for a new emulated frame, a new size or a new setting
     struct MaskKey {
         uint64_t frame = ~0ull; int w = 0, h = 0; float strength = -1; int stripe = 0; bool turned = false; float blur = 0; bool soft = false;
@@ -243,12 +251,34 @@ private:
                 && soft == o.soft;
         }
     };
-    MaskKey maskKey;
-    // the picture softened (CRT effect, blur), once a frame
-    std::vector<uint32_t> blurPixels;
-    unsigned blurTexture = 0;
-    uint64_t blurFrame = ~0ull;
-    float blurAmount = -1;
+    // ONE SCREEN'S PICTURE THROUGH ITS LOOK (drawThroughLook): what each screen keeps between
+    // frames: its softened picture (CRT effect, blur), its picture through the slot mask,
+    // the textures they are in, and the frame the filter last drew.
+    struct LookState {
+        LookState(int blur, int mask) : blurSlot(blur), maskSlot(mask) {}
+        int blurSlot, maskSlot;                // uploadTexture slots
+        unsigned maskTexture = 0;
+        std::vector<uint32_t> maskPixels;
+        MaskKey maskKey;
+        std::vector<uint32_t> blurPixels;
+        unsigned blurTexture = 0;
+        uint64_t blurFrame = ~0ull;
+        float blurAmount = -1;
+        uint64_t filterFrame = ~0ull;
+    };
+    LookState cpcLookState { 10, 11 }, gfxLookState { 12, 13 };
+    struct LookPicture {
+        int screen = 0;                        // 0 the CPC's, 1 the GFX9000's
+        unsigned texture = 0;
+        const uint32_t* pixels = nullptr;      // 0xAABBGGRR, width x height (null: no CPU copy)
+        int width = 0, height = 0;
+        int rowStep = 1;                       // rows a line, for the filter
+        int lines = 0;                         // the picture's lines: the scanlines' spacing
+        uint64_t frame = 0;                    // a new picture when this changes
+        bool colourTube = true;                // "auto" pattern: a slot mask, else scanlines
+    };
+    void drawThroughLook(ImDrawList* dl, const ScreenLook& look, LookState& st, const LookPicture& pic,
+                         float ox, float oy, float drawW, float drawH);
     unsigned logoTexture = 0;        // the logo (tools/make_logo.py, style A), uploaded once
     void drawLogo();
     long long gfxTextureFields = -1;
@@ -257,8 +287,16 @@ private:
     // The GFX9000's last field in gfxTexture (uploaded when a new one is complete); its
     // picture, or null while its monitor has no signal.
     const V9990Picture* gfxPictureTexture();
-    // draws the GFX9000 monitor into a box: its picture, or "no signal"
+    // draws the GFX9000 monitor into a box: its picture through the GFX9000 screen's look
+    // (fitted as gfxPictureRect says), or "no signal"
     void drawGfxMonitor(ImDrawList* dl, float x, float y, float w, float h);
+    // The shape of the GFX9000's picture on its monitor, width over height (gui_panels.cpp).
+    static float gfxPictureAspect(const V9990Picture& pic);
+    // Where the GFX9000's picture goes in a box, as the GFX9000 screen's scaling says: its
+    // shape kept (integer scaling: each row the same whole number of pixels) or the box filled.
+    void gfxPictureRect(float x, float y, float w, float h, float out[4]);
+    // The GFX9000 screen window follows the picture at this many times its size (0: free).
+    int gfxWindowScale = 0;
     int printerTextureRevision = -1;
     std::string printerTabDevice;     // the printer-port device the Printer window last showed
     // CSL scripts window
@@ -281,12 +319,30 @@ private:
     int keyboardHeld = -1;                    // row << 3 | bit held by the mouse
     std::set<int> keyboardLatched;            // held by a right click
 
+    // the CRO editor and builder, and the CRO group chooser (gui_cro.cpp)
+    void windowCroEditor();
+    void croEditorBody();
+    void croChooser();
+    struct CroEditor {
+        std::vector<CroGroup> groups;
+        std::string path;                  // the file it came from or was saved to ("" = none yet)
+        int group = -1, rom = -1;          // the selected group and ROM (index)
+        bool dirty = false;                // changed since it was opened or saved
+        std::string message;
+    } cro;
+    void croOpen(const std::string& path);
+    void croSave(const std::string& path);
+    void croAddRomFile(const std::string& path);
+    void croImportCartridge(const std::string& path);
+    void croRun(int index);
+
     // the graphics finder (gui_gfx_finder.cpp)
     void windowGraphicsFinder();
     struct GfxFinder {
         int source = 0, lastSource = 0, format = 1, palette = 0;
         int address = 0xc000, widthBytes = 80, height = 200, zoom = 2;
         bool screenLayout = true, cpcShape = true, grid = true;
+        bool pixelGrid = true;             // lines between the CPC pixels, from 4 screen pixels a pixel
         int selected = -1;
     } gfx;
     std::vector<uint32_t> gfxPixels;

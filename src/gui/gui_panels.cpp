@@ -45,6 +45,7 @@
 #include "core/matrix_printer.h"
 #include "core/monitor_model.h"
 #include "core/sf3.h"
+#include "core/hd20.h"
 #include "core/v9990.h"
 #include "core/opl4.h"
 #include "core/speech.h"
@@ -166,9 +167,25 @@ void GuiShell::sectionVideo(bool asMenu) {
     choiceRow(asMenu, renderers, host.beamRenderer ? "beam" : "std",
               [this](const char* v) { host.setBeamRenderer(std::string(v) == "beam"); });
 
+    // Scaling, the CRT effect and the advanced CRT filter: each screen has its own. With a
+    // GFX9000 fitted, a choice says which screen's are shown here.
+    if (host.v9990Enabled) {
+        if (asMenu) ImGui::Separator(); else sectionHeading("Screen");
+        static const Choice screens[] = {
+            { "CPC screen", "cpc", "The settings below are the CPC monitor's" },
+            { "GFX9000 screen", "gfx9000", "The settings below are the GFX9000 monitor's" } };
+        choiceRow(asMenu, screens, lookScreen == 1 ? "gfx9000" : "cpc", [this](const char* v) { lookScreen = std::string(v) == "gfx9000" ? 1 : 0; });
+        if (lookScreen == 1) {
+            const bool copy = asMenu ? ImGui::MenuItem("Copy the CPC screen's settings") : ImGui::SmallButton("Copy the CPC screen's settings");
+            if (copy) host.gfxLook = host.cpcLook;
+        }
+    }
+    ScreenLook& look = editedLook();
     if (asMenu) ImGui::Separator(); else sectionHeading("Scaling");
-    ImGui::Checkbox("Integer scaling", &host.integerScale);
-    ImGui::Checkbox("Maintain aspect ratio", &host.maintainAspect);
+    ImGui::Checkbox("Integer scaling", &look.integerScale);
+    if (ImGui::IsItemHovered() && &look == &host.gfxLook)
+        ImGui::SetTooltip("Each of the GFX9000's lines the same whole number of screen lines;\nits width follows the monitor's shape.");
+    ImGui::Checkbox("Maintain aspect ratio", &look.maintainAspect);
     if (asMenu) {
         if (ImGui::MenuItem(host.fullscreen ? "Windowed" : "Fullscreen", "F11") && toggleFullscreen) toggleFullscreen();
     } else if (ImGui::Button(host.fullscreen ? "Windowed (F11)" : "Fullscreen (F11)") && toggleFullscreen) {
@@ -178,30 +195,30 @@ void GuiShell::sectionVideo(bool asMenu) {
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("Full screen shows the picture alone: no menus, windows or status bar.\nF11 or a double-click goes back.");
 
     if (asMenu) ImGui::Separator(); else sectionHeading("CRT effect");
-    ImGui::Checkbox("CRT effect", &host.crtEffect);
-    if (host.crtFilterActive()) ImGui::TextDisabled("(the advanced CRT filter is drawn instead)");
-    ImGui::BeginDisabled(!host.crtEffect || host.crtFilterActive());
+    ImGui::Checkbox("CRT effect", &look.crtEffect);
+    if (look.crtFilterActive()) ImGui::TextDisabled("(the advanced CRT filter is drawn instead)");
+    ImGui::BeginDisabled(!look.crtEffect || look.crtFilterActive());
     static const Choice patterns[] = {
         { "As the set", "auto", "A colour set (CTM 640/644, CM14) has a slot mask;\na green or grey set (GT 64/65, MM12) shows scanlines." },
         { "Slot mask", "slot", "The phosphor stripes and slots of a colour tube" },
         { "Soft slot mask", "soft", "Fine dark lines over the picture, each pixel's colour kept whole\n(the look ACE-DL gives a CTM)" },
         { "Scanlines", "scanlines", "Dark lines between the CPC's lines" },
         { "None", "none", nullptr } };
-    choiceRow(asMenu, patterns, host.crtPattern, [this](const char* v) { host.crtPattern = v; });
-    ImGui::SetNextItemWidth(itemWidth(asMenu)); ImGui::SliderFloat("##mask", &host.crtMask, 0.0f, 1.0f, "slot mask %.2f");
-    ImGui::SetNextItemWidth(itemWidth(asMenu)); ImGui::SliderInt("##masksize", &host.crtMaskSize, 1, 4, "stripe %d px");
+    choiceRow(asMenu, patterns, look.crtPattern, [&look](const char* v) { look.crtPattern = v; });
+    ImGui::SetNextItemWidth(itemWidth(asMenu)); ImGui::SliderFloat("##mask", &look.crtMask, 0.0f, 1.0f, "slot mask %.2f");
+    ImGui::SetNextItemWidth(itemWidth(asMenu)); ImGui::SliderInt("##masksize", &look.crtMaskSize, 1, 4, "stripe %d px");
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("The width of one phosphor stripe on your screen: a triad is three.");
-    if (asMenu) ImGui::MenuItem("Turn the mask 90 degrees", nullptr, &host.crtMaskTurned);
-    else checkboxWrapped("Turn the mask 90 degrees", &host.crtMaskTurned);
+    if (asMenu) ImGui::MenuItem("Turn the mask 90 degrees", nullptr, &look.crtMaskTurned);
+    else checkboxWrapped("Turn the mask 90 degrees", &look.crtMaskTurned);
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("The stripes across the screen and the slots in rows,\nnot the stripes up and down.");
-    ImGui::SetNextItemWidth(itemWidth(asMenu)); ImGui::SliderFloat("##scan", &host.crtScanline, 0.0f, 1.0f, "scanlines %.2f");
-    ImGui::SetNextItemWidth(itemWidth(asMenu)); ImGui::SliderFloat("##bloom", &host.crtBloom, 0.0f, 1.0f, "bloom %.2f");
-    ImGui::SetNextItemWidth(itemWidth(asMenu)); ImGui::SliderFloat("##blur", &host.crtBlur, 0.0f, 1.0f, "blur %.2f");
+    ImGui::SetNextItemWidth(itemWidth(asMenu)); ImGui::SliderFloat("##scan", &look.crtScanline, 0.0f, 1.0f, "scanlines %.2f");
+    ImGui::SetNextItemWidth(itemWidth(asMenu)); ImGui::SliderFloat("##bloom", &look.crtBloom, 0.0f, 1.0f, "bloom %.2f");
+    ImGui::SetNextItemWidth(itemWidth(asMenu)); ImGui::SliderFloat("##blur", &look.crtBlur, 0.0f, 1.0f, "blur %.2f");
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("The beam's spot is round and soft: the pixels' edges soften, as on a tube.\n0 = sharp.");
     ImGui::EndDisabled();
 
     if (asMenu) ImGui::Separator(); else sectionHeading("Advanced CRT Filter");
-    ImGui::Checkbox("Advanced CRT Filter", &host.crtFilter.enabled);
+    ImGui::Checkbox("Advanced CRT Filter", &look.crtFilter.enabled);
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("The picture as a PAL signal on a curved tube: its colour spread and scanlines,\n"
                           "then the glass, the phosphor mask, bleed and glow. Drawn by the graphics card.");
@@ -242,7 +259,7 @@ void GuiShell::sectionVideo(bool asMenu) {
 }
 
 void GuiShell::crtFilterItems(bool asMenu) {
-    CrtFilterSettings& f = host.crtFilter;
+    CrtFilterSettings& f = editedLook().crtFilter;
     ImGui::BeginDisabled(!f.enabled);
     auto slider = [&](const CrtFilterSlider& s) {
         std::string format;
@@ -671,14 +688,68 @@ void GuiShell::sectionExpansions(bool asMenu) {
         if (host.symbifaceModule == "sf3") {
             ImGui::TextUnformatted("SF3 USB stick");
             if (after().smallButton("Folder...##sf3usb")) pickSf3(true);
-            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Drive 1: of the SE-ONE player (SEPLAYER, AT+MSDPLAY):\nMP3 and WAV files in this folder and its folders.");
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Drive 1: of the SE-ONE player (SEPLAYER, AT+MSDPLAY) and SymbOS's SF3 drive:\nthis folder, as one FAT16 disc; what is written there goes back into the folder.");
             if (!host.sf3UsbFolder.empty()) ImGui::TextDisabled("  %s", host.sf3UsbFolder.c_str());
+            // Two discs made of one folder each write their own changes back: one can lose the other's.
+            auto same = [](const std::string& a, const std::string& b) {
+                std::error_code ec;
+                return !a.empty() && !b.empty() && std::filesystem::equivalent(std::filesystem::u8path(a), std::filesystem::u8path(b), ec);
+            };
+            if (same(host.sf3UsbFolder, host.m4Enabled ? host.m4Folder : std::string()) || same(host.sf3UsbFolder, host.ideFolder))
+                ImGui::TextDisabled("  The M4 or the IDE uses this folder too: write to it from one of them only.");
             ImGui::TextUnformatted("SF3 SD card");
             if (after().smallButton("Folder...##sf3sd")) pickSf3(false);
             if (ImGui::IsItemHovered()) ImGui::SetTooltip("Drive 0: (SAMPLE, SETALK and the other system files).");
             if (!host.sf3SdFolder.empty()) ImGui::TextDisabled("  %s", host.sf3SdFolder.c_str());
             if (after().smallButton("OLED display##sf3")) panelOpen("SF3 OLED") = true;
+            // the SD card's ROM banks (CPC/ROMTABLE/BANKnnn), as the SF3 loads them at power-on
+            const auto banks = host.sf3Banks();
+            const int inUse = host.sf3BankInUse();
+            std::string inUseName = "none on the card";
+            for (const auto& b : banks) if (b.number == inUse) inUseName = std::to_string(b.number) + "  " + b.name;
+            std::string now = "None";
+            if (host.sf3RomBank < 0) now = "Automatic: " + inUseName;
+            for (const auto& b : banks) if (b.number == host.sf3RomBank) now = std::to_string(b.number) + "  " + b.name;
+            if (host.sf3RomBank > 0 && now == "None") now = std::to_string(host.sf3RomBank) + " (not on the card)";
+            ImGui::TextUnformatted("SF3 ROM bank");
+            ImGui::SetNextItemWidth(itemWidth(false));
+            if (ImGui::BeginCombo("##sf3rombank", now.c_str())) {
+                if (ImGui::Selectable("Automatic (the card's bank for this machine)", host.sf3RomBank < 0)) host.setSf3RomBank(-1);
+                if (ImGui::Selectable("None", host.sf3RomBank == 0)) host.setSf3RomBank(0);
+                for (const auto& b : banks) {
+                    const std::string label = std::to_string(b.number) + "  " + b.name;
+                    if (ImGui::Selectable(label.c_str(), b.number == host.sf3RomBank)) host.setSf3RomBank(b.number);
+                }
+                ImGui::EndCombo();
+            }
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("The ROMs of SD card CPC\\ROMTABLE\\BANKnnn: ROMnnn.BIN goes in ROM slot nnn (ROM127 is the lower ROM).\n"
+                                  "They start at the next reset. ROM 7 needs ROM7_ENA=ON in SF3_CPC.INI on the card.");
+            if (banks.empty()) ImGui::TextDisabled("  (the SD card folder has no CPC\\ROMTABLE banks)");
         }
+    }
+    // The Dobbertin HD20: an image file as its disc (X-DDOS 2.10 in a ROM slot drives it).
+    auto pickHd20 = [this]() {
+        const std::string start = host.hd20Image.empty() ? host.mediaDir : std::filesystem::u8path(host.hd20Image).parent_path().u8string();
+        browser.open("Dobbertin HD20 image", start, { ".img" }, [this](const std::string& f) { host.setHd20Image(f); });
+    };
+    const Hd20* hd = host.emu ? host.emu->hd20 : nullptr;
+    if (asMenu) {
+        if (ImGui::BeginMenu("Dobbertin HD20")) {
+            if (ImGui::MenuItem("Image...")) pickHd20();
+            if (ImGui::MenuItem("Remove the image", nullptr, false, !host.hd20Image.empty())) host.setHd20Image("");
+            ImGui::EndMenu();
+        }
+    } else {
+        sectionHeading("Dobbertin HD20 (hard disc)");
+        ImGui::TextUnformatted("Image");
+        if (after().smallButton("File...##hd20")) pickHd20();
+        if (!host.hd20Image.empty()) { if (after().smallButton("Remove##hd20")) host.setHd20Image(""); }
+        if (ImGui::IsItemHovered() || ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+            ImGui::SetTooltip("A 21 MB HD20 image (614 cylinders, 4 heads, 17 sectors). Put X-DDOS 2.10 in a ROM slot to use it.\n"
+                              "With no image here, an SF3's USB stick HD20\\HD20_01.IMG is used.");
+        if (hd && hd->enabled()) ImGui::TextDisabled("  %s%s", hd->image().c_str(), hd->readOnly ? " (read only)" : "");
+        else ImGui::TextDisabled("  (no image)");
     }
 
     if (asMenu) {
@@ -1220,10 +1291,50 @@ const V9990Picture* GuiShell::gfxPictureTexture() {
     return pic;
 }
 
+// The picture's shape on the monitor. A 15 kHz mode's lines fill a 4:3 tube as a TV picture
+// does (PAL 288 lines across 52 us of each line, NTSC 240 across 52.66 us), so the shape
+// is the picture's visible time against the lines it shows, from the V9990's own timing (a
+// B1 PAL picture, 290 lines in 52.9 us, is 1.35:1; B0/B2/B4, 53.6 us, are a little wider).
+// B5 and B6 (24 and 31 kHz) go to a monitor that fills its 4:3 screen with them.
+float GuiShell::gfxPictureAspect(const V9990Picture& pic) {
+    if (pic.lines <= 0 || pic.spanUs <= 0) return 4.0f / 3.0f;
+    if (pic.spanUs < 40.0) return 4.0f / 3.0f;
+    const bool pal = pic.lines > 260;
+    const double tvLines = pal ? 288.0 : 240.0, tvUs = pal ? 52.0 : 52.66;
+    return (float)(4.0 / 3.0 * (pic.spanUs / tvUs) * (tvLines / pic.lines));
+}
+
+void GuiShell::gfxPictureRect(float x, float y, float w, float h, float out[4]) {
+    const ScreenLook& look = host.gfxLook;
+    float dw = w, dh = h;
+    const V9990Picture* pic = gfxPictureTexture();
+    if (look.maintainAspect) {
+        const float aspect = pic ? gfxPictureAspect(*pic) : 4.0f / 3.0f;
+        dh = std::min(h, w / aspect);
+        if (look.integerScale && pic && pic->height > 0) {
+            const float n = std::floor(dh / (float)pic->height);
+            if (n >= 1.0f) dh = n * (float)pic->height;
+        }
+        dw = dh * aspect;
+    }
+    out[0] = x + (w - dw) * 0.5f; out[1] = y + (h - dh) * 0.5f; out[2] = dw; out[3] = dh;
+}
+
 void GuiShell::drawGfxMonitor(ImDrawList* dl, float x, float y, float w, float h) {
     dl->AddRectFilled(ImVec2(x, y), ImVec2(x + w, y + h), IM_COL32(0, 0, 0, 255));
     if (const V9990Picture* pic = gfxPictureTexture()) {
-        dl->AddImage((ImTextureID)(intptr_t)gfxTexture, ImVec2(x, y), ImVec2(x + w, y + h));
+        float r[4];
+        gfxPictureRect(x, y, w, h, r);
+        LookPicture p;
+        p.screen = 1;
+        p.texture = gfxTexture;
+        p.pixels = pic->pixels.data();
+        p.width = pic->width; p.height = pic->height;
+        p.rowStep = 1;
+        p.lines = pic->lines;
+        p.frame = (uint64_t)pic->fields;
+        p.colourTube = true;                 // the GFX9000 drives an RGB colour monitor
+        drawThroughLook(dl, host.gfxLook, gfxLookState, p, r[0], r[1], r[2], r[3]);
         char label[48];
         std::snprintf(label, sizeof label, "GFX9000  %s", v9990ModeName(pic->mode));
         dl->AddText(ImVec2(x + 6, y + h - ImGui::GetTextLineHeight() - 4), IM_COL32(255, 255, 255, 90), label);
@@ -1274,6 +1385,13 @@ void GuiShell::windowGfxScreen() {
             gfxRestorePending = false;
         }
         ImGui::SetNextWindowSizeConstraints(ImVec2(320, 240), ImVec2(FLT_MAX, FLT_MAX));
+        // The window the picture's size (its context menu): as many times its rows high, as
+        // wide as its shape makes that, the title bar above. It follows the mode.
+        const V9990Picture* fitPic = gfxWindowScale > 0 && host.gfx9000Monitor != "video9000" ? gfxPictureTexture() : nullptr;
+        if (fitPic && fitPic->height > 0) {
+            const float ph = (float)(fitPic->height * gfxWindowScale);
+            ImGui::SetNextWindowSize(ImVec2(std::round(ph * gfxPictureAspect(*fitPic)), ph + ImGui::GetFrameHeight()));
+        }
         ImGuiWindowClass wc;
         wc.ViewportFlagsOverrideSet = ImGuiViewportFlags_NoAutoMerge;
         wc.ViewportFlagsOverrideClear = ImGuiViewportFlags_NoDecoration | ImGuiViewportFlags_TopMost;
@@ -1295,8 +1413,8 @@ void GuiShell::windowGfxScreen() {
         }
         const ImVec2 avail = ImGui::GetContentRegionAvail(), at = ImGui::GetCursorScreenPos();
         float w = avail.x, h = avail.y;
-        if (host.maintainAspect) { h = std::min(avail.y, avail.x * 0.75f); w = h * 4.0f / 3.0f; }
-        const float x = at.x + (avail.x - w) * 0.5f, y = at.y + (avail.y - h) * 0.5f;
+        if (host.gfxLook.maintainAspect) { h = std::min(avail.y, avail.x * 0.75f); w = h * 4.0f / 3.0f; }
+        const float x = at.x + (avail.x - w) * 0.5f, y = at.y + (avail.y - h) * 0.5f;   // the Video9000's 4:3 set
         ImDrawList* dl = ImGui::GetWindowDrawList();
         int vw = 0, vh = 0;
         if (!host.v9990Enabled) {
@@ -1307,13 +1425,21 @@ void GuiShell::windowGfxScreen() {
             video9000Texture = uploadTexture(3, video9000Pixels.data(), vw, vh);
             dl->AddImage((ImTextureID)(intptr_t)video9000Texture, ImVec2(x, y), ImVec2(x + w, y + h));
         } else {
-            drawGfxMonitor(dl, x, y, w, h);
+            drawGfxMonitor(dl, at.x, at.y, avail.x, avail.y);
         }
         ImGui::InvisibleButton("##gfxscreen", ImVec2(std::max(1.0f, avail.x), std::max(1.0f, avail.y)));
         if (ImGui::IsItemClicked(ImGuiMouseButton_Left) && host.emulatedMouseActive() && !host.mouseCaptured) mouseCaptureRequested = true;
         if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(0) && !host.emulatedMouseActive()) toggleGfxScreenFull();
         if (ImGui::BeginPopupContextItem("##gfxscreenmenu")) {
             if (ImGui::MenuItem(gfxScreenFull ? "Leave full screen" : "Full screen on this display", "F11")) toggleGfxScreenFull();
+            ImGui::Separator();
+            // the window the picture's size: it follows a change of mode
+            if (ImGui::MenuItem("Window: free size", nullptr, gfxWindowScale == 0)) gfxWindowScale = 0;
+            for (int n = 1; n <= 4; n++) {
+                char item[48];
+                std::snprintf(item, sizeof item, "Window: the picture x%d", n);
+                if (ImGui::MenuItem(item, nullptr, gfxWindowScale == n)) gfxWindowScale = n;
+            }
             ImGui::EndPopup();
         }
     }

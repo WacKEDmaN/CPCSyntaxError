@@ -192,6 +192,7 @@ MemoryIdentity GXMemory::debugIdentity(int address) {
         if (lowerLocation == 0 && (!snapshotLowerRom.empty() || !lowerRom.empty())) return { "rom", 256, false, -1 };
     }
     if (upperEnabled && address >= 0xc000) {
+        if (useCartridgeUpper && plusSelectedRom < 0x80 && !upperRoms[(size_t)plusSelectedRom].empty()) return { "rom", plusSelectedRom, false, -1 };
         if (useCartridgeUpper && cartridgeByte(upperCartridgePage, address) != -1) return { "rom", upperCartridgePage, true, -1 };
         return { "rom", upperRom & 0xff, false, -1 };
     }
@@ -223,9 +224,14 @@ int GXMemory::readMapped(int address) {
             hooked = upperRomReadHandler(address, upperRom);
             if (hooked >= 0) return hooked & 0xff;
         } else if (useCartridgeUpper && upperRomReadHandler && plusSelectedRom < 0x80) {
-            const int board = upperRomReadHandler(address, plusSelectedRom);
-            if (board >= 0) return board & 0xff;
+            hooked = upperRomReadHandler(address, plusSelectedRom);
+            if (hooked >= 0) return hooked & 0xff;
         }
+        // An expansion ROM on a Plus: a board on the expansion port answers its own number and
+        // pulls ROMDIS, which takes the cartridge off the bus (as the M4 does above). Only the
+        // ROMs the host fits are here on a Plus: its BASIC and AMSDOS are cartridge pages.
+        if (useCartridgeUpper && hooked != -2 && plusSelectedRom < 0x80 && !upperRoms[(size_t)plusSelectedRom].empty())
+            return upperRoms[(size_t)plusSelectedRom][address & 0x3fff];
         if (useCartridgeUpper) { int value = cartridgeByte(upperCartridgePage, address); if (value != -1) return value; }
         // -2: a board owns this slot but its ROM is switched off (|M4ROMOFF), so nothing answers
         // there and the internal ROM does, as for an empty slot (not the copy kept for views).

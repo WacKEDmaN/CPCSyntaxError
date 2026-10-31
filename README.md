@@ -105,7 +105,8 @@ It runs on Windows, Linux and macOS. It has a cycle-level model of the chips of 
 - **Cartridges (CPR and CRO) and snapshots (SNA)** are available. Each type of media has an
   **Eject** command. You can drop a file on the window. A **CRO** file holds groups of ROMs:
   a group of cartridge ROMs is a Plus cartridge, and a group of CPC ROMs starts a classic CPC
-  with them fitted (Cartridge → CRO group selects the group).
+  with them fitted (Cartridge → CRO group selects the group). **Tools → CRO editor** makes and
+  changes CRO files: groups, ROM files, a CPR imported as a group, and a list of problems.
 
 ### Cheats
 
@@ -250,6 +251,11 @@ Select the expansions in the **Expansions** menu or in the Settings window.
 - **The assembler** is [RASM](https://github.com/EdouardBERGE/rasm), included in the program.
   Press F9 to assemble into the memory of the running machine. Press Ctrl+F9 to assemble and
   run. You can change the colours of the syntax.
+  - Several programs can be open, each in its tab with the files it links after it. F9 builds
+    the program of the tab on show.
+  - The **WinAPE** syntax choice takes WinAPE's directives (`&` hex, `byte`, `text`, `defl`,
+    macro parameters by name, `brk`, `run address,breakpoint`, `end`). Not supported:
+    `checksum`, `memory()`, and the files of `write` and `save`.
 - **C programs** in the same window. Open a `.c` file: F9 builds it with
   [SDCC](https://sdcc.sourceforge.net) and, if you name a copy of
   [CPCtelera](https://github.com/Arnaud6128/cpctelera/tree/cpctelera_next) in **C settings...**,
@@ -601,7 +607,7 @@ third_party/   Dear ImGui (docking branch), RASM, ymfm, the SP0256 core, minimp3
 | Symbiface II and III, X-MASS | Working: the mouse, the RTC and the IDE/CF interface. The ATA standard and SymbOS check them. |
 | SYMBiFACE III sound card, WiFi and functions | Working: SymAmp's MP3 driver, TMTLOGIC's programs (SEPLAYER, SAMPLER, SE-TALK, SE-SYNTH, EMR, WEB-DK) and ROM, and SF3Monitor. Not emulated: the ROM banks, the file functions, DFU, MIDI files, the FM radio's sound. |
 | Mouse interfaces (AMX, Kempston, MultiPlay) | Working. Their CPCWiki pages check them. They are not yet tested with AMX Art, OCP Art Studio or Carrier Command. |
-| CRO ROM containers | Working. The two example files of the format start on the Plus. |
+| CRO ROM containers | Working. The two example files of the format start on the Plus. The CRO editor writes files byte for byte as Logon-System's CRO manager. |
 | GFX9000 (V9990) and Video9000 | Working. The data comes from the application manual from Yamaha and from tests of a real V9990 on a CPC. The blitter speeds are from the measurements of openMSX. |
 | OPL4 (YMF278B) | Working (the ymfm core). It needs `yrw801*.rom` for the General MIDI samples. |
 | SSA-1 and dk'tronics speech | Working (the SP0256 core from MAME). It needs `sp0256-al2.bin`. |
@@ -622,6 +628,8 @@ third_party/   Dear ImGui (docking branch), RASM, ymfm, the SP0256 core, minimp3
 - **GFX9000.** Tests on real hardware show that some commands sometimes fail (a command that
   uses DY or NX/NY again can go wrong or stop). The emulator does not do this. The colour order
   of LMMV with DIX=1 is approximate.
+- **If the program crashes**, it writes a report `crash-<date>-<time>-<number>.txt` beside
+  `cpcse.ini` and shows its name. Please attach that file to an issue.
 
 ## Credits and licence
 

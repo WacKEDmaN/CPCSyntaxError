@@ -2,6 +2,8 @@
 #include "cpr_loader.h"
 #include <stdexcept>
 #include <cctype>
+#include <cstdio>
+#include <set>
 
 namespace cpcse {
 
@@ -94,6 +96,104 @@ std::vector<CroGroup> parseCro(const Bytes& bytes) {
     }
     if (groups.empty()) throw std::runtime_error("The CRO contains no GRRO group.");
     return groups;
+}
+
+Bytes serializeCro(const std::vector<CroGroup>& groups) {
+    Bytes out;
+    auto text = [&](const std::string& s) { out.insert(out.end(), s.begin(), s.end()); };
+    auto u32 = [&](uint32_t v) { for (int i = 0; i < 4; i++) out.push_back((uint8_t)(v >> (8 * i))); };
+    auto pad = [&]() { if (out.size() % 2) out.push_back(0); };
+    auto patch = [&](size_t at, size_t value) { for (int i = 0; i < 4; i++) out[at + (size_t)i] = (uint8_t)(value >> (8 * i)); };
+    auto number = [&](const char* id, uint32_t v) { text(id); u32(4); u32(v); };
+    auto bytes = [&](const char* id, const uint8_t* p, size_t n) { text(id); u32((uint32_t)n); out.insert(out.end(), p, p + n); pad(); };
+    text("RIFF"); u32(0); text("CRO ");
+    for (const CroGroup& g : groups) {
+        text("GRRO");
+        const size_t groupSize = out.size();
+        u32(0);
+        number("GNUM", g.number);
+        bytes("GLBL", (const uint8_t*)g.label.data(), g.label.size());
+        number("GMSK", g.mask);
+        for (const CroRom& r : g.roms) {
+            text("ROM ");
+            const size_t romSize = out.size();
+            u32(0);
+            bytes("RID ", (const uint8_t*)r.id.data(), r.id.size());
+            number("RTYP", r.type);
+            number("RLOG", r.logical);
+            number("RPHY", r.physical);
+            bytes("RDT ", r.data.data(), r.data.size());
+            patch(romSize, out.size() - romSize - 4);
+        }
+        patch(groupSize, out.size() - groupSize - 4);
+    }
+    patch(4, out.size() - 8);
+    return out;
+}
+
+std::vector<std::string> croProblems(const std::vector<CroGroup>& groups) {
+    std::vector<std::string> out;
+    std::set<uint32_t> numbers;
+    for (const CroGroup& g : groups) {
+        const std::string name = "group " + std::to_string(g.number) + (g.label.empty() ? "" : " (" + g.label + ")");
+        if (!numbers.insert(g.number).second) out.push_back("Two groups have the number " + std::to_string(g.number) + ".");
+        if (g.roms.empty()) out.push_back("The " + name + " holds no ROM.");
+        std::set<uint32_t> pages, highs;
+        int lows = 0, mf2s = 0, bankable = 0, others = 0;
+        for (const CroRom& r : g.roms) {
+            const std::string rom = "ROM \"" + r.id + "\" of the " + name;
+            if (r.type > CRO_ROM_MF2) { out.push_back("The " + rom + " has an unknown type " + std::to_string(r.type) + "."); continue; }
+            if (r.logical > 255) out.push_back("The " + rom + " has the logical number " + std::to_string(r.logical) + " (0-255).");
+            if (r.data.empty()) out.push_back("The " + rom + " is empty.");
+            if (r.type == CRO_ROM_BANKABLE) {
+                bankable++;
+                if (r.physical > 31) out.push_back("The " + rom + " is on page " + std::to_string(r.physical) + "; a Plus cartridge has pages 0-31.");
+                else if (!pages.insert(r.physical).second) out.push_back("Two bankable ROMs of the " + name + " are on page " + std::to_string(r.physical) + ".");
+                if (r.data.size() > 16384) out.push_back("The " + rom + " is " + std::to_string(r.data.size()) + " bytes; a page is 16384.");
+            } else {
+                others++;
+                if (r.type == CRO_ROM_LOW && ++lows == 2) out.push_back("The " + name + " has more than one low ROM.");
+                if (r.type == CRO_ROM_MF2 && ++mf2s == 2) out.push_back("The " + name + " has more than one Multiface II ROM.");
+                if (r.type == CRO_ROM_HIGH && !highs.insert(r.logical).second) out.push_back("Two high ROMs of the " + name + " are ROM " + std::to_string(r.logical) + ".");
+                const size_t want = r.type == CRO_ROM_MF2 ? 8192 : 16384;
+                if (!r.data.empty() && r.data.size() != want && !(r.type == CRO_ROM_MF2 && r.data.size() == 16384))
+                    out.push_back("The " + rom + " is " + std::to_string(r.data.size()) + " bytes; a " + (r.type == CRO_ROM_MF2 ? "Multiface II ROM is 8192" : "CPC ROM is 16384") + ".");
+            }
+        }
+        if (bankable && others) out.push_back("The " + name + " mixes cartridge pages with CPC ROMs: this emulator runs it as a cartridge.");
+    }
+    if (groups.empty()) out.push_back("There is no group.");
+    return out;
+}
+
+std::vector<CroRom> croRomsFromCartridge(const Bytes& file) {
+    std::vector<CroRom> roms;
+    auto page = [&](int n, Bytes data) {
+        char id[8]; std::snprintf(id, sizeof id, "cb%02d", n);
+        CroRom r; r.id = id; r.type = CRO_ROM_BANKABLE; r.physical = (uint32_t)n; r.logical = n == 3 ? 7 : 1; r.data = std::move(data);
+        roms.push_back(std::move(r));
+    };
+    if (file.size() >= 12 && ascii(file, 0, 4) == "RIFF" && ascii(file, 8, 4) == "AMS!") {
+        for (const RiffChunk& c : riffChunks(file, 12, file.size())) {
+            if (c.id.size() != 4 || c.id[0] != 'c' || c.id[1] != 'b' || !std::isdigit((unsigned char)c.id[2]) || !std::isdigit((unsigned char)c.id[3])) continue;
+            const int n = (c.id[2] - '0') * 10 + (c.id[3] - '0');
+            if (n > 31) continue;
+            page(n, Bytes(file.begin() + (long)c.start, file.begin() + (long)(c.start + c.length)));
+        }
+        if (roms.empty()) throw std::runtime_error("The CPR holds no cbNN page.");
+        return roms;
+    }
+    if (file.empty() || file.size() > (size_t)BANK_COUNT * BANK_SIZE || file.size() % BANK_SIZE)
+        throw std::runtime_error("Not a CPR, and not a raw cartridge (16-512 KB, in 16 KB pages).");
+    for (size_t n = 0; n * BANK_SIZE < file.size(); n++)
+        page((int)n, Bytes(file.begin() + (long)(n * BANK_SIZE), file.begin() + (long)((n + 1) * BANK_SIZE)));
+    return roms;
+}
+
+uint32_t croMaskForPages(int pages) {
+    uint32_t size = 16384;
+    while ((int)(size / 16384) < pages && size < (512u << 10)) size <<= 1;
+    return size - 1;
 }
 
 int croDefaultGroup(const std::vector<CroGroup>& groups) {

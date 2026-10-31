@@ -40,6 +40,7 @@
 #include "emuhost.h"
 #include "c_build.h"
 #include "version.h"
+#include "crash_report.h"
 #include "core/machine_sounds.h"
 #include "gui_shell.h"
 #include "gui_widgets.h"
@@ -85,6 +86,21 @@ std::string homeDir() {
 }
 
 std::string iniFilePath() { return homeDir() + "cpcse.ini"; }
+
+// What a crash report says the emulator was doing (crash_report.h).
+std::string crashContext(const cpcse::EmuHost& host) {
+    using namespace cpcse;
+    char b[160];
+    const int m = host.currentModel;
+    std::string s = "machine: " + (m >= 0 && m < (int)host.models.size() ? host.models[(size_t)m].label : std::string("(none)"));
+    if (host.emu && host.emu->cpu) {
+        std::snprintf(b, sizeof b, ", PC &%04X%s", host.emu->cpu->pc & 0xffff, host.paused ? ", paused" : "");
+        s += b;
+    }
+    s += "\ndisc A: " + host.diskName[0] + "\ndisc B: " + host.diskName[1] + "\ntape: " + host.tapeName +
+         "\ncartridge: " + host.cartName + "\nstatus line: " + host.status;
+    return s;
+}
 
 // The window where it was last time (x, y: its picture's top-left; `placed` false: centred),
 // kept whole -- title bar and frame too -- inside the usable part of a display, the part no
@@ -201,6 +217,11 @@ static void attachParentConsole() {
 
 // ------------------------------------------------------------------ entry point
 int main(int argc, char** argv) {
+    // A crash, in any thread, from here on: a report in the settings folder and a message
+    // box, not a silent end. --crash-test <segv|abort|throw|stack|divide> proves it.
+    cpcse::installCrashReporter(homeDir());
+    for (int i = 1; i + 1 < argc; i++)
+        if (std::string(argv[i]) == "--crash-test") { cpcse::setCrashContext("--crash-test " + std::string(argv[i + 1])); cpcse::crashOnPurpose(argv[i + 1]); }
     // CSL mode: play a CPC Script Language file with no window, writing the screenshots
     // its SSM codes ask for. Nothing of it -- not even the CPU's SSM hook -- exists unless
     // --csl is on the command line.
@@ -261,7 +282,7 @@ int main(int argc, char** argv) {
     // uses, with no window. --shot out.bmp [--model id] [--sna f] [--crtc N] [--gate-array 40007|40008|40010]
     // [--frames N] [--beam] [--gfx9000] [--v9990-shot out.bmp] (the GFX9000's own monitor).
     {
-        std::string shot, modelId, snaPath, saveSnaPath, dumpRamPath, diskPath, cartPath, tapePath, typeStr, keysStr; int croGroup = -1, wantCrtc = -1, wantGa = 0, frames = 200, f1at = -1, wantRam = -1, seq = 0; bool beam = false, diag = false, gfx9000 = false, opl4 = false, playcity = false; std::string v9990Shot, video9000Shot, m4Folder, ideFolder, mouseScript, mouseInterface, cbuildPath, cbuildCpct, cbuildSdcc, wavPath, speechKind, mp3Card, dacType; int cbuildLoc = -1; bool cbuildForce = false; std::string cbuildZ88dk, sf3Usb, sf3Sd; bool cbuildSccz80 = false; bool cbuildUseZ88dk = false; bool sf2 = false, sf3 = false, xmass = false, multiface = false, diskWriteBack = false; int monitorHHold = std::getenv("CPCSE_MONITOR_HHOLD") ? std::atoi(std::getenv("CPCSE_MONITOR_HHOLD")) : 0; int monitorVHold = std::getenv("CPCSE_MONITOR_VHOLD") ? std::atoi(std::getenv("CPCSE_MONITOR_VHOLD")) : 0; std::vector<std::string> xroms; std::string serialLine, recordTape, tapeFast, recordPath, recordFormat = "mjpeg", recordSource = "shown", gfx9000Monitor; bool rasterOverlayOn = false; bool z80Cmos = false, gx4000Ram128 = false, plusExpansionClassic = true; std::string monitorSet; TubeKnobs monitorKnobs; std::array<int, 3> monitorIntensity = TubeKnobs().intensity;
+        std::string shot, modelId, snaPath, saveSnaPath, dumpRamPath, diskPath, cartPath, tapePath, typeStr, keysStr; int croGroup = -1, wantCrtc = -1, wantGa = 0, frames = 200, f1at = -1, wantRam = -1, seq = 0; bool beam = false, diag = false, gfx9000 = false, opl4 = false, playcity = false; std::string v9990Shot, video9000Shot, m4Folder, ideFolder, mouseScript, mouseInterface, cbuildPath, cbuildCpct, cbuildSdcc, wavPath, speechKind, mp3Card, dacType; int cbuildLoc = -1; bool cbuildForce = false; std::string cbuildZ88dk, sf3Usb, sf3Sd, hd20Image; int sf3RomBank = -2; bool cbuildSccz80 = false; bool cbuildUseZ88dk = false; bool sf2 = false, sf3 = false, xmass = false, multiface = false, diskWriteBack = false; int monitorHHold = std::getenv("CPCSE_MONITOR_HHOLD") ? std::atoi(std::getenv("CPCSE_MONITOR_HHOLD")) : 0; int monitorVHold = std::getenv("CPCSE_MONITOR_VHOLD") ? std::atoi(std::getenv("CPCSE_MONITOR_VHOLD")) : 0; std::vector<std::string> xroms; std::string serialLine, recordTape, tapeFast, recordPath, recordFormat = "mjpeg", recordSource = "shown", gfx9000Monitor; bool rasterOverlayOn = false; bool z80Cmos = false, gx4000Ram128 = false, plusExpansionClassic = true; std::string monitorSet; TubeKnobs monitorKnobs; std::array<int, 3> monitorIntensity = TubeKnobs().intensity;
         for (int i = 1; i < argc; i++) { std::string a = argv[i];
             if (a == "--shot" && i + 1 < argc) shot = argv[++i];
             else if (a == "--ram" && i + 1 < argc) wantRam = std::atoi(argv[++i]);
@@ -318,6 +339,8 @@ int main(int argc, char** argv) {
             else if (a == "--xmass") xmass = true;                            // an X-MASS IDE interface (with --ide)
             else if (a == "--sf3-usb" && i + 1 < argc) { sf3Usb = argv[++i]; sf3 = true; }   // its USB stick, this folder
             else if (a == "--sf3-sd" && i + 1 < argc) { sf3Sd = argv[++i]; sf3 = true; }     // its SD card, this folder
+            else if (a == "--hd20" && i + 1 < argc) hd20Image = argv[++i];                 // a Dobbertin HD20, this image
+            else if (a == "--sf3-rombank" && i + 1 < argc) { sf3RomBank = std::atoi(argv[++i]); sf3 = true; }   // the SF3 SD card's ROM bank
             else if (a == "--sf3") sf3 = true;                                // a Symbiface III instead (with --ide too)
             else if (a == "--disk-writeback") diskWriteBack = true;              // save the disc's writes into its .dsk (headless: off)
             else if (a == "--multiface") multiface = true;                    // a Multiface II (its ROM from roms/); n in --mouse is STOP
@@ -365,6 +388,8 @@ int main(int argc, char** argv) {
             if (!ideFolder.empty()) host.ideFolder = ideFolder;
             if (!sf3Usb.empty()) host.sf3UsbFolder = sf3Usb;
             if (!sf3Sd.empty()) host.sf3SdFolder = sf3Sd;
+            if (!hd20Image.empty()) host.hd20Image = hd20Image;
+            if (sf3RomBank >= -1) host.sf3RomBank = sf3RomBank;
             int mi = 0; for (int i = 0; i < (int)host.models.size(); i++) if (host.models[i].id == modelId) mi = i;
             if (!host.bootModel(mi, wantRam, wantCrtc)) { std::printf("[shot] %s\n", host.status.c_str()); return 2; }
             if (monitorIntensity != TubeKnobs().intensity) host.setMonitorIntensity(monitorIntensity);   // for the set now plugged in
@@ -674,7 +699,12 @@ int main(int argc, char** argv) {
                 std::printf("[wav] %s: %.1f s, rms %.0f, peak %d\n", wavPath.c_str(), wav.size() / 2.0 / host.sampleRate,
                             wav.empty() ? 0.0 : std::sqrt(sum / wav.size()), peak);
             }
-            if (host.recording()) { host.stopRecording(); std::printf("[record] %s: %s\n", recordPath.c_str(), host.status.c_str()); }
+            if (host.recording()) {
+                host.stopRecording();
+                host.recorder.waitFinished();      // an MP4: ffmpeg's end before the run's end
+                host.pollRecorder();
+                std::printf("[record] %s: %s\n", recordPath.c_str(), host.status.c_str());
+            }
             host.render();
             if (host.emu && host.emu->crtc) { auto* c = host.emu->crtc; std::printf("[regs] type=%d R0=%d R1=%d R2=%d R3=%d R4=%d R5=%d R6=%d R7=%d R8=%d R9=%d R12=%d R13=%d\n",
                 c->type, c->registers[0],c->registers[1],c->registers[2],c->registers[3],c->registers[4],c->registers[5],c->registers[6],c->registers[7],c->registers[8],c->registers[9],c->registers[12],c->registers[13]); }
@@ -820,18 +850,9 @@ int main(int argc, char** argv) {
     host.keyboardMapping = gets("keymapping", "cpc") == "pc" ? "pc" : "cpc";
     host.joystickEnabled = geti("joystick", 1) != 0;
     host.speed          = level("speed", 1.0, 0.25, 4.0);
-    host.integerScale   = geti("integerscale", 0) != 0;
-    host.maintainAspect = geti("aspect", 1) != 0;
-    host.crtEffect      = geti("crt", 0) != 0;
-    host.crtScanline    = level("crtscanline", 0.5, 0.0, 1.0);
-    host.crtBloom       = level("crtbloom", 0.2, 0.0, 1.0);
-    host.crtBlur        = level("crtblur", 0.0, 0.0, 1.0);
-    host.crtPattern     = gets("crtpattern", "auto");
-    if (host.crtPattern != "slot" && host.crtPattern != "soft" && host.crtPattern != "scanlines" && host.crtPattern != "none") host.crtPattern = "auto";
-    host.crtMask        = level("crtmask", 0.5, 0.0, 1.0);
-    host.crtMaskSize    = std::clamp(geti("crtmasksize", 1), 1, 4);
-    host.crtMaskTurned  = geti("crtmaskturned", 0) != 0;
-    host.crtFilter.load(ini);
+    host.cpcLook.load(ini, "");
+    // the GFX9000's screen: as the CPC's until it has settings of its own
+    if (!host.gfxLook.load(ini, "gfx9000.")) host.gfxLook = host.cpcLook;
     host.m4Folder       = gets("m4folder", "");
     host.m4Enabled      = geti("m4", 0) != 0;             // applied by applySettings during boot
     host.m4Network      = geti("m4net", 1) != 0;
@@ -844,8 +865,25 @@ int main(int argc, char** argv) {
     host.symbifaceModule = gets("symbiface", "none");
     host.mouseInterface = gets("mouseinterface", "none");   // applied by applySettings (kept out while an SF2/SF3 is fitted)
     host.ideFolder = gets("idefolder", (homeDir() + "symide").c_str());   // the IDE's disc
+    // The ROMs window: the firmware ROMs chosen in place of the model's, and the expansion
+    // slots. A file gone since is left out (the status line says which).
+    host.osRomPath = gets("rom_os", "");
+    host.basicRomPath = gets("rom_basic", "");
+    host.amsdosRomPath = gets("rom_amsdos", "");
+    {
+        std::string missing;
+        for (int slot = 0; slot < 256; slot++) {
+            const auto it = ini.find("xrom_" + std::to_string(slot));
+            if (it == ini.end() || it->second.empty()) continue;
+            if (!host.fitExpansionRom(slot, it->second)) missing += (missing.empty() ? "" : ", ") + it->second;
+        }
+        if (!missing.empty()) host.status = "ROMs not found: " + missing;
+    }
     if (ini.count("sf3usb")) host.sf3UsbFolder = ini.at("sf3usb");
-    if (ini.count("sf3sd")) host.sf3SdFolder = ini.at("sf3sd");
+    host.sf3SdFolder = gets("sf3sd", (homeDir() + "SF3SD").c_str());   // the SF3's SD card (ROM banks, samples)
+    if (ini.count("hd20")) host.hd20Image = ini.at("hd20");
+    // "sf3_rom_bank": the first "sf3rombank" saved 0 (none) without anyone choosing it
+    host.sf3RomBank = geti("sf3_rom_bank", -1);
     host.mouseSensitivity = level("mousesens", 1.0, 0.25, 4.0);
     host.lightgunType   = gets("lightgun", "none");       // these four are applied by applySettings
     host.v9990Enabled   = geti("v9990", 0) != 0;
@@ -974,16 +1012,19 @@ int main(int argc, char** argv) {
 
     // The advanced CRT filter, on the GPU. A context that cannot run it says so once, and the
     // plain picture is drawn.
-    CrtFilterRenderer crtFilter;
+    // One a screen: the CPC's and the GFX9000's (each rolls its own lines).
+    CrtFilterRenderer crtFilter[2];
     bool crtFilterFailed = false;
-    shell.crtFilterRender = [&](int outW, int outH, float pixelScale, bool newFrame) -> unsigned {
+    shell.crtFilterRender = [&](int screen, unsigned source, int sourceW, int sourceH, int rowStep, int outW, int outH,
+                                float pixelScale, bool newFrame, const CrtFilterSettings& settings) -> unsigned {
         if (crtFilterFailed) return 0;
-        if (!crtFilter.init(glslVersion)) {
+        CrtFilterRenderer& r = crtFilter[screen == 1 ? 1 : 0];
+        if (!r.init(glslVersion)) {
             crtFilterFailed = true;
-            host.status = "The advanced CRT filter cannot run here: " + crtFilter.error;
+            host.status = "The advanced CRT filter cannot run here: " + r.error;
             return 0;
         }
-        return crtFilter.render(screenTex, TEX_W, TEX_H, 2, outW, outH, pixelScale, newFrame, host.crtFilter);
+        return r.render(source, sourceW, sourceH, rowStep, outW, outH, pixelScale, newFrame, settings);
     };
 
     const double FRAME_SECONDS = 1.0 / 50.08;
@@ -1011,7 +1052,13 @@ int main(int argc, char** argv) {
         for (int b = 0; b < 3; b++) host.mouseButton(b, false);
     };
     bool running = true;
+    uint64_t contextAt = 0;
     while (running) {
+        // what a crash report would say the emulator was doing, once a second
+        if (const uint64_t t = SDL_GetPerformanceCounter(); t - contextAt > perfFreq) {
+            contextAt = t;
+            cpcse::setCrashContext(crashContext(host));
+        }
         SDL_Event ev;
         SDL_Scancode waitingForText = SDL_SCANCODE_UNKNOWN;   // the PC layout: a key waiting for the character it types
         while (SDL_PollEvent(&ev)) {
@@ -1081,6 +1128,7 @@ int main(int argc, char** argv) {
         // Unlimited: frames for about 30 ms of this computer's time, then one picture, and the
         // swap does not wait for the display's refresh (a fixed 8 frames then a wait for the
         // next refresh left the machine idle for part of every refresh).
+        host.pollRecorder();                   // an MP4 finished in the background: its result
         static bool swapWaits = true;
         if (swapWaits == unlimited) { swapWaits = !unlimited; SDL_GL_SetSwapInterval(swapWaits ? 1 : 0); }
         // (plus what the last picture cost, so the CPC has at least half the time when the
@@ -1236,17 +1284,8 @@ int main(int argc, char** argv) {
             host.pads.save(f);
             f << "joystick=" << (host.joystickEnabled ? 1 : 0) << "\n";
             f << "speed=" << host.speed << "\n";
-            f << "integerscale=" << (host.integerScale ? 1 : 0) << "\n";
-            f << "crt=" << (host.crtEffect ? 1 : 0) << "\n";
-            f << "crtscanline=" << host.crtScanline << "\n";
-            f << "crtbloom=" << host.crtBloom << "\n";
-            f << "crtblur=" << host.crtBlur << "\n";
-            f << "crtpattern=" << host.crtPattern << "\n";
-            f << "crtmask=" << host.crtMask << "\n";
-            f << "crtmasksize=" << host.crtMaskSize << "\n";
-            f << "crtmaskturned=" << (host.crtMaskTurned ? 1 : 0) << "\n";
-            host.crtFilter.save(f);
-            f << "aspect=" << (host.maintainAspect ? 1 : 0) << "\n";
+            host.cpcLook.save(f, "");
+            host.gfxLook.save(f, "gfx9000.");
             f << "m4=" << (host.m4Enabled ? 1 : 0) << "\n";
             f << "m4folder=" << host.m4Folder << "\n";
             f << "m4net=" << (host.m4Network ? 1 : 0) << "\n";
@@ -1259,8 +1298,15 @@ int main(int argc, char** argv) {
             f << "symbiface=" << host.symbifaceModule << "\n";
             f << "mouseinterface=" << host.mouseInterface << "\n";
             f << "idefolder=" << host.ideFolder << "\n";
+            f << "rom_os=" << host.osRomPath << "\n";
+            f << "rom_basic=" << host.basicRomPath << "\n";
+            f << "rom_amsdos=" << host.amsdosRomPath << "\n";
+            for (const auto& r : host.expansionRoms)
+                if (!r.path.empty()) f << "xrom_" << r.slot << "=" << r.path << "\n";
             f << "sf3usb=" << host.sf3UsbFolder << "\n";
             f << "sf3sd=" << host.sf3SdFolder << "\n";
+            f << "hd20=" << host.hd20Image << "\n";
+            f << "sf3_rom_bank=" << host.sf3RomBank << "\n";
             f << "mousesens=" << host.mouseSensitivity << "\n";
             f << "lightgun=" << host.lightgunType << "\n";
             f << "v9990=" << (host.v9990Enabled ? 1 : 0) << "\n";
@@ -1296,6 +1342,7 @@ int main(int argc, char** argv) {
     }
 
     host.stopRecording();                       // a recording running at exit: finished
+    host.recorder.waitFinished();               // ...and an MP4 still being finished
     if (audioDev) SDL_CloseAudioDevice(audioDev);
     glDeleteTextures(1, &screenTex);
     for (auto& kv : toolTextures) glDeleteTextures(1, &kv.second.id);

@@ -44,6 +44,7 @@ int rasm_bridge_assemble(const char* source, int length, int syntax,
         case RASM_SYNTAX_UZ80:  param.as80 = 2; break;       /* -uz */
         case RASM_SYNTAX_DAMS:  param.dams = 1; break;       /* -dams */
         case RASM_SYNTAX_PASMO: param.pasmo = 1; break;      /* -pasmo */
+        case RASM_SYNTAX_WINAPE: param.rough = 0.0f; param.noampersand = 1; param.winape = 1; break;   /* -m -amper and WinAPE's directives */
         default: break;
     }
     *fatal = 0;

@@ -12,7 +12,7 @@
 
 namespace cpcse {
 
-class GXMemory; class PlusAsic; class GateArray; class M4Board; class SymbifaceIde; class Multiface2; class V9990; class Opl4Card;
+class GXMemory; class PlusAsic; class GateArray; class M4Board; class SymbifaceIde; class Hd20; class Multiface2; class V9990; class Opl4Card;
 class PlayCity; class AmstradSerial;
 class SpeechSynth;
 class SymbifaceMouse; class Symbiface2Rtc; class Symbiface3; class CtmMonitor;
@@ -36,6 +36,7 @@ public:
     Symbiface2Rtc* sf2Rtc = nullptr;
     Symbiface3* sf3 = nullptr;
     SymbifaceIde* ide = nullptr;
+    Hd20* hd20 = nullptr;                  // the Dobbertin HD20 (off until an image is opened)
     // The Kempston mouse or the MultiPlay (mouse_interface.h). A value, not a chip pointer:
     // the timeline's copy of the machine takes its counters with the rest.
     MouseInterface mouseIf;

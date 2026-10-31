@@ -1,5 +1,6 @@
 // CPCSyntaxError GUI — small pieces shared by the shell's windows.
 #pragma once
+#include "core/file_write.h"
 #include <algorithm>
 #include <functional>
 #include <initializer_list>
@@ -119,10 +120,7 @@ void softMaskRender(const uint32_t* src, int sw, int sh, int w, int h, float str
 // of 0 to 1 source pixel: at 1, about one mode 2 pixel across and half a scanline down.
 void softenRender(const uint32_t* src, int w, int h, float amount, std::vector<uint32_t>& out);
 
-// Writes a file whole or not at all: to a temporary file beside it, then renamed over it,
-// so a failed write (a full disc) leaves the old file as it was instead of cut short.
-// false (and `why`) when it could not.
-bool writeFileSafely(const std::string& path, const void* data, size_t size, std::string* why = nullptr);
+// writeFileSafely: core/file_write.h (in the core, as the check programs use it without the GUI)
 
 // A modal file picker (no OS dialog dependency).
 // The drives a path can start on ("C:\", "D:\" ...): Windows' lettered drives; elsewhere

@@ -33,11 +33,17 @@ struct Sf3Audio::Ffmpeg {
     HostProcess proc;
     std::vector<unsigned char> buf = std::vector<unsigned char>(16384);
     size_t have = 0, at = 0;
-    // input: a file, or "pipe:0" with `format` ("aac", "ogg") for a stream written to it
+    // input: a file, or "pipe:0" with `format` ("aac", "ogg") for a stream written to it.
+    // The demuxer is always named and only plain files or the pipe may be opened: ffmpeg
+    // tells a format by its content, so a ".ogg" that is really a playlist (HLS, concat)
+    // could otherwise make it open other files or the network.
     bool start(const std::string& program, const std::string& input, const char* format) {
-        std::vector<std::string> a = { program, "-hide_banner", "-nostats", "-v", "info" };
-        if (format) a.insert(a.end(), { "-probesize", "4096", "-analyzeduration", "0", "-f", format });
-        a.insert(a.end(), { "-i", input, "-vn", "-f", "s16le", "-ac", "2", "-ar", "44100", "pipe:1" });
+        if (!format) return false;
+        const bool pipe = input == "pipe:0";
+        std::vector<std::string> a = { program, "-hide_banner", "-nostats", "-v", "info",
+                                       "-protocol_whitelist", pipe ? "pipe" : "file", "-f", format };
+        if (pipe) a.insert(a.end(), { "-probesize", "4096", "-analyzeduration", "0" });
+        a.insert(a.end(), { "-i", pipe ? input : "file:" + input, "-vn", "-f", "s16le", "-ac", "2", "-ar", "44100", "pipe:1" });
         return proc.start(a, input == "pipe:0");
     }
     size_t buffered() const { return proc.available() + (have - at); }
@@ -108,15 +114,20 @@ struct Sf3Audio::Source {
         std::error_code ec;
         fileSize = (size_t)fs::file_size(u8(file), ec);
         if (ec) { why = "FILE NOT FOUND"; return false; }
-        std::string ext = upper(u8(file).extension().string());
-        static const char* viaFfmpeg[] = { ".OGG", ".AAC", ".M4A", ".MP4", ".WMA", ".FLAC", ".OPUS" };
-        if (std::find(std::begin(viaFfmpeg), std::end(viaFfmpeg), ext) != std::end(viaFfmpeg)) {
+        std::string ext = upper(u8(file).extension().u8string());
+        // the VS1053's other formats, each with its ffmpeg demuxer
+        static const std::pair<const char*, const char*> viaFfmpeg[] = { { ".OGG", "ogg" }, { ".OPUS", "ogg" }, { ".AAC", "aac" },
+                                                                          { ".M4A", "mov" }, { ".MP4", "mov" }, { ".WMA", "asf" }, { ".FLAC", "flac" } };
+        const char* demuxer = nullptr;
+        for (const auto& v : viaFfmpeg) if (ext == v.first) demuxer = v.second;
+        if (demuxer) {
             if (ffmpeg.empty()) { why = "FORMAT NOT SUPPORTED"; return false; }
             ff = std::make_unique<Ffmpeg>();
-            if (!ff->start(ffmpeg, file, nullptr)) { why = "FORMAT NOT SUPPORTED"; return false; }
+            if (!ff->start(ffmpeg, file, demuxer)) { why = "FORMAT NOT SUPPORTED"; return false; }
             hz = 44100; channels = 2;
             return true;
         }
+        if (fileSize > (256u << 20)) { why = "FILE TOO BIG"; return false; }   // read whole: a bound
         std::ifstream f(u8(file), std::ios::binary);
         if (!f) { why = "FILE NOT FOUND"; return false; }
         bytes.assign(std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>());
@@ -183,6 +194,7 @@ void Sf3Audio::reset() {
     recent.assign(1024, 0.0f); recentAt = 0;
     peak[0] = peak[1] = 0;
     beepOn = false;
+    beepPeriod = 0;
 }
 
 bool Sf3Audio::playing() const { return source != nullptr; }
@@ -305,7 +317,7 @@ void Sf3Audio::writePort(int port, int value) {
                         const fs::path dir = u8(root) / "SETALK";
                         if (!fs::is_directory(dir, ec)) continue;
                         for (const auto& e : fs::directory_iterator(dir, ec))
-                            if (upper(e.path().filename().string()) == name) { file = e.path().u8string(); break; }
+                            if (upper(e.path().filename().u8string()) == name) { file = e.path().u8string(); break; }
                         if (!file.empty()) break;
                     }
                 }
@@ -631,7 +643,13 @@ void Sf3Audio::advanceMicrosecond() {
         if (beepOn) {
             beepPhase += beepHz / outputRate;
             if (beepPhase >= 1.0) beepPhase -= 1.0;
-            b = (beepPhase < 0.5 ? 0.25f : -0.25f) * beepLevel;
+            bool sounding = true;
+            if (beepPeriod > 0) {
+                beepGate += 1.0 / outputRate;
+                if (beepGate >= 2 * beepPeriod) beepGate -= 2 * beepPeriod;
+                sounding = beepGate < beepPeriod;
+            }
+            if (sounding) b = beepPhase < 0.5 ? 0.25f : -0.25f;
         }
         left.push_back(l * gl * master + b);
         right.push_back(r * gr * master + b);
@@ -650,12 +668,16 @@ void Sf3Audio::readSample(float& l, float& r) {
     else { l = r = 0.0f; }
 }
 
-// The SF3's buzzer (function 80, |BUZZ,a,b with a, b = 0..3; 0,0 = off). Its pitch is in no
-// document here: 1, 2 or 3 kHz for b, a/3 of a quarter of full scale, are this emulator's choice.
-void Sf3Audio::setBeep(int a, int b) {
-    beepOn = a > 0 && b > 0;
-    beepLevel = (float)std::clamp(a, 0, 3) / 3.0f;
-    beepHz = 1000.0 * std::clamp(b, 1, 3);
+// The SF3's buzzer (function 80, |BUZZ,tone,rhythm). TMTLOGIC's SF3 help text (SF3BOOT.ROM,
+// the Enterprise SF3's ROM): tone 0 off, 1 low, 2 middle, 3 high; rhythm 0 continuous, 1 slow,
+// 2 middle, 3 fast. The pitches and speeds are in no document here: 1, 2, 3 kHz and 500, 250,
+// 125 ms on then off are this emulator's choice.
+void Sf3Audio::setBeep(int tone, int rhythm) {
+    beepOn = tone > 0;
+    beepHz = 1000.0 * std::clamp(tone, 1, 3);
+    static const double periods[4] = { 0.0, 0.5, 0.25, 0.125 };
+    beepPeriod = periods[std::clamp(rhythm, 0, 3)];
+    beepGate = 0;
 }
 
 // The VU levels 0..8 (SEPLAYER.BAS draws VU$(0..8)): 4 dB a step under full scale, this

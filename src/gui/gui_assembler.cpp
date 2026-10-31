@@ -31,6 +31,7 @@ struct s_rasm_info {
     int run, start;
     unsigned char* emuram; int lenram;
     unsigned char* emurom; int lenrom;
+    int* breakpoint; int nbbreakpoint;         // the source's breakpoints (rasm.h, CPCSyntaxError)
 };
 }
 
@@ -55,7 +56,7 @@ static const char* SAMPLE_SOURCE =
     "\n"
     "message: defb \"Hello from RASM!\",13,10,0\n";
 
-static const char* SYNTAX_NAMES[] = { "RASM", "Maxam (-m)", "AS80 (-ass)", "UZ80 (-uz)", "DAMS (-dams)", "Pasmo (-pasmo)" };
+static const char* SYNTAX_NAMES[] = { "RASM", "Maxam (-m)", "AS80 (-ass)", "UZ80 (-uz)", "DAMS (-dams)", "Pasmo (-pasmo)", "WinAPE" };
 
 AssemblerWindow::AssemblerWindow(EmuHost& h, Debugger& d, FileBrowser& b, SaveDialog& s)
     : host(h), debugger(d), browser(b), saver(s) {
@@ -88,33 +89,119 @@ static std::string canonical(const std::string& p) {
     return s;
 }
 
+// A new program: the sample, in a tab of its own after the others.
 void AssemblerWindow::newFile() {
-    source = SAMPLE_SOURCE;
-    sourceRevision++;
-    path.clear();
-    modified = false;
-    lineCount = countLines(source);
-    tabs.assign(1, Tab{});
-    activeTab = 0; selectTab = 0;
+    Tab t;
+    t.source = SAMPLE_SOURCE;
+    t.lineCount = countLines(t.source);
+    t.program = nextProgram++;
+    t.uid = nextUid++;
+    activate(insertTab(std::move(t), (int)tabs.size()));
     messages.clear(); errorLines.clear();
 }
 
-// Opening a file makes it the main file: its tab first, then a tab for each file it links,
-// and each of theirs.
+// Opening a file opens a program: its tab, then a tab for each file it links, and each of
+// theirs. A program already open is read again from the disc (one with an edited tab is
+// shown instead); an untouched new tab, alone, gives its place.
 void AssemblerWindow::openFile(const std::string& p) {
     std::string text;
     if (!readText(p, text)) { summary = "Cannot open " + p; return; }
-    source = text;
-    sourceRevision++;
-    path = p;
-    modified = false;
-    lineCount = countLines(source);
-    tabs.assign(1, Tab{});
-    activeTab = 0; selectTab = 0;
+    storeActive();
+    int at = -1;
+    for (int i = 0; i < (int)tabs.size(); i++) {
+        if (!tabs[(size_t)i].isMain || tabPath(i).empty() || canonical(tabPath(i)) != canonical(p)) continue;
+        if (programModified(tabs[(size_t)i].program)) {
+            showTab(i);
+            summary = p + " is open and edited: shown, not read again";
+            return;
+        }
+        at = i;
+        removeTabs(tabs[(size_t)i].program, -1);
+        break;
+    }
+    if (at < 0 && tabs.size() == 1 && tabs[0].isMain && tabPath(0).empty() && !tabModified(0)) {
+        at = 0;
+        removeTabs(tabs[0].program, -1);
+    }
+    Tab t;
+    t.source = text;
+    t.path = p;
+    t.lineCount = countLines(text);
+    t.program = nextProgram++;
+    t.uid = nextUid++;
+    activate(insertTab(std::move(t), at >= 0 ? at : (int)tabs.size()));
     messages.clear(); errorLines.clear();
+    const size_t before = tabs.size();
     openLinked(source, path, 0);
+    const size_t linked = tabs.size() - before;
     summary = "Opened " + p;
-    if (tabs.size() > 1) summary += " and " + std::to_string(tabs.size() - 1) + " linked file" + (tabs.size() == 2 ? "" : "s");
+    if (linked) summary += " and " + std::to_string(linked) + " linked file" + (linked == 1 ? "" : "s");
+}
+
+std::string AssemblerWindow::tabPath(int index) const {
+    if (index == activeTab) return path;
+    return index >= 0 && index < (int)tabs.size() ? tabs[(size_t)index].path : std::string();
+}
+
+std::string AssemblerWindow::tabSource(int index) const {
+    if (index == activeTab) return source;
+    return index >= 0 && index < (int)tabs.size() ? tabs[(size_t)index].source : std::string();
+}
+
+bool AssemblerWindow::tabModified(int index) const {
+    if (index == activeTab) return modified;
+    return index >= 0 && index < (int)tabs.size() && tabs[(size_t)index].modified;
+}
+
+bool AssemblerWindow::programModified(int program) const {
+    for (int i = 0; i < (int)tabs.size(); i++) if (tabs[(size_t)i].program == program && tabModified(i)) return true;
+    return false;
+}
+
+int AssemblerWindow::mainOf(int index) const {
+    if (index < 0 || index >= (int)tabs.size()) return -1;
+    const int program = tabs[(size_t)index].program;
+    for (int i = 0; i < (int)tabs.size(); i++) if (tabs[(size_t)i].program == program && tabs[(size_t)i].isMain) return i;
+    return index;
+}
+
+int AssemblerWindow::insertTab(Tab t, int pos) {
+    storeActive();
+    pos = std::clamp(pos, 0, (int)tabs.size());
+    const bool first = tabs.empty();
+    tabs.insert(tabs.begin() + pos, std::move(t));
+    if (!first && activeTab >= pos) activeTab++;
+    if (selectTab >= pos) selectTab++;
+    for (Message& m : messages) if (m.tab >= pos) m.tab++;
+    return pos;
+}
+
+// A program's tabs (uid < 0), or the one tab with that uid, closed. When the tab on show
+// goes, activeTab is -1 until the caller shows another.
+void AssemblerWindow::removeTabs(int program, int uid) {
+    storeActive();
+    std::vector<Tab> kept;
+    int nowActive = -1;
+    for (int i = 0; i < (int)tabs.size(); i++) {
+        const Tab& t = tabs[(size_t)i];
+        if (uid < 0 ? t.program == program : t.uid == uid) continue;
+        if (i == activeTab) nowActive = (int)kept.size();
+        kept.push_back(t);
+    }
+    tabs = std::move(kept);
+    activeTab = nowActive;
+    selectTab = -1;
+    messages.clear(); errorLines.clear();
+}
+
+// The close button: a main file's tab closes its program (its linked files with it), a
+// linked file's only itself (it opens again when its program next builds).
+void AssemblerWindow::closeTab(int index) {
+    if (index < 0 || index >= (int)tabs.size()) return;
+    const Tab& t = tabs[(size_t)index];
+    if (t.isMain) removeTabs(t.program, -1); else removeTabs(t.program, t.uid);
+    if (tabs.empty()) { newFile(); return; }
+    if (activeTab < 0) activate(std::min(index, (int)tabs.size() - 1));
 }
 
 void AssemblerWindow::saveFile(const std::string& p) {
@@ -123,7 +210,7 @@ void AssemblerWindow::saveFile(const std::string& p) {
     path = p;
     modified = false;
     summary = "Saved " + p;
-    if (activeTab == 0) openLinked(source, path, 0);     // a new INCLUDE opens its file
+    if (activeTab == mainTab()) openLinked(source, path, 0);     // a new INCLUDE opens its file
 }
 
 // The files a source links: INCLUDE "name" and READ "name" (rasm's two for source; INCBIN
@@ -133,7 +220,7 @@ std::vector<std::string> AssemblerWindow::linkedFiles(const std::string& text, c
     namespace fs = std::filesystem;
     std::vector<std::string> found;
     const fs::path fromDir = fromPath.empty() ? fs::path() : fs::path(fromPath).parent_path();
-    const std::string mainPath = activeTab == 0 ? path : (tabs.empty() ? std::string() : tabs[0].path);
+    const std::string mainPath = tabPath(mainTab());
     const fs::path mainDir = mainPath.empty() ? fs::path() : fs::path(mainPath).parent_path();
     std::istringstream in(text);
     std::string line;
@@ -174,46 +261,63 @@ std::vector<std::string> AssemblerWindow::linkedFiles(const std::string& text, c
     return found;
 }
 
+// The files the shown tab's program links get tabs of their own, after its other tabs.
 void AssemblerWindow::openLinked(const std::string& text, const std::string& fromPath, int depth) {
     if (depth > 16) return;                              // a file that includes itself
-    const std::string mainPath = activeTab == 0 ? path : tabs[0].path;
+    const int program = activeProgram();
+    const std::string mainPath = tabPath(mainTab());
     for (const std::string& file : linkedFiles(text, fromPath)) {
         if (!mainPath.empty() && canonical(file) == canonical(mainPath)) continue;
-        if (tabFor(file) >= 0) continue;
+        if (tabFor(file, program) >= 0) continue;
         Tab tab;
         if (!readText(file, tab.source)) continue;
         tab.path = file;
         tab.lineCount = countLines(tab.source);
-        tabs.push_back(tab);
+        tab.program = program;
+        tab.isMain = false;
+        tab.uid = nextUid++;
+        int pos = 0;
+        for (int i = 0; i < (int)tabs.size(); i++) if (tabs[(size_t)i].program == program) pos = i + 1;
         const std::string linkedText = tab.source;
+        insertTab(std::move(tab), pos);
         openLinked(linkedText, file, depth + 1);
     }
 }
 
-int AssemblerWindow::tabFor(const std::string& file) const {
+int AssemblerWindow::tabFor(const std::string& file, int program) const {
     namespace fs = std::filesystem;
     if (file.empty()) return -1;
+    if (program < 0) program = activeProgram();
+    int main = -1;
+    for (int i = 0; i < (int)tabs.size(); i++) if (tabs[(size_t)i].program == program && tabs[(size_t)i].isMain) main = i;
     std::vector<std::string> wanted = { canonical(file) };
-    const std::string mainPath = activeTab == 0 ? path : tabs[0].path;
+    const std::string mainPath = tabPath(main);
     if (!mainPath.empty() && fs::path(file).is_relative()) wanted.push_back(canonical((fs::path(mainPath).parent_path() / file).string()));
-    for (size_t i = 0; i < tabs.size(); i++) {
-        const std::string p = (int)i == activeTab ? path : tabs[i].path;
+    for (int i = 0; i < (int)tabs.size(); i++) {
+        if (tabs[(size_t)i].program != program) continue;
+        const std::string p = tabPath(i);
         if (p.empty()) continue;
         const std::string c = canonical(p);
-        for (const std::string& w : wanted) if (c == w) return (int)i;
+        for (const std::string& w : wanted) if (c == w) return i;
     }
     return -1;
 }
 
+// A file the debugger stopped in: its tab in the shown program, opened there if need be.
 int AssemblerWindow::openFileTab(const std::string& file) {
     const int have = tabFor(file);
     if (have >= 0) return have;
     Tab tab;
     if (!readText(file, tab.source)) return -1;
+    const int program = activeProgram();
     tab.path = file;
     tab.lineCount = countLines(tab.source);
-    tabs.push_back(tab);
-    return (int)tabs.size() - 1;
+    tab.program = program;
+    tab.isMain = false;
+    tab.uid = nextUid++;
+    int pos = 0;
+    for (int i = 0; i < (int)tabs.size(); i++) if (tabs[(size_t)i].program == program) pos = i + 1;
+    return insertTab(std::move(tab), pos);
 }
 
 void AssemblerWindow::setCLines(const std::vector<CSourceLine>& lines) {
@@ -254,7 +358,7 @@ void AssemblerWindow::setCursorLine(int line) {
 
 int AssemblerWindow::asmLineAddress(int line, std::string& why) {
     namespace fs = std::filesystem;
-    if (activeTab != 0) { why = "for assembly it works in the main file's tab (the one F9 assembles)"; return -1; }
+    if (activeTab != mainTab()) { why = "for assembly it works in the main file's tab (the one F9 assembles)"; return -1; }
     // the source with the marker before the line: an alias (EQU, its $ taken where it is,
     // and exported with the labels; a variable "=" is not exported), not a label, so the
     // local labels' scope (.name after a global label) stays as it is; no byte is added
@@ -461,6 +565,11 @@ void AssemblerWindow::storeActive() {
 void AssemblerWindow::showTab(int index) {
     if (index < 0 || index >= (int)tabs.size() || index == activeTab) return;
     storeActive();
+    activate(index);
+}
+
+void AssemblerWindow::activate(int index) {
+    if (index < 0 || index >= (int)tabs.size()) return;
     // an editor with the focus keeps its own copy of the text and would write it back over
     // the new tab's
     if (ImGui::GetCurrentContext()) ImGui::ClearActiveID();
@@ -492,7 +601,7 @@ void AssemblerWindow::requestSave(bool saveAs) {
 
 void AssemblerWindow::loadSettings(const std::map<std::string, std::string>& ini) {
     auto it = ini.find("asm_syntax");
-    if (it != ini.end()) syntax = std::clamp(std::atoi(it->second.c_str()), 0, 5);
+    if (it != ini.end()) syntax = std::clamp(std::atoi(it->second.c_str()), 0, (int)IM_ARRAYSIZE(SYNTAX_NAMES) - 1);
     it = ini.find("asm_brk");
     if (it != ini.end()) brkLabels = std::atoi(it->second.c_str()) != 0;
     it = ini.find("asm_highlight");
@@ -511,17 +620,25 @@ void AssemblerWindow::loadSettings(const std::map<std::string, std::string>& ini
     if ((it = ini.find("asm_z88dk")) != ini.end()) ctools.z88dkFolder = it->second;
     if ((it = ini.find("asm_z88dk_sccz80")) != ini.end()) ctools.z88dkSccz80 = std::atoi(it->second.c_str()) != 0;
     if ((it = ini.find("asm_codeloc")) != ini.end()) ctools.codeLoc = (int)std::strtol(it->second.c_str(), nullptr, 0) & 0xffff;
-    it = ini.find("asm_file");
-    if (it != ini.end() && !it->second.empty()) {
-        std::error_code ec;
-        if (std::filesystem::exists(it->second, ec)) openFile(it->second);
+    // the other programs first, then the one that was on show
+    std::error_code ec;
+    for (int n = 1; n <= 64; n++) {
+        it = ini.find("asm_file." + std::to_string(n));
+        if (it == ini.end()) break;
+        if (!it->second.empty() && std::filesystem::exists(it->second, ec)) openFile(it->second);
     }
+    it = ini.find("asm_file");
+    if (it != ini.end() && !it->second.empty() && std::filesystem::exists(it->second, ec)) openFile(it->second);
 }
 
 void AssemblerWindow::saveSettings(std::ostream& out) const {
     out << "asm_syntax=" << syntax << "\n";
     out << "asm_brk=" << (brkLabels ? 1 : 0) << "\n";
-    out << "asm_file=" << (activeTab == 0 || tabs.empty() ? path : tabs[0].path) << "\n";   // the main file: it brings its links
+    // every program's main file (each brings its links); asm_file is the one on show
+    out << "asm_file=" << tabPath(mainTab()) << "\n";
+    int n = 0;
+    for (int i = 0; i < (int)tabs.size(); i++)
+        if (tabs[(size_t)i].isMain && i != mainTab() && !tabPath(i).empty()) out << "asm_file." << ++n << "=" << tabPath(i) << "\n";
     out << "asm_highlight=" << (highlight ? 1 : 0) << "\n";
     out << "asm_sdcc=" << ctools.sdccFolder << "\n";
     out << "asm_cpctelera=" << ctools.cpcteleraFolder << "\n";
@@ -650,7 +767,7 @@ bool AssemblerWindow::cSyntax() const {
 }
 
 bool AssemblerWindow::cMode() const {
-    const std::string mainPath = activeTab == 0 || tabs.empty() ? path : tabs[0].path;
+    const std::string mainPath = tabPath(mainTab());
     std::string ext = std::filesystem::path(mainPath).extension().string();
     for (char& c : ext) c = (char)std::tolower((unsigned char)c);
     return ext == ".c";
@@ -663,10 +780,11 @@ void AssemblerWindow::startCBuild(bool thenRun, bool assetsOnly) {
     if (cRun && !cRun->done) return;            // one build at a time
     if (cRun) finishCBuild();
     storeActive();
+    const int program = activeProgram();
     std::string notSaved;
     for (size_t i = 0; i < tabs.size(); i++) {
         Tab& t = tabs[i];
-        if (!t.modified || t.path.empty()) continue;
+        if (t.program != program || !t.modified || t.path.empty()) continue;
         std::string why;
         if (writeFileSafely(t.path, t.source.data(), t.source.size(), &why)) {
             t.modified = false;
@@ -675,12 +793,13 @@ void AssemblerWindow::startCBuild(bool thenRun, bool assetsOnly) {
     }
     messages.clear(); errorLines.clear();
     if (!notSaved.empty()) { Message m; m.text = "Could not save before building:" + notSaved; messages.push_back(m); }
-    const std::string mainPath = tabs[0].path;
+    const std::string mainPath = tabPath(mainTab());
     std::error_code ec;
     const std::string cache = (fs::temp_directory_path(ec) / "cpcse-cbuild").u8string();
     auto run = std::make_shared<CRun>();
     run->thenRun = thenRun;
     run->assetsOnly = assetsOnly;
+    run->program = program;
     CRun* r = run.get();
     CToolchain tools = ctools;
     tools.assetsOnly = assetsOnly;           // every asset step again, then stop
@@ -706,6 +825,7 @@ void AssemblerWindow::finishCBuild() {
     if (cRun->worker.joinable()) cRun->worker.join();
     const CBuildResult res = cRun->result;
     const bool thenRun = cRun->thenRun, assetsOnly = cRun->assetsOnly;
+    const int program = cRun->program;
     cRun.reset();
     cLog = res.log;
     for (const CBuildMessage& cm : res.messages) {
@@ -713,7 +833,7 @@ void AssemblerWindow::finishCBuild() {
         m.file = cm.file;
         m.line = cm.line;
         m.text = cm.text;
-        m.tab = tabFor(cm.file);
+        m.tab = tabFor(cm.file, program);
         messages.push_back(m);
     }
     refreshErrorLines();
@@ -865,18 +985,19 @@ void AssemblerWindow::assemble(bool thenRun) {
     // rasm reads the linked files from disk: an edited tab is saved first, so it assembles
     // what is on show. The main file goes in from its tab, saved or not.
     storeActive();
+    const int program = activeProgram();
     std::string notSaved;
-    for (size_t i = 1; i < tabs.size(); i++) {
+    for (size_t i = 0; i < tabs.size(); i++) {
         Tab& t = tabs[i];
-        if (!t.modified || t.path.empty()) continue;
+        if (t.program != program || t.isMain || !t.modified || t.path.empty()) continue;
         std::string why;
         if (writeFileSafely(t.path, t.source.data(), t.source.size(), &why)) {
             t.modified = false;
             if ((int)i == activeTab) modified = false;
         } else notSaved += " " + fs::path(t.path).filename().string();
     }
-    const std::string mainSource = activeTab == 0 ? source : tabs[0].source;
-    const std::string mainPath = activeTab == 0 ? path : tabs[0].path;
+    const std::string mainSource = tabSource(mainTab());
+    const std::string mainPath = tabPath(mainTab());
     // INCLUDE / INCBIN / SAVE resolve against the main file's own folder, as from the command line.
     fs::path previous = fs::current_path(ec);
     if (!mainPath.empty()) fs::current_path(fs::path(mainPath).parent_path(), ec);
@@ -886,7 +1007,7 @@ void AssemblerWindow::assemble(bool thenRun) {
     fs::current_path(previous, ec);
     openLinked(mainSource, mainPath, 0);                // a file linked since it was opened
 
-    messages.clear(); errorLines.clear(); symbols.clear();
+    messages.clear(); errorLines.clear(); symbols.clear(); sourceBreakpoints.clear();
     lastOk = false; lastStart = -1; lastRun = -1; lastLength = 0;
     if (info) {
         for (int i = 0; i < info->nberror; i++) {
@@ -897,11 +1018,12 @@ void AssemblerWindow::assemble(bool thenRun) {
             // The editor's text is fed to rasm as a stream; its "file" is the current
             // directory. Anything else came from an INCLUDE.
             m.inEditor = m.file.empty() || m.file == "<internal>" || m.file.back() == '/' || m.file.back() == '\\';
-            m.tab = m.inEditor ? 0 : tabFor(m.file);
+            m.tab = m.inEditor ? mainTab() : tabFor(m.file, program);
             messages.push_back(m);
         }
         for (int i = 0; i < info->nbsymbol; i++)
             if (info->symbol[i].name) symbols.emplace_back(info->symbol[i].name, info->symbol[i].v);
+        sourceBreakpoints.assign(info->breakpoint, info->breakpoint + std::max(0, info->nbbreakpoint));
         lastRun = info->run;
         lastStart = info->start;
     }
@@ -929,8 +1051,9 @@ void AssemblerWindow::assemble(bool thenRun) {
         debugger.setSymbols(symbols);
         setCLines({});                              // an assembled program has no C lines
         symbolSizes.clear();
+        debugger.clearAssemblerBreakpoints();
+        for (int address : sourceBreakpoints) debugger.addBreakpoint(address, "", true);
         if (brkLabels) {
-            debugger.clearAssemblerBreakpoints();
             for (const auto& s : symbols) {
                 std::string u = s.first;
                 for (char& c : u) c = (char)std::toupper((unsigned char)c);
@@ -1007,6 +1130,7 @@ void AssemblerWindow::draw(bool* open) {
 
     // ---- toolbar
     if (ImGui::Button("New")) newFile();
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("A new program in a tab of its own (Open also opens one beside the others)");
     if (after().button("Open...")) requestOpen();
     if (after().button("Save")) requestSave(false);
     if (after().button("Save as...")) requestSave(true);
@@ -1041,7 +1165,11 @@ void AssemblerWindow::draw(bool* open) {
     } else {
         after().field(130, "##syntax");
         ImGui::Combo("##syntax", &syntax, SYNTAX_NAMES, IM_ARRAYSIZE(SYNTAX_NAMES));
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("rasm's compatibility switches");
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("rasm's compatibility switches. WinAPE: & is hex, Maxam's expressions, and WinAPE's own\n"
+                              "directives (BYTE, TEXT, WORD, RMEM, DEFL, END, BRK as RST &30, RUN address,breakpoint,\n"
+                              "macro parameters by name). WRITE / WRITE DIRECT / CLOSE are passed over: the code goes\n"
+                              "into the machine as always. CHECKSUM and memory() are not supported.");
         after().checkbox("BRK labels", &brkLabels);
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("Labels named BRK..., @BRK... or ....BRK become breakpoints (rasm -eb)");
     }
@@ -1056,28 +1184,56 @@ void AssemblerWindow::draw(bool* open) {
         file.textDisabled(n);
     }
 
-    // ---- the open files, a tab each (the first is the main file, the one assembled)
+    // ---- the open files, a tab each: each program's main file (in the accent colour, the
+    // one F9 builds) and after it the files it links
     if (selectTab >= 0) showTab(selectTab);
+    int closeAt = -1;
     if (ImGui::BeginTabBar("##asmfiles", ImGuiTabBarFlags_FittingPolicyScroll)) {
         for (int i = 0; i < (int)tabs.size(); i++) {
-            const std::string& p = i == activeTab ? path : tabs[(size_t)i].path;
-            const bool changed = i == activeTab ? modified : tabs[(size_t)i].modified;
+            const Tab& t = tabs[(size_t)i];
+            const std::string p = tabPath(i);
             std::string label = p.empty() ? std::string("untitled.asm") : std::filesystem::path(p).filename().string();
-            if (changed) label += " *";
-            label += "###asmtab" + std::to_string(i);
+            if (tabModified(i)) label += " *";
+            label += "###asmtab" + std::to_string(t.uid);
             const ImGuiTabItemFlags flags = selectTab == i ? ImGuiTabItemFlags_SetSelected : 0;
-            const bool shown = ImGui::BeginTabItem(label.c_str(), nullptr, flags);
-            if (ImGui::IsItemHovered())
-                ImGui::SetTooltip("%s", i == 0 ? "The main file: F9 assembles it, with the files it links"
-                                               : "A linked file (INCLUDE / READ): F9 saves it if edited, then assembles the main file");
+            bool open = true;
+            if (t.isMain) ImGui::PushStyleColor(ImGuiCol_Text, kAccent);
+            const bool shown = ImGui::BeginTabItem(label.c_str(), &open, flags);
+            if (t.isMain) ImGui::PopStyleColor();
+            if (ImGui::IsItemHovered()) {
+                const int m = mainOf(i);
+                const std::string mainName = tabPath(m).empty() ? std::string("untitled") : std::filesystem::path(tabPath(m)).filename().string();
+                if (t.isMain) ImGui::SetTooltip("A program's main file: F9 here builds it, with the files it links.\nClosing it closes its linked files too.");
+                else ImGui::SetTooltip("Linked by %s (INCLUDE / READ): F9 here saves it if edited, then builds %s", mainName.c_str(), mainName.c_str());
+            }
             if (shown) {
                 if (i != activeTab && selectTab < 0) showTab(i);
                 ImGui::EndTabItem();
             }
+            if (!open) closeAt = i;
         }
         ImGui::EndTabBar();
     }
     selectTab = -1;
+    if (closeAt >= 0) {
+        // an edited tab (or, for a main file, any of its program's) asks first
+        const Tab& t = tabs[(size_t)closeAt];
+        const bool edited = t.isMain ? programModified(t.program) : tabModified(closeAt);
+        if (edited) { closeRequest = t.uid; ImGui::OpenPopup("Close without saving?##asmclose"); }
+        else closeTab(closeAt);
+    }
+    if (ImGui::BeginPopupModal("Close without saving?##asmclose", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+        int at = -1;
+        for (int i = 0; i < (int)tabs.size(); i++) if (tabs[(size_t)i].uid == closeRequest) at = i;
+        if (at < 0) ImGui::CloseCurrentPopup();
+        else {
+            ImGui::TextUnformatted(tabs[(size_t)at].isMain ? "This program has changes that are not saved." : "This file has changes that are not saved.");
+            if (ImGui::Button("Close, losing them")) { closeTab(at); closeRequest = -1; ImGui::CloseCurrentPopup(); }
+            ImGui::SameLine();
+            if (ImGui::Button("Cancel")) { closeRequest = -1; ImGui::CloseCurrentPopup(); }
+        }
+        ImGui::EndPopup();
+    }
 
     // ---- editor with a line-number gutter
     const ImGuiStyle& style = ImGui::GetStyle();

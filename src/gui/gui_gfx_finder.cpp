@@ -134,6 +134,9 @@ void GuiShell::windowGraphicsFinder() {
         row.checkbox("CPC pixel shape", &gfx.cpcShape);
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("Mode 0 pixels twice as wide, mode 2 pixels twice as tall, as the monitor shows them");
         row.checkbox("Grid", &gfx.grid);
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("A frame round each tile");
+        row.checkbox("Pixel grid", &gfx.pixelGrid);
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Lines between the CPC pixels, when a pixel is 4 screen pixels or more (zoom in)");
     }
     gfx.address = ((gfx.address % limit) + limit) % limit;
     const int ppb = kPixelsPerByte[gfx.format];
@@ -176,6 +179,19 @@ void GuiShell::windowGraphicsFinder() {
         const ImVec2 p0(origin.x + c * cellW, origin.y + r * cellH), p1(p0.x + tileW * pw, p0.y + tileH * ph);
         const ImVec2 uv0((float)(c * tileW) / texW, (float)(r * tileH) / texH), uv1((float)((c + 1) * tileW) / texW, (float)((r + 1) * tileH) / texH);
         dl->AddImage((ImTextureID)(intptr_t)gfxFinderTexture, p0, p1, uv0, uv1);
+        // lines between the CPC pixels, drawn only where they can be seen
+        if (gfx.pixelGrid && pw >= 4 && ph >= 4) {
+            const ImVec2 clip0 = dl->GetClipRectMin(), clip1 = dl->GetClipRectMax();
+            const float x0 = std::max(p0.x, clip0.x), x1 = std::min(p1.x, clip1.x);
+            const float y0 = std::max(p0.y, clip0.y), y1 = std::min(p1.y, clip1.y);
+            if (x0 < x1 && y0 < y1) {
+                const ImU32 line = IM_COL32(128, 128, 136, 110);
+                for (int k = std::max(1, (int)std::ceil((x0 - p0.x) / pw)); k < tileW && p0.x + k * pw <= x1; k++)
+                    dl->AddLine(ImVec2(std::floor(p0.x + k * pw), y0), ImVec2(std::floor(p0.x + k * pw), y1), line);
+                for (int k = std::max(1, (int)std::ceil((y0 - p0.y) / ph)); k < tileH && p0.y + k * ph <= y1; k++)
+                    dl->AddLine(ImVec2(x0, std::floor(p0.y + k * ph)), ImVec2(x1, std::floor(p0.y + k * ph)), line);
+            }
+        }
         if (gfx.grid) dl->AddRect(ImVec2(p0.x - 1, p0.y - 1), ImVec2(p1.x + 1, p1.y + 1), IM_COL32(80, 80, 90, 255));
         if (gfx.address + t * tileBytes == gfx.selected) dl->AddRect(ImVec2(p0.x - 1, p0.y - 1), ImVec2(p1.x + 1, p1.y + 1), ImGui::GetColorU32(kAccent), 0, 0, 2.0f);
     }

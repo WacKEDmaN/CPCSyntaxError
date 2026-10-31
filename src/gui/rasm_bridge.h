@@ -13,7 +13,8 @@ enum {
     RASM_SYNTAX_AS80 = 2,    /* -ass */
     RASM_SYNTAX_UZ80 = 3,    /* -uz */
     RASM_SYNTAX_DAMS = 4,    /* -dams */
-    RASM_SYNTAX_PASMO = 5    /* -pasmo */
+    RASM_SYNTAX_PASMO = 5,   /* -pasmo */
+    RASM_SYNTAX_WINAPE = 6   /* WinAPE: -m -amper, and its own directives */
 };
 
 /* Returns rasm's result (0 = assembled). *fatal is non-zero when rasm gave up and

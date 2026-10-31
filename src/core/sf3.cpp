@@ -22,8 +22,10 @@ void Symbiface3::reset() {
     params.clear(); reply.clear();
     status = errorNumber = 0;
     errorText.clear();
-    oledRows = {}; oledTexts.clear(); oledScroll = 0;
+    oledRows = oledIdle; oledTexts.clear(); oledScroll = 0;   // the card itself is not reset with the CPC: its own text
     wifiIn.clear(); wifiOut.clear(); wifiStatus = 0; pending = Pending::None;
+    flushStick();
+    diskIn43.clear(); diskIn44.clear(); diskOut.clear();
     for (auto& r : received) r.clear();
     net->closeAll();
     rtc.reset();
@@ -33,7 +35,8 @@ bool Symbiface3::handlesPort(int port) {
     if (!enabled) return false;
     port &= 0xffff;
     return port == SF3_CMD_PORT || port == SF3_DATA_PORT || port == SF3_ECHO_PORT || port == SF3_NET_PORT
-        || port == SF3_NET_STATUS_PORT || (port >= SF3_RECEIVE_PORT && port < SF3_RECEIVE_PORT + 4) || Sf3Audio::isPort(port) || audio->isMidiPort(port);
+        || port == SF3_NET_STATUS_PORT || port == SF3_DISK_READ_PORT || port == SF3_DISK_WRITE_PORT
+        || (port >= SF3_RECEIVE_PORT && port < SF3_RECEIVE_PORT + 4) || Sf3Audio::isPort(port) || audio->isMidiPort(port);
 }
 void Symbiface3::setSensitivity(double value) {
     sensitivity = std::isfinite(value) ? std::max(0.25, std::min(4.0, value)) : 1;
@@ -67,9 +70,48 @@ void Symbiface3::fail(int number, const std::string& why) {
     reply.clear();
 }
 
+M4SdCard* Symbiface3::stickCard() {
+    const std::string& folder = audio->usbFolder;
+    if (folder.empty()) { flushStick(); stick.reset(); return nullptr; }
+    if (!stick || stick->storage.root != folder) { flushStick(); stick = std::make_shared<Stick>(folder); }
+    return &stick->card;
+}
+
 void Symbiface3::function(int number) {
     status = 0;
     switch (number) {
+        case 1: diskIn43.clear(); diskOut.clear(); break;
+        case 2: diskIn44.clear(); break;
+        case 51: {                                     // read sectors: &FD43 had sector, count
+            M4SdCard* card = stickCard();
+            auto at = [&](size_t i) { return i < diskIn43.size() ? (uint32_t)(diskIn43[i] & 0xff) : 0u; };
+            const uint32_t lba = at(0) << 24 | at(1) << 16 | at(2) << 8 | at(3);
+            const int count = (int)at(4);
+            diskOut.clear();
+            std::vector<uint8_t> data((size_t)std::max(count, 0) * 512);
+            if (!card || count < 1 || count > 32 || card->read(lba, count, data.data()) != 0) { fail(51, "USB STICK READ ERROR"); break; }
+            diskOut.assign(data.begin(), data.end());
+            diskOut.push_back(0x1a);
+            break;
+        }
+        case 52:                                       // the stick on (&AA) or off (&00): is it there
+            if (!stickCard()) fail(52, "NO USB STICK");
+            break;
+        case 55:                                       // the stick's state: 1 ready (CubeMDOS waits for it)
+            reply.assign(1, stickCard() ? 1 : 0);
+            break;
+        case 53: {                                     // write sectors: &FD44 had sector, count, bytes, &1A
+            M4SdCard* card = stickCard();
+            auto at = [&](size_t i) { return i < diskIn44.size() ? (uint32_t)(diskIn44[i] & 0xff) : 0u; };
+            const uint32_t lba = at(0) << 24 | at(1) << 16 | at(2) << 8 | at(3);
+            const int count = (int)at(4);
+            const size_t need = 5 + (size_t)std::max(count, 0) * 512;
+            if (!card || count < 1 || count > 32 || diskIn44.size() < need) { fail(53, "USB STICK WRITE ERROR"); break; }
+            std::vector<uint8_t> data(diskIn44.begin() + 5, diskIn44.begin() + (std::ptrdiff_t)need);
+            if (card->write(lba, count, data.data()) != 0) { fail(53, "USB STICK WRITE ERROR"); break; }
+            sinceWrite = 0;
+            break;
+        }
         case 20:
             reply.clear();
             reply.push_back(clampi(dx, -128, 127) & 0xff);
@@ -281,6 +323,13 @@ int Symbiface3::readPort(int port) {
     if (port == SF3_ECHO_PORT) return sf3Echo & 0xff;
     if (port == SF3_CMD_PORT) return status;
     if (port == SF3_NET_STATUS_PORT) { wifiPoll(); return wifiStatus; }
+    if (port == SF3_DISK_READ_PORT) {
+        if (diskOut.empty()) return 0;
+        const int v = diskOut.front();
+        diskOut.pop_front();
+        return v;
+    }
+    if (port == SF3_DISK_WRITE_PORT) return 0xff;
     if (port == SF3_NET_PORT) {
         if (wifiOut.empty()) return 0;
         const int v = wifiOut.front();
@@ -305,6 +354,8 @@ bool Symbiface3::writePort(int port, int value) {
     if (Sf3Audio::isPort(port) || audio->isMidiPort(port)) { audio->writePort(port, value); return true; }
     if (port == SF3_ECHO_PORT) { sf3Echo = value; rtc.writePort(port, value); return true; }
     if (port == SF3_NET_PORT) { if (wifiIn.size() < 4096) wifiIn.push_back(value); return true; }
+    if (port == SF3_DISK_READ_PORT) { if (diskIn43.size() < 16) diskIn43.push_back(value); return true; }
+    if (port == SF3_DISK_WRITE_PORT) { if (diskIn44.size() < 5 + 32 * 512 + 1) diskIn44.push_back(value); return true; }
     if (port == SF3_NET_STATUS_PORT || (port >= SF3_RECEIVE_PORT && port < SF3_RECEIVE_PORT + 4)) return true;
     if (port == SF3_CMD_PORT) {
         if (value == 0) { params.clear(); reply.clear(); status = 0; }

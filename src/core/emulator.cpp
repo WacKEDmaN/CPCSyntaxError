@@ -23,6 +23,7 @@
 #include "sf2_rtc.h"
 #include "sf3.h"
 #include "symbiface_ide.h"
+#include "hd20.h"
 #include "multiface.h"
 #include "monitor_model.h"
 #include "monitor_renderer.h"
@@ -51,6 +52,7 @@ GX4000::GX4000() {
     sf2Rtc = new Symbiface2Rtc();
     sf3 = new Symbiface3();
     ide = new SymbifaceIde();
+    hd20 = new Hd20();
     multiface = new Multiface2();
     memory->setUpperRomReadHandler([this](int address, int rom) { return m4 ? m4->readMemory(address, rom) : -1; });
     classicMonitorCharacter = 0; classicMonitorLine = 0; classicMonitorFrame = 0;
@@ -342,7 +344,7 @@ GX4000::GX4000() {
 
 GX4000::~GX4000() {
     delete cpu; delete fdc; delete gamepad; delete ppi; delete tape; delete dac; delete ay; delete keyboard;
-    delete crtc; delete monitorRenderer; delete sf3; delete ide; delete multiface; delete sf2Rtc; delete symbifaceMouse; delete v9990; delete opl4; delete playcity; delete serial; delete speech;
+    delete crtc; delete monitorRenderer; delete sf3; delete ide; delete hd20; delete multiface; delete sf2Rtc; delete symbifaceMouse; delete v9990; delete opl4; delete playcity; delete serial; delete speech;
     delete m4; delete gateArray; delete asic; delete memory;
 }
 
@@ -937,6 +939,9 @@ void GX4000::loadCartridge(const Cartridge& cart, LoadCartridgeOptions options) 
     m4->romOff = false; m4->resetLine = false;   // a power cycle: |M4ROMOFF lasts until one
     memory->classicExpansion = options.classicExpansion;
     memory->cartridgeOnClassic = false;
+    // a cartridge machine has no classic BASIC or AMSDOS upper ROMs (a classic boot's would
+    // otherwise answer over the cartridge); the host fits the expansion ROMs again after this
+    for (auto& r : memory->upperRoms) r.clear();
     memory->loadCartridge(cart.banks); cartridge = std::make_shared<Cartridge>(cart); reset();
 }
 void GX4000::loadCartridge(const Cartridge& cart) { loadCartridge(cart, LoadCartridgeOptions{}); }
@@ -999,6 +1004,7 @@ void GX4000::writePort(int port, int value) {
     if (sf2Rtc->handlesWritePort(port)) { sf2Rtc->writePort(port, value); return; }
     if (sf3->handlesWritePort(port)) { sf3->writePort(port, value); return; }
     if (ide->handlesPort(port)) { ide->writePort(port, value); return; }
+    if (hd20->handlesPort(port)) { hd20->writePort(port, value); return; }
     // M4: DATAPORT &FExx takes the command, ACKPORT &FCxx starts it (M4ROM.s)
     if (m4->enabled && high == 0xfe) { m4->dataPortWrite(value); return; }
     if (m4->enabled && high == 0xfc) { m4->ack(cpu); return; }
@@ -1073,6 +1079,7 @@ int GX4000::readPortUntraced(int port) {
     if (sf2Rtc->handlesPort(port)) return sf2Rtc->readPort(port);
     if (sf3->handlesPort(port)) return sf3->readPort(port);
     if (ide->handlesPort(port)) return ide->readPort(port);
+    if (hd20->handlesPort(port)) return hd20->readPort(port);
     if (mouseIf.handlesPort(port)) return mouseIf.readPort(port);
     if (m4->enabled && high == 0xfe) return m4->dataPortRead();
     bool crtcSelected = (port & 0x4000) == 0;
@@ -1477,7 +1484,7 @@ void GX4000::reset() {
     memory->reset(); asic->reset(); gateArray->reset(); rasterCapture.clear(); rasterFrame.clear(); previousRasterFrame.clear();
     spritePatternSnapshot.clear(); spritePatternRevision = -1; crtc->reset();
     videoFrameRegisters = crtc->registers; videoCaptureRegisters = crtc->registers;
-    keyboard->reset(); ay->reset(); ppi->reset(); fdc->reset(); dac->reset(); tape->reset(); m4->reset(); v9990->reset(); opl4->reset(); playcity->reset(); serial->reset(); speech->reset(); symbifaceMouse->reset(); sf2Rtc->reset(); sf3->reset(); ide->reset(); multiface->reset(); cpu->reset();
+    keyboard->reset(); ay->reset(); ppi->reset(); fdc->reset(); dac->reset(); tape->reset(); m4->reset(); v9990->reset(); opl4->reset(); playcity->reset(); serial->reset(); speech->reset(); symbifaceMouse->reset(); sf2Rtc->reset(); sf3->reset(); ide->reset(); hd20->reset(); multiface->reset(); cpu->reset();
     cpu->sp = 0xbfff;
 }
 void GX4000::acknowledgeInterrupt() {

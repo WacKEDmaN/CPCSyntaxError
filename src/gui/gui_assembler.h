@@ -42,6 +42,8 @@ public:
     const CToolchain& cToolchain() const { return ctools; }
     const std::string& buildLog() const { return cLog; }
     void setSource(const std::string& text) { source = text; modified = true; sourceRevision++; }
+    void setSyntax(int s) { syntax = s; }        // RASM_SYNTAX_*
+    int syntaxMode() const { return syntax; }
     const std::string& resultSummary() const { return summary; }
     bool assembledOk() const { return lastOk; }
     int errorCount() const { return (int)messages.size(); }
@@ -51,8 +53,9 @@ public:
         for (const auto& m : messages) s += "    [" + m.file + ":" + std::to_string(m.line) + "] " + m.text + "\n";
         return s;
     }
-    // the open files: 0 is the main file, the rest the files it links
+    // the open files: every program's main file and the files it links, a tab each
     int fileCount() const { return (int)tabs.size(); }
+    int activeFile() const { return activeTab; }
     std::string filePath(int index) const { return index == activeTab ? path : (index >= 0 && index < (int)tabs.size() ? tabs[(size_t)index].path : std::string()); }
     void showFile(int index) { showTab(index); }
     void newFile();
@@ -70,17 +73,37 @@ private:
     FileBrowser& browser;
     SaveDialog& saver;
 
-    // The open files, one tab each. tabs[0] is the main file, the one assembled; the others
-    // are the files it links (INCLUDE / READ, found and opened by themselves). The active
-    // tab's text is edited in place in source / path / modified / lineCount below, and put
-    // back into its Tab when another tab is shown.
-    struct Tab { std::string source, path; bool modified = false; int lineCount = 1; };
+    // The open files, one tab each. Several PROGRAMS can be open: each has its main file (the
+    // one assembled or built) and the files it links (INCLUDE / READ, found and opened by
+    // themselves), in tabs after it. F9 builds the program of the tab on show, and only it.
+    // The active tab's text is edited in place in source / path / modified / lineCount
+    // below, and put back into its Tab when another tab is shown.
+    struct Tab {
+        std::string source, path; bool modified = false; int lineCount = 1;
+        int program = 0;                        // the program it belongs to
+        bool isMain = true;                     // its main file (else a file it links)
+        int uid = 0;                            // the tab's own identity in the tab bar
+    };
     std::vector<Tab> tabs;
-    int activeTab = 0;
+    int activeTab = 0;                          // -1 for a moment, after the shown tab was closed
     int selectTab = -1;                         // show this tab next frame
+    int nextProgram = 1, nextUid = 1;
+    int closeRequest = -1;                      // the uid of an edited tab whose close waits for an answer
     void storeActive();
     void showTab(int index);
-    int tabFor(const std::string& file) const;  // the tab of a file rasm named, -1 = none
+    void activate(int index);                   // shows the tab, whatever was on show
+    int insertTab(Tab t, int pos);              // the indices after it move on
+    void removeTabs(int program, int uid);      // a program's tabs (uid < 0), or one tab
+    void closeTab(int index);
+    int mainOf(int index) const;                // the main file's tab of the tab's program
+    int mainTab() const { return mainOf(activeTab); }
+    int activeProgram() const { return activeTab >= 0 && activeTab < (int)tabs.size() ? tabs[(size_t)activeTab].program : 0; }
+    bool programModified(int program) const;
+    std::string tabPath(int index) const;       // the active tab's own copy when it is that tab
+    std::string tabSource(int index) const;
+    bool tabModified(int index) const;
+    // the tab of a file rasm or SDCC named, among the program's tabs (-1: the shown one's); -1 = none
+    int tabFor(const std::string& file, int program = -1) const;
     std::vector<std::string> linkedFiles(const std::string& text, const std::string& fromPath) const;
     void openLinked(const std::string& text, const std::string& fromPath, int depth);
     void refreshErrorLines();
@@ -97,6 +120,7 @@ private:
     std::vector<Message> messages;
     std::set<int> errorLines;
     std::vector<std::pair<std::string, int>> symbols;
+    std::vector<int> sourceBreakpoints;          // the breakpoints the source sets (BREAKPOINT, WinAPE's BRK and RUN)
     std::string summary = "Nothing assembled yet.";
     bool lastOk = false;
     char symbolFilter[64] = {0};
@@ -124,6 +148,7 @@ private:
         std::mutex lock;
         std::string progress;
         bool done = false, thenRun = false, assetsOnly = false;
+        int program = 0;                        // the program built: its messages go to its tabs
         CBuildResult result;
         ~CRun() { if (worker.joinable()) worker.join(); }
     };

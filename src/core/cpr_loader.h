@@ -40,6 +40,22 @@ bool isCro(const Bytes& input);
 std::vector<CroGroup> parseCro(const Bytes& input);   // throws for a file it cannot take
 // The group a CRO starts with: GNUM 0, else the first group. -1 when there is none.
 int croDefaultGroup(const std::vector<CroGroup>& groups);
+// A CRO file of these groups, laid out as Logon-System's own CRO manager writes it
+// (rom manager/CROMANAGER.html, exportCRO): each GRRO holds GNUM, GLBL, GMSK, then its ROM
+// chunks of RID, RTYP, RLOG, RPHY, RDT; text with no 0 at its end; a pad byte after data of
+// odd length, inside the GRRO's and ROM's own lengths.
+Bytes serializeCro(const std::vector<CroGroup>& groups);
+// What would make these groups a bad CRO or a bad board: a GNUM twice, a bankable page past
+// 31 or twice, two high ROMs on one number, RLOG past 255, more than one low or MF2 ROM, ROM
+// sizes the hardware does not have. Empty when there is nothing to say.
+std::vector<std::string> croProblems(const std::vector<CroGroup>& groups);
+// A cartridge's pages as CRO ROMs: a CPR's own cbNN chunks (the pages it holds, no mirror),
+// or a raw image's 16K pages; bankable, named cbNN, RPHY the page, RLOG 7 for page 3 and 1
+// for the others (as Logon-System's CRO manager imports a CPR). Throws for a file it cannot take.
+std::vector<CroRom> croRomsFromCartridge(const Bytes& file);
+// The GMSK that makes `pages` 16K pages repeat through the cartridge space, as a ROM chip
+// of that size does (the next power of two).
+uint32_t croMaskForPages(int pages);
 // The cartridge a group's bankable ROMs make, as the Plus's 19-bit address (page << 14 |
 // offset) sees it: the address is ANDed with GMSK and the ROM whose RPHY is the page of the
 // result answers; a page with no ROM reads 0 (the guide: "An empty or norom ROM always

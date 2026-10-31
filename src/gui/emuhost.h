@@ -178,27 +178,14 @@ public:
     static constexpr int TAPE_TURBO_UNLIMITED = 21;
     int tapeTurbo = 1;
     bool tapeTurboActive() const;
-    bool integerScale = false;
-    bool maintainAspect = true;
     bool fullscreen = false;
-    bool crtEffect = false;      // the tube's pattern + bloom overlay
-    float crtScanline = 0.5f;
-    float crtBloom = 0.2f;
-    float crtBlur = 0.0f;        // the beam's soft spot (softenRender): 0 sharp .. 1
-    // THE TUBE'S PATTERN: "auto" (as the set: a colour tube has a slot mask -- its phosphors
-    // are stripes behind slots -- and a green or grey tube shows scanlines), "slot",
-    // "scanlines" or "none". crtMask is the mask's strength (0..1), crtMaskSize the width of
-    // one phosphor stripe in screen pixels (the tube's pitch is not printed in the manuals).
-    std::string crtPattern = "auto";
-    float crtMask = 0.5f;
-    int crtMaskSize = 1;
-    bool crtMaskTurned = false;          // the mask turned 90 degrees: stripes across
-    bool crtSlotMask() const;
+    // How each screen is shown (crt_filter.h): the CPC's monitor and the GFX9000's have
+    // their own scaling, CRT effect and advanced CRT filter. The GFX9000's starts as a copy
+    // of the CPC's, until it is set.
+    ScreenLook cpcLook, gfxLook;
+    bool crtSlotMask() const;            // the CPC's pattern, "auto" as its set's tube
     bool crtScanlines() const;
-    // The advanced CRT filter (crt_filter.h), drawn by the GPU. While it is on, the CRT effect
-    // above stands aside.
-    CrtFilterSettings crtFilter;
-    bool crtFilterActive() const { return crtFilter.enabled && (crtFilter.signal || crtFilter.screen); }
+    bool crtFilterActive() const { return cpcLook.crtFilterActive(); }
 
     // media state (for display)
     std::string diskName[2];
@@ -212,9 +199,15 @@ public:
     int croGroup = -1;
     std::vector<std::string> croGroupLabels;   // the loaded CRO's groups ("GNUM: label")
     std::vector<uint32_t> croGroupNumbers;
+    uint32_t croCurrentGroup = 0;              // the GNUM of the group running now
     struct CroRomSet { Bytes lower; std::vector<std::pair<int, Bytes>> upper; Bytes mf2; };
     CroRomSet croSet;
     bool loadCroGroup(uint32_t number);        // the same file, another group
+    std::string croGroupPath;                  // the file croGroup was picked for ("" = any: --cro-group)
+    bool croAskGroup = false;                  // a CRO of several groups loaded with none picked: the GUI asks
+    // A cartridge (CPR, CRO, raw) from bytes: the CRO editor runs what it holds. `path` names
+    // it ("" for one not saved yet).
+    bool loadCartridgeData(const Bytes& data, const std::string& path);
     // THE GX4000 128K RAM MOD: a GX4000 has 64K; with the mod it banks 128K like a 6128
     // (the 6128 Plus's banking), so 128K software runs. Changing it restarts the cartridge.
     bool gx4000Ram128 = false;
@@ -233,7 +226,7 @@ public:
     std::string osRomName, basicRomName, amsdosRomName;    // resolved filenames (display)
 
     // expansion ROMs fitted into upper-ROM slots (persist across reboots)
-    struct FittedRom { int slot; std::string name; Bytes data; };
+    struct FittedRom { int slot; std::string name; Bytes data; std::string path; };   // path: kept in cpcse.ini
     std::vector<FittedRom> expansionRoms;
 
     // M4 board (SD storage backed by a host folder) — classic CPC only.
@@ -268,6 +261,25 @@ public:
     std::string sf3UsbFolder, sf3SdFolder;
     std::string ls3EepromFile;       // LambdaSpeak 3's 128 KB EEPROM, kept between sessions ("" = not kept)
     void setIdeFolder(const std::string& folder);
+    // The Dobbertin HD20's image file ("" = none: then a SYMBiFACE III's USB stick
+    // HD20/HD20_01.IMG, as the real SF3 finds it).
+    std::string hd20Image;
+    // The SYMBiFACE III's ROM bank: SD card CPC/ROMTABLE/BANKnnn, its ROMnnn.BIN in upper ROM
+    // slot nnn (ROM127 the lower ROM), loaded at power-on as the real SF3 does (the folder's
+    // README.TXT). 0 = none, -1 = automatic: the bank TMTLOGIC's card has for this machine
+    // (2 "CUBE 6128", 3 "CUBE 6128 PLUS", 6 "CUBE 464 v2").
+    int sf3RomBank = -1;
+    int sf3BankInUse() const;         // the bank number used now (0 = none)
+    struct Sf3Bank { int number = 0; std::string name; };
+    std::vector<Sf3Bank> sf3Banks() const;
+    void setSf3RomBank(int bank);
+    bool applySf3Roms();              // true when the ROMs changed (the CPC must restart to see them)
+    void showSf3Bank();               // the bank's name on the SF3's OLED
+    std::vector<int> sf3RomSlots;     // the slots the bank filled
+    int sf3BankApplied = 0;           // the bank whose ROMs are in (0 = none)
+    Bytes sf3LowerSaved;              // the lower ROM a ROM127 replaced
+    void setHd20Image(const std::string& image);
+    void applyHd20();
     void setSf3Folder(bool usb, const std::string& folder);   // the USB stick (true) or the SD card
     void rescanIde();
     float mouseSensitivity = 1.0f;
@@ -382,6 +394,7 @@ public:
     const uint32_t* recordPicture();      // this frame's picture for the recorder
     std::string recordDir = "recordings";    // where the save dialog starts (set by main)
     MediaRecorder recorder;
+    void pollRecorder();               // an MP4 finished in the background: its result in `status`
     bool startRecording(const std::string& path, std::string& why);
     void stopRecording();
     bool recording() const { return recorder.active(); }
@@ -469,7 +482,8 @@ public:
     bool typing() const { return typedAt < typed.size(); }
     // THE BASIC PROGRAM (core/basic.h). basicProgramEnd: where the program at &0170 ends, and
     // whether BASIC 1.0 (the 464) or 1.1 holds it -- told by which of BASIC's pointers holds
-    // that end; false when neither does (BASIC is not at its prompt). injectBasic: a
+    // that end (or, for a LOADed program, a point after it: the file's own end); false when
+    // neither does (BASIC is not at its prompt). injectBasic: a
     // tokenized program (BasicDecoder::tokenizeProgram) written at &0170 and BASIC's
     // pointers set to its end, as if it had been typed; false and `why` when BASIC is not at
     // its prompt or the program is too long.

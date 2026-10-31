@@ -429,25 +429,60 @@ std::string MediaRecorder::findFfmpeg(const std::string& given) {
 }
 
 // The pictures through ffmpeg into a video-only .mp4, the sound in a WAV: joined at the end.
-bool MediaRecorder::finishH264() {
+// On the finishing thread: it touches nothing of the recorder's, which may record again.
+std::string MediaRecorder::finishH264(Encoder& encoder, const std::string& program, const std::string& video,
+                                      const std::string& audio, const std::string& out, double seconds) {
     namespace fs = std::filesystem;
     std::error_code ec;
-    const int code = encoder ? encoder->finish() : -1;
-    encoder.reset();
-    if (code != 0) { error = "ffmpeg could not encode the video (exit " + std::to_string(code) + ")"; return false; }
+    const int code = encoder.finish();
+    if (code != 0) return "Recording stopped: ffmpeg could not encode the video (exit " + std::to_string(code) + ")";
     Encoder mux;
-    const bool started = mux.start({ ffmpeg, "-hide_banner", "-loglevel", "error", "-y", "-i", tempVideo, "-i", tempAudio,
-                                     "-c:v", "copy", "-c:a", "aac", "-b:a", "192k", "-shortest", "-movflags", "+faststart", basePath });
+    const bool started = mux.start({ program, "-hide_banner", "-loglevel", "error", "-y", "-i", video, "-i", audio,
+                                     "-c:v", "copy", "-c:a", "aac", "-b:a", "192k", "-shortest", "-movflags", "+faststart", out });
     const int joined = started ? mux.finish() : -1;
-    if (joined != 0) { error = "ffmpeg could not join the picture and the sound (exit " + std::to_string(joined) + "); they are in " + tempVideo + " and " + tempAudio; return false; }
-    fs::remove(fs::u8path(tempVideo), ec);      // this recording's own temporary files, and only them
-    fs::remove(fs::u8path(tempAudio), ec);
-    totalBytes = (uint64_t)fs::file_size(fs::u8path(basePath), ec);
+    if (joined != 0) return "Recording stopped: ffmpeg could not join the picture and the sound (exit " + std::to_string(joined) + "); they are in " + video + " and " + audio;
+    fs::remove(fs::u8path(video), ec);          // this recording's own temporary files, and only them
+    fs::remove(fs::u8path(audio), ec);
+    const double mb = (double)fs::file_size(fs::u8path(out), ec) / (1024.0 * 1024.0);
+    char b[160];
+    std::snprintf(b, sizeof b, "Recorded %.1f s (%.1f MB): ", seconds, ec ? 0.0 : mb);
+    return b + fs::u8path(out).filename().u8string();
+}
+
+struct MediaRecorder::Finish {
+    std::thread thread;
+    std::atomic<bool> done{ false };
+    std::string message;
+    std::string out;                       // the file it makes
+};
+
+bool MediaRecorder::finishing() const {
+    std::lock_guard<std::mutex> g(finishLock);
+    for (const auto& f : finishes) if (!f->done) return true;
+    return false;
+}
+
+bool MediaRecorder::takeFinished(std::string& message) {
+    std::shared_ptr<Finish> f;
+    {
+        std::lock_guard<std::mutex> g(finishLock);
+        for (auto it = finishes.begin(); it != finishes.end(); ++it)
+            if ((*it)->done) { f = *it; finishes.erase(it); break; }
+    }
+    if (!f) return false;
+    if (f->thread.joinable()) f->thread.join();
+    message = f->message;
     return true;
 }
 
+void MediaRecorder::waitFinished() {
+    std::vector<std::shared_ptr<Finish>> all;
+    { std::lock_guard<std::mutex> g(finishLock); all = finishes; }
+    for (auto& f : all) if (f->thread.joinable()) f->thread.join();
+}
+
 MediaRecorder::MediaRecorder() = default;
-MediaRecorder::~MediaRecorder() { stop(); }
+MediaRecorder::~MediaRecorder() { stop(); waitFinished(); }
 
 bool MediaRecorder::start(const std::string& path, Format format, int width, int height, int sampleRate, double frameMicroseconds, int jpegQuality) {
     stop();
@@ -461,8 +496,17 @@ bool MediaRecorder::start(const std::string& path, Format format, int width, int
         const std::string program = findFfmpeg(ffmpeg);
         if (program.empty()) { error = "ffmpeg was not found (install it, or name its program in the recording settings)"; return false; }
         ffmpeg = program;
-        tempVideo = path + ".video.mp4";
-        tempAudio = path + ".sound.wav";
+        {
+            // the last recording to this file still being finished: its ffmpeg owns the file
+            std::lock_guard<std::mutex> fg(finishLock);
+            for (const auto& f : finishes)
+                if (!f->done && f->out == path) { error = "the last recording to this file is still being finished"; return false; }
+        }
+        // temporary files of this recording's own: one still finishing has others
+        static std::atomic<unsigned> serial{ 0 };
+        const std::string tag = "." + std::to_string(++serial);
+        tempVideo = path + tag + ".video.mp4";
+        tempAudio = path + tag + ".sound.wav";
         char fps[32];
         std::snprintf(fps, sizeof fps, "%.6f", 1e6 / frameMicroseconds);
         encoder = std::make_unique<Encoder>();
@@ -711,7 +755,20 @@ void MediaRecorder::stop() {
     done.notify_all();
     std::lock_guard<std::mutex> g(lock);
     closeFile();
-    if (fmt == Format::H264 && encoder) finishH264();
+    if (fmt == Format::H264 && encoder) {
+        // the rest on its own thread: the program goes on while ffmpeg finishes
+        auto f = std::make_shared<Finish>();
+        std::shared_ptr<Encoder> enc(std::move(encoder));
+        const std::string program = ffmpeg, video = tempVideo, audio = tempAudio, out = basePath;
+        const double secs = seconds();
+        f->out = out;
+        f->thread = std::thread([f, enc, program, video, audio, out, secs]() {
+            f->message = finishH264(*enc, program, video, audio, out, secs);
+            f->done = true;
+        });
+        std::lock_guard<std::mutex> fg(finishLock);
+        finishes.push_back(f);
+    }
 }
 
 } // namespace cpcse

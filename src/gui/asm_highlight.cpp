@@ -34,6 +34,9 @@ const std::unordered_set<std::string>& directives() {
         "lzapu", "lzx7", "lzx0", "lzsa1", "lzsa2", "lzclose", "ticker", "undef", "breakpoint", "range",
         "section", "name", "setcpc", "setcrtc", "amsdos", "hexbin", "skip", "cpcsnapshot", "binclude",
         "export", "proc", "endp",
+        // WinAPE's own
+        "byte", "word", "rmem", "close", "pause", "title", "dump", "brk", "end", "checksum",
+        "relocate_start", "relocate_end", "relocate_table",
     };
     return s;
 }

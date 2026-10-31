@@ -176,7 +176,22 @@ void GuiShell::cpuContent() {
         }
 
         sectionHeading("TIMING");
-        ImGui::Text("machine T  %lld", (long long)e->machineCycles);
+        // from the zero set with "Zero"; a new machine's clock starts again below it
+        const long long now = e->machineCycles;
+        if (timingZero > now) timingZero = 0;
+        const long long since = now - timingZero;
+        char count[64];
+        if (timingNops) {
+            // a NOP is 1 usec, 4 T-states: the machine's time is in whole usec
+            if (since % 4) std::snprintf(count, sizeof count, "machine NOP  %lld +%lldT", since / 4, since % 4);
+            else std::snprintf(count, sizeof count, "machine NOP  %lld", since / 4);
+        } else std::snprintf(count, sizeof count, "machine T  %lld", since);
+        ImGui::TextUnformatted(count);
+        if (after().smallButton("Zero##timing")) timingZero = now;
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Count from 0 from here (the machine's own clock runs on)");
+        if (after().smallButton(timingNops ? "NOP##timingunit" : "T##timingunit")) timingNops = !timingNops;
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Show T-states, or NOPs: 4 T-states, one microsecond each, as CPC programmers count");
+        if (timingZero) ImGui::TextDisabled("since the zero; %lld T in all", now);
         ImGui::Text("picture    %d   beam %d,%d", e->classicMonitorFrame,
                     e->classicMonitorCharacter, e->classicMonitorLine);
     }

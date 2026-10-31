@@ -27,6 +27,7 @@
 #include "core/m4.h"
 #include "core/symbiface_mouse.h"
 #include "core/sf3.h"
+#include "core/hd20.h"
 #include "core/symbiface_ide.h"
 #include "core/multiface.h"
 #include "core/rs232.h"
@@ -217,6 +218,12 @@ std::string EmuHost::findCart(const std::string& keyword) const {
 
 bool EmuHost::bootModel(int index, int ram, int crtc) {
     if (index < 0 || index >= (int)models.size()) { status = "Invalid model."; return false; }
+    // The SF3 bank's ROMs come out: the boot loads the model's own, and applySettings puts
+    // the bank's back (a lower ROM saved from another model must not come back).
+    if (emu && emu->memory) for (int s : sf3RomSlots) emu->memory->setUpperRom(s, Bytes{});
+    sf3RomSlots.clear();
+    sf3LowerSaved.clear();
+    sf3BankApplied = 0;
     // A RAM size or CRTC type the core refuses (a hand-edited cpcse.ini, --ram 100) is a
     // message here: the core throws for them, and that would end the program -- at every
     // start, for a value read from the settings.
@@ -303,6 +310,7 @@ bool EmuHost::bootModel(int index, int ram, int crtc) {
         emu->loadCartridge(cart, opt);
         emu->hasFdc = m.amsdos;
         applyAudioRate();
+        currentModel = index;              // before the settings: the SF3 picks its bank by it
         applySettings();
         applyMonitorSet();                 // a Plus came with a CM14 (ACCC 15.1)
         currentModel = index;
@@ -343,6 +351,7 @@ bool EmuHost::bootModel(int index, int ram, int crtc) {
     applyGateArrayPart();                 // loadClassicFirmware fitted the 40010
     emu->hasFdc = m.amsdos;
     applyAudioRate();
+    currentModel = index;                  // before the settings: the SF3 picks its bank by it
     applySettings();
     // applySettings() fitted the M4 ROM (if enabled) AFTER loadClassicFirmware's
     // reset; reset once more so the firmware scans it and registers its RSX.
@@ -541,12 +550,150 @@ void EmuHost::applySymbiface() {
             emu->ide->setEnabled(true);
         } else emu->ide->setEnabled(false);
     }
+    applyHd20();
+    applySf3Roms();
+}
+
+static std::string firstLine(const std::filesystem::path& p) {
+    std::ifstream f(p);
+    std::string line;
+    std::getline(f, line);
+    while (!line.empty() && (line.back() == '\r' || line.back() == ' ')) line.pop_back();
+    return line;
+}
+
+std::vector<EmuHost::Sf3Bank> EmuHost::sf3Banks() const {
+    std::vector<Sf3Bank> out;
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    const fs::path table = fs::u8path(sf3SdFolder) / "CPC" / "ROMTABLE";
+    if (sf3SdFolder.empty() || !fs::is_directory(table, ec)) return out;
+    for (const auto& e : fs::directory_iterator(table, ec)) {
+        const std::string n = e.path().filename().u8string();
+        // "BANK<3 digits>", 1-205 (README.TXT: "BANK21 is not formatted correctly")
+        if (!e.is_directory(ec) || n.size() != 7 || n.compare(0, 4, "BANK") != 0 || !std::isdigit((unsigned char)n[4]) ||
+            !std::isdigit((unsigned char)n[5]) || !std::isdigit((unsigned char)n[6])) continue;
+        const int number = std::atoi(n.c_str() + 4);
+        if (number < 1 || number > 205) continue;
+        out.push_back({ number, firstLine(e.path() / "BANKNAME.TXT").substr(0, 13) });
+    }
+    std::sort(out.begin(), out.end(), [](const Sf3Bank& a, const Sf3Bank& b) { return a.number < b.number; });
+    return out;
+}
+
+int EmuHost::sf3BankInUse() const {
+    if (sf3RomBank >= 0) return sf3RomBank;
+    // automatic: on the real SF3 the bank is chosen on its own screen and kept ("APP ROM",
+    // RSF3 Quick start manual p.14, whose example is BANK002); here the card's bank named for
+    // the machine fitted, when the card has it
+    const std::string id = currentModel >= 0 && currentModel < (int)models.size() ? models[(size_t)currentModel].id : "";
+    const int want = id == "cpc464" ? 6 : (id == "cpc6128plus" || id == "cpc464plus") ? 3 : (id == "cpc6128" || id == "cpc664") ? 2 : 0;
+    for (const auto& b : sf3Banks()) if (b.number == want) return want;
+    return 0;
+}
+
+bool EmuHost::applySf3Roms() {
+    if (!emu || !emu->memory) return false;
+    const std::vector<int> slotsBefore = sf3RomSlots;
+    const bool lowerBefore = !sf3LowerSaved.empty();
+    const int bankBefore = sf3BankApplied;
+    sf3BankApplied = 0;
+    // the last bank's ROMs out, the machine's and the user's own back
+    for (int s : sf3RomSlots) emu->memory->setUpperRom(s, Bytes{});
+    sf3RomSlots.clear();
+    if (!sf3LowerSaved.empty()) { emu->memory->setLowerRom(sf3LowerSaved); sf3LowerSaved.clear(); }
+    applyExpansionRoms();
+    const int bankNumber = symbifaceModule == "sf3" && !sf3SdFolder.empty() ? sf3BankInUse() : 0;
+    auto changed = [&]() { return sf3RomSlots != slotsBefore || !sf3LowerSaved.empty() != lowerBefore || sf3BankApplied != bankBefore; };
+    if (bankNumber <= 0) { showSf3Bank(); return changed(); }
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    char bank[16];
+    std::snprintf(bank, sizeof bank, "BANK%03d", bankNumber);
+    const fs::path dir = fs::u8path(sf3SdFolder) / "CPC" / "ROMTABLE" / bank;
+    if (!fs::is_directory(dir, ec)) { status = std::string("SF3: no ") + bank + " on the SD card"; showSf3Bank(); return changed(); }
+    // ROM 7 is locked unless SF3_CPC.INI says ROM7_ENA=ON (README.TXT)
+    bool rom7 = false;
+    {
+        std::ifstream ini(fs::u8path(sf3SdFolder) / "SF3_CPC.INI");
+        std::string line;
+        while (std::getline(ini, line)) {
+            std::string t;
+            for (char c : line) if (c != ' ' && c != '\t' && c != '\r') t += (char)std::toupper((unsigned char)c);
+            if (t == "ROM7_ENA=ON") rom7 = true;
+        }
+    }
+    int fitted = 0;
+    for (const auto& e : fs::directory_iterator(dir, ec)) {
+        std::string n = e.path().filename().u8string();
+        for (char& c : n) c = (char)std::toupper((unsigned char)c);
+        if (n.size() != 10 || n.compare(0, 3, "ROM") != 0 || n.compare(6, 4, ".BIN") != 0) continue;
+        if (!std::isdigit((unsigned char)n[3]) || !std::isdigit((unsigned char)n[4]) || !std::isdigit((unsigned char)n[5])) continue;
+        const int slot = std::atoi(n.substr(3, 3).c_str());
+        if (slot > 127 || (slot == 7 && !rom7)) continue;
+        if (fs::file_size(e.path(), ec) > 65536 || ec) continue;   // a ROM is 16 KB (an AMSDOS header more)
+        bool ok = false;
+        const Bytes data = readFile(e.path().u8string(), ok);
+        if (!ok || data.empty()) continue;
+        if (slot == 127) { sf3LowerSaved = emu->memory->lowerRom; emu->memory->setLowerRom(data); }
+        else { emu->memory->setUpperRom(slot, data); sf3RomSlots.push_back(slot); }
+        fitted++;
+    }
+    sf3BankApplied = bankNumber;
+    status = "SF3 " + std::string(bank) + ": " + std::to_string(fitted) + " ROMs";
+    showSf3Bank();
+    return changed();
+}
+
+// The bank's name on the OLED, as the SF3 shows it (ROMTABLE README.TXT: "displayed on the SF3
+// oled"). The card keeps it as its idle text, so every reset of the CPC shows it again.
+void EmuHost::showSf3Bank() {
+    if (!emu || !emu->sf3) return;
+    std::array<std::string, 2> rows;
+    if (sf3BankApplied > 0) {
+        char bank[16];
+        std::snprintf(bank, sizeof bank, "BANK%03d", sf3BankApplied);
+        rows[0] = firstLine(std::filesystem::u8path(sf3SdFolder) / "CPC" / "ROMTABLE" / bank / "BANKNAME.TXT").substr(0, 13);
+        char n[16];
+        std::snprintf(n, sizeof n, "ROM BANK %03d", sf3BankApplied);
+        rows[1] = n;
+    }
+    if (emu->sf3->oledIdle != rows) emu->sf3->oledRows = rows;   // a new bank: shown at once
+    emu->sf3->oledIdle = rows;
+}
+
+// A new bank: the SF3 restarts the CPC so its firmware finds the ROMs ("Select 'Yes' to
+// restart", RSF3 Quick start manual, storing a ROM bank).
+void EmuHost::setSf3RomBank(int bank) {
+    sf3RomBank = bank;
+    if (applySf3Roms()) reset();
+}
+
+void EmuHost::applyHd20() {
+    if (!emu || !emu->hd20) return;
+    std::string image = hd20Image;
+    if (image.empty() && symbifaceModule == "sf3" && !sf3UsbFolder.empty()) {
+        namespace fs = std::filesystem;
+        std::error_code ec;
+        const fs::path p = fs::u8path(sf3UsbFolder) / "HD20" / "HD20_01.IMG";
+        if (fs::is_regular_file(p, ec)) image = p.u8string();
+    }
+    if (image == emu->hd20->image()) return;
+    if (!emu->hd20->open(image)) status = "HD20: " + emu->hd20->error;
+}
+
+void EmuHost::setHd20Image(const std::string& image) {
+    hd20Image = image;
+    applyHd20();
+    if (emu && emu->hd20 && emu->hd20->enabled())
+        status = "HD20: " + emu->hd20->image() + (emu->hd20->readOnly ? " (read only)" : "");
 }
 
 void EmuHost::setSf3Folder(bool usb, const std::string& folder) {
     (usb ? sf3UsbFolder : sf3SdFolder) = folder;
     if (emu && emu->sf3) (usb ? emu->sf3->audio->usbFolder : emu->sf3->audio->sdFolder) = folder;   // the card keeps playing
     status = std::string(usb ? "SF3 USB stick: " : "SF3 SD card: ") + folder;
+    if (!usb && applySf3Roms()) reset();       // another card: its bank's ROMs, from a restart
 }
 
 void EmuHost::setIdeFolder(const std::string& folder) {
@@ -587,7 +734,11 @@ void EmuHost::setMouseInterface(const std::string& kind) {
 
 void EmuHost::setSymbiface(const std::string& module) {
     symbifaceModule = module;
+    const std::vector<int> romsBefore = sf3RomSlots;
+    const int bankBefore = sf3BankApplied;
     applySymbiface();
+    // the SF3's ROM bank in or out: the CPC restarts so its firmware sees them
+    if (sf3RomSlots != romsBefore || sf3BankApplied != bankBefore) reset();
     applyMouseInterface();                 // a Symbiface II/III's mouse keeps the interface out
     status = "Symbiface: " + (module == "none" ? std::string("off") : module);
 }
@@ -650,8 +801,8 @@ bool EmuHost::fitExpansionRom(int slot, const std::string& path) {
     if (!ok || data.empty()) { status = "Could not read ROM."; return false; }
     std::string name = std::filesystem::path(path).filename().string();
     bool replaced = false;
-    for (auto& r : expansionRoms) if (r.slot == slot) { r.name = name; r.data = data; replaced = true; break; }
-    if (!replaced) expansionRoms.push_back({ slot, name, data });
+    for (auto& r : expansionRoms) if (r.slot == slot) { r.name = name; r.data = data; r.path = path; replaced = true; break; }
+    if (!replaced) expansionRoms.push_back({ slot, name, data, path });
     if (emu && emu->memory) emu->memory->setUpperRom(slot, data);
     status = "Fitted " + name + " in ROM slot " + std::to_string(slot);
     return true;
@@ -949,6 +1100,11 @@ bool EmuHost::loadCartridgeFile(const std::string& path) {
     bool ok = false;
     Bytes data = readFile(path, ok);
     if (!ok || data.empty()) { status = "Could not read cartridge."; return false; }
+    return loadCartridgeData(data, path);
+}
+
+bool EmuHost::loadCartridgeData(const Bytes& data, const std::string& path) {
+    const std::string shownName = path.empty() ? std::string("the CRO editor's file") : std::filesystem::u8path(path).filename().u8string();
     // The readers throw for a file they cannot take: a bad file is a message, not the end
     // of the program.
     Cartridge cart;
@@ -959,7 +1115,10 @@ bool EmuHost::loadCartridgeFile(const std::string& path) {
         catch (const std::exception& ex) { status = std::string("Not a valid .CRO file: ") + ex.what(); return false; }
         int pick = croDefaultGroup(groups);
         std::string missing;
-        if (croGroup >= 0) {
+        // a group picked for this file (or for any, from the command line)
+        const bool chosen = croGroup >= 0 && (croGroupPath.empty() || croGroupPath == path);
+        croAskGroup = !chosen && groups.size() > 1;
+        if (chosen) {
             int want = -1;
             for (int i = 0; i < (int)groups.size(); i++) if (groups[i].number == (uint32_t)croGroup) want = i;
             if (want >= 0) pick = want;
@@ -972,6 +1131,7 @@ bool EmuHost::loadCartridgeFile(const std::string& path) {
             numbers.push_back(g.number);
         }
         const CroGroup& g = groups[(size_t)pick];
+        croCurrentGroup = g.number;
         croWhat = " (CRO group " + labels[(size_t)pick] + missing + ")";
         if (!g.hasBankable()) {
             CroRomSet set;
@@ -1022,10 +1182,9 @@ bool EmuHost::loadCartridgeFile(const std::string& path) {
     applyAudioRate();
     applySettings();
     applyMonitorSet();
-    cartName = std::filesystem::path(path).filename().string();
-    lastProgram = std::filesystem::path(path).stem().string();
-    noteRecent(path);
-    loadCheatsBeside(path);
+    cartName = shownName;
+    lastProgram = path.empty() ? std::string("cro") : std::filesystem::u8path(path).stem().u8string();
+    if (!path.empty()) { noteRecent(path); loadCheatsBeside(path); }
     snapshotName.clear();
     paused = false;
     status = "Loaded " + cartName + croWhat + " into " + m.label;
@@ -1044,9 +1203,9 @@ bool EmuHost::loadCroRomSet(const CroRomSet& set, const std::string& path, const
     croBoot = false;
     if (!ok) { croSet = CroRomSet{}; return false; }
     cartPath = path;
-    cartName = std::filesystem::path(path).filename().string();
-    lastProgram = std::filesystem::path(path).stem().string();
-    noteRecent(path);
+    cartName = path.empty() ? std::string("the CRO editor's file") : std::filesystem::u8path(path).filename().u8string();
+    lastProgram = path.empty() ? std::string("cro") : std::filesystem::u8path(path).stem().u8string();
+    if (!path.empty()) noteRecent(path);
     std::string fitted;
     if (!set.lower.empty()) fitted += " OS";
     for (const auto& r : set.upper) fitted += " ROM " + std::to_string(r.first);
@@ -1058,6 +1217,7 @@ bool EmuHost::loadCroRomSet(const CroRomSet& set, const std::string& path, const
 bool EmuHost::loadCroGroup(uint32_t number) {
     if (cartPath.empty()) return false;
     croGroup = (int)number;               // kept: a restart of the cartridge keeps the group
+    croGroupPath = cartPath;              // ...for this file only
     return loadCartridgeFile(cartPath);
 }
 
@@ -1556,10 +1716,10 @@ bool EmuHost::undoSlotLoad() {
 }
 
 bool EmuHost::crtSlotMask() const {
-    return crtPattern == "slot" || (crtPattern == "auto" && video && video->monitorColourTube);
+    return cpcLook.slotMask(video && video->monitorColourTube);
 }
 bool EmuHost::crtScanlines() const {
-    return crtPattern == "scanlines" || (crtPattern == "auto" && !(video && video->monitorColourTube));
+    return cpcLook.scanlines(video && video->monitorColourTube);
 }
 
 void EmuHost::setPlusExpansionClassic(bool classic) {
@@ -1594,6 +1754,7 @@ void EmuHost::reset() {
     if (!booted() || liveInputBlocked()) return;
     if (!applyingInput) { InputEvent e; e.kind = InputEvent::Reset; timelineLog(e); }
     emu->reset();
+    showSf3Bank();
     status = "Reset";
 }
 // MC START PROGRAM (6128 OS &061C: DI, IM 1, the firmware set up again, SP &C000, EI) ends
@@ -2142,13 +2303,23 @@ bool EmuHost::basicProgramEnd(int& end, bool& basic10) const {
     for (int lines = 0; lines < 20000; lines++) {
         const int len = word(a);
         if (len == 0) break;
-        if (len < 5 || a + len >= 0xa000) return false;   // not a program
+        if (len < 5 || a + len >= 0xb000) return false;   // not a program (BASIC's memory ends below &B000)
         a += len;
     }
     end = a + 2;
-    for (bool b10 : { false, true })
-        if (word(basicEndPointers(b10)) == end) { basic10 = b10; return true; }
-    return false;
+    // A typed program: the variables start at its end. A LOADed one: they start where the
+    // file ended (its start + its length), which can be past the program's 0 word (toolkit.bas
+    // on toolkit.cdt: 3 bytes; a file with machine code after the BASIC: more). So BASIC's
+    // pointers are taken when they hold the end, else when they are in order after it:
+    // variables <= arrays <= free space, all below &B000. The closest to the end wins.
+    int best = -1;
+    for (bool b10 : { false, true }) {
+        const int p = basicEndPointers(b10);
+        const int vars = word(p), arrays = word(p + 2), free = word(p + 4);
+        if (vars < end || vars > arrays || arrays > free || free >= 0xb000) continue;
+        if (best < 0 || vars - end < best) { best = vars - end; basic10 = b10; }
+    }
+    return best >= 0;
 }
 
 bool EmuHost::injectBasic(const Bytes& program, std::string& why) {
@@ -2160,7 +2331,8 @@ bool EmuHost::injectBasic(const Bytes& program, std::string& why) {
         return false;
     }
     const int newEnd = BASIC_PROGRAM_START + (int)program.size();
-    if (program.size() < 2 || newEnd >= 0xa000) { why = "The program is too long for BASIC's memory."; return false; }
+    // HIMEM on a machine with AMSDOS is &A67B: LOAD takes a program up to there, so does this
+    if (program.size() < 2 || newEnd >= 0xa67b) { why = "The program is too long for BASIC's memory."; return false; }
     Bytes& ram = emu->memory->ram;
     ram[BASIC_PROGRAM_START - 1] = 0;
     std::copy(program.begin(), program.end(), ram.begin() + BASIC_PROGRAM_START);
@@ -2176,7 +2348,7 @@ void EmuHost::runFrame() {
     if (!booted() || paused) { audioOut.clear(); return; }
     framesRun++;
     // the advanced CRT filter's signal stage spreads the colour itself
-    if (video) video->chromaSpread = !(crtFilter.enabled && crtFilter.signal);
+    if (video) video->chromaSpread = !(cpcLook.crtFilter.enabled && cpcLook.crtFilter.signal);
     timelineFrameStart();
     if (typedAt < typed.size() && emu->keyboard && !moviePlay_) {   // typeText's queue: a key at a time
         const char c = typed[typedAt];
@@ -2324,12 +2496,18 @@ const uint32_t* EmuHost::recordPicture() {
 
 void EmuHost::stopRecording() {
     if (!recorder.active()) return;
-    if (recorder.format() == MediaRecorder::Format::H264) status = "Finishing the MP4 (ffmpeg)...";
+    const bool mp4 = recorder.format() == MediaRecorder::Format::H264;
     recorder.stop();
+    if (mp4) { status = "Finishing the MP4 (ffmpeg, in the background)..."; return; }
     char b[160];
     std::snprintf(b, sizeof b, "Recorded %.1f s (%.1f MB%s)", recorder.seconds(), recorder.bytesWritten() / (1024.0 * 1024.0),
                   recorder.filesWritten() > 1 ? (", " + std::to_string(recorder.filesWritten()) + " files").c_str() : "");
     status = recorder.error.empty() ? b : "Recording stopped: " + recorder.error;
+}
+
+void EmuHost::pollRecorder() {
+    std::string message;
+    while (recorder.takeFinished(message)) status = message;
 }
 
 void EmuHost::setRasterOverlay(bool on) {

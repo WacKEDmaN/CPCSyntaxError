@@ -47,8 +47,37 @@ struct CrtFilterSettings {
     int roll = -1;               // the dark lines move this far each frame
     int rollingBar = 0;          // a bright bar rolling down the screen, %
 
-    void load(const std::map<std::string, std::string>& ini);
-    void save(std::ostream& out) const;
+    // Keys "crtfilter..." after `prefix` ("" for the CPC's screen, "gfx9000." for the GFX9000's).
+    void load(const std::map<std::string, std::string>& ini, const std::string& prefix = "");
+    void save(std::ostream& out, const std::string& prefix = "") const;
+};
+
+// HOW ONE SCREEN IS SHOWN: its scaling, the CRT effect (a cheap pattern, bloom and blur over
+// the picture) and the advanced CRT filter. The CPC's monitor and the GFX9000's each have one.
+struct ScreenLook {
+    bool integerScale = false;
+    bool maintainAspect = true;
+    bool crtEffect = false;      // the tube's pattern + bloom overlay
+    float crtScanline = 0.5f;
+    float crtBloom = 0.2f;
+    float crtBlur = 0.0f;        // the beam's soft spot (softenRender): 0 sharp .. 1
+    // THE TUBE'S PATTERN: "auto" (as the set: a colour tube has a slot mask (its phosphors
+    // are stripes behind slots), and a green or grey tube shows scanlines), "slot", "soft",
+    // "scanlines" or "none". crtMask is the mask's strength (0..1), crtMaskSize the width of
+    // one phosphor stripe in screen pixels (the tube's pitch is not printed in the manuals).
+    std::string crtPattern = "auto";
+    float crtMask = 0.5f;
+    int crtMaskSize = 1;
+    bool crtMaskTurned = false;          // the mask turned 90 degrees: stripes across
+    // The advanced CRT filter, drawn by the GPU. While it is on, the CRT effect stands aside.
+    CrtFilterSettings crtFilter;
+    bool crtFilterActive() const { return crtFilter.enabled && (crtFilter.signal || crtFilter.screen); }
+    bool slotMask(bool colourTube) const { return crtPattern == "slot" || (crtPattern == "auto" && colourTube); }
+    bool scanlines(bool colourTube) const { return crtPattern == "scanlines" || (crtPattern == "auto" && !colourTube); }
+    // Keys after `prefix`: the CPC's screen keeps the names it always had ("" prefix).
+    // load() returns false when the settings file holds none of this screen's keys.
+    bool load(const std::map<std::string, std::string>& ini, const std::string& prefix);
+    void save(std::ostream& out, const std::string& prefix) const;
 };
 
 // The settings with a slider, in the order they are shown: the settings file's key, the

@@ -51,13 +51,13 @@ const CrtFilterSlider CRT_FILTER_SLIDERS[] = {
 const int CRT_FILTER_SLIDER_COUNT = (int)(sizeof(CRT_FILTER_SLIDERS) / sizeof(CRT_FILTER_SLIDERS[0]));
 const char* const CRT_FILTER_MASK_SHAPES[4] = { "Stripes", "Stripes with gaps", "Slots", "Dots" };
 
-void CrtFilterSettings::load(const std::map<std::string, std::string>& ini) {
+void CrtFilterSettings::load(const std::map<std::string, std::string>& ini, const std::string& prefix) {
     auto get = [&](const std::string& k, int& v, int lo, int hi) {
-        auto it = ini.find("crtfilter." + k);
+        auto it = ini.find(prefix + "crtfilter." + k);
         if (it != ini.end() && !it->second.empty()) v = std::clamp(std::atoi(it->second.c_str()), lo, hi);
     };
     int on = enabled, s1 = signal, s2 = screen, cols = columns;
-    if (auto it = ini.find("crtfilter"); it != ini.end()) on = std::atoi(it->second.c_str()) != 0;
+    if (auto it = ini.find(prefix + "crtfilter"); it != ini.end()) on = std::atoi(it->second.c_str()) != 0;
     get("signal", s1, 0, 1);
     get("screen", s2, 0, 1);
     get("columns", cols, 0, 1);
@@ -67,21 +67,61 @@ void CrtFilterSettings::load(const std::map<std::string, std::string>& ini) {
         get(s.key, this->*s.field, s.min, s.max);
     }
     get("maskshape", maskShape, 0, 3);
-    if (auto it = ini.find("crtfilter.tintcolour"); it != ini.end() && !it->second.empty())
+    if (auto it = ini.find(prefix + "crtfilter.tintcolour"); it != ini.end() && !it->second.empty())
         tintColour = (uint32_t)std::strtoul(it->second.c_str(), nullptr, 16) & 0xffffff;
 }
 
-void CrtFilterSettings::save(std::ostream& out) const {
-    out << "crtfilter=" << (enabled ? 1 : 0) << "\n"
-        << "crtfilter.signal=" << (signal ? 1 : 0) << "\n"
-        << "crtfilter.screen=" << (screen ? 1 : 0) << "\n"
-        << "crtfilter.columns=" << (columns ? 1 : 0) << "\n"
-        << "crtfilter.maskshape=" << maskShape << "\n";
+void CrtFilterSettings::save(std::ostream& out, const std::string& prefix) const {
+    const std::string p = prefix + "crtfilter";
+    out << p << "=" << (enabled ? 1 : 0) << "\n"
+        << p << ".signal=" << (signal ? 1 : 0) << "\n"
+        << p << ".screen=" << (screen ? 1 : 0) << "\n"
+        << p << ".columns=" << (columns ? 1 : 0) << "\n"
+        << p << ".maskshape=" << maskShape << "\n";
     char hex[8];
     std::snprintf(hex, sizeof(hex), "%06x", (unsigned)(tintColour & 0xffffff));
-    out << "crtfilter.tintcolour=" << hex << "\n";
+    out << p << ".tintcolour=" << hex << "\n";
     for (int i = 0; i < CRT_FILTER_SLIDER_COUNT; i++)
-        out << "crtfilter." << CRT_FILTER_SLIDERS[i].key << "=" << this->*CRT_FILTER_SLIDERS[i].field << "\n";
+        out << p << "." << CRT_FILTER_SLIDERS[i].key << "=" << this->*CRT_FILTER_SLIDERS[i].field << "\n";
+}
+
+bool ScreenLook::load(const std::map<std::string, std::string>& ini, const std::string& prefix) {
+    bool any = false;
+    auto find = [&](const char* k) -> const std::string* {
+        auto it = ini.find(prefix + k);
+        if (it == ini.end() || it->second.empty()) return nullptr;
+        any = true;
+        return &it->second;
+    };
+    auto flag = [&](const char* k, bool& v) { if (const std::string* s = find(k)) v = std::atoi(s->c_str()) != 0; };
+    auto level = [&](const char* k, float& v) { if (const std::string* s = find(k)) v = std::clamp((float)std::atof(s->c_str()), 0.0f, 1.0f); };
+    flag("integerscale", integerScale);
+    flag("aspect", maintainAspect);
+    flag("crt", crtEffect);
+    level("crtscanline", crtScanline);
+    level("crtbloom", crtBloom);
+    level("crtblur", crtBlur);
+    if (const std::string* s = find("crtpattern"))
+        crtPattern = (*s == "slot" || *s == "soft" || *s == "scanlines" || *s == "none") ? *s : "auto";
+    level("crtmask", crtMask);
+    if (const std::string* s = find("crtmasksize")) crtMaskSize = std::clamp(std::atoi(s->c_str()), 1, 4);
+    flag("crtmaskturned", crtMaskTurned);
+    if (find("crtfilter")) crtFilter.load(ini, prefix);
+    return any;
+}
+
+void ScreenLook::save(std::ostream& out, const std::string& prefix) const {
+    out << prefix << "integerscale=" << (integerScale ? 1 : 0) << "\n"
+        << prefix << "aspect=" << (maintainAspect ? 1 : 0) << "\n"
+        << prefix << "crt=" << (crtEffect ? 1 : 0) << "\n"
+        << prefix << "crtscanline=" << crtScanline << "\n"
+        << prefix << "crtbloom=" << crtBloom << "\n"
+        << prefix << "crtblur=" << crtBlur << "\n"
+        << prefix << "crtpattern=" << crtPattern << "\n"
+        << prefix << "crtmask=" << crtMask << "\n"
+        << prefix << "crtmasksize=" << crtMaskSize << "\n"
+        << prefix << "crtmaskturned=" << (crtMaskTurned ? 1 : 0) << "\n";
+    crtFilter.save(out, prefix);
 }
 
 // ==================================================================== shaders

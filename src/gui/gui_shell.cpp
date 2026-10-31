@@ -57,6 +57,7 @@ GuiShell::GuiShell(EmuHost& h) : host(h), debugger(h) {
         { "Logic analyser", "win_logic", false, false },
         { "Profiler", "win_profiler", false, false },
         { "Graphics finder", "win_gfx_finder", false, false },
+        { "CRO editor", "win_cro", false, false },
         { "CPC keyboard", "win_cpc_keyboard", false, false },
         { "GFX9000", "win_gfx9000", false, false },
         { "GFX9000 screen", "win_gfx9000screen", false, false },
@@ -106,6 +107,8 @@ void GuiShell::loadSettings(const std::map<std::string, std::string>& ini) {
         resetLayout = true;
         for (auto& p : panels) p.open = p.byDefault;
     }
+    if (auto tn = ini.find("timing_nops"); tn != ini.end()) timingNops = std::atoi(tn->second.c_str()) != 0;
+    if (auto gw = ini.find("gfx_window_scale"); gw != ini.end()) gfxWindowScale = std::clamp(std::atoi(gw->second.c_str()), 0, 4);
     auto fp = ini.find("fullscreenpicture");
     if (fp != ini.end()) fullscreenPictureOnly = std::atoi(fp->second.c_str()) != 0;
     auto us = ini.find("ui_scale");
@@ -124,6 +127,8 @@ void GuiShell::saveSettings(std::ostream& out) const {
     for (const auto& p : panels) out << p.iniKey << "=" << (p.open ? 1 : 0) << "\n";
     out << "statusbar=" << (showStatusBar ? 1 : 0) << "\n";
     out << "fullscreenpicture=" << (fullscreenPictureOnly ? 1 : 0) << "\n";
+    out << "timing_nops=" << (timingNops ? 1 : 0) << "\n";
+    out << "gfx_window_scale=" << gfxWindowScale << "\n";
     out << "ui_scale=" << uiScale << "\n";
     out << "csl_script=" << cslScript << "\n" << "csl_out=" << cslOut << "\n"
         << "csl_diskdir=" << cslDiskDir << "\n" << "csl_crtc=" << cslCrtc << "\n";
@@ -258,6 +263,8 @@ void GuiShell::draw(const ShellFrameInfo& info) {
     windowGfxScreen();
     windowProfiler();
     windowGraphicsFinder();
+    windowCroEditor();
+    croChooser();
     windowCpcKeyboard();
     windowCslScripts();
     if (panelOpen("DSK editor")) {
@@ -308,7 +315,7 @@ void GuiShell::placeNewlyOpened(unsigned dockspaceId) {
     struct Group { std::vector<const char*> titles; ImGuiDir dir; float ratio; };
     static const Group groups[] = {
         { { "Debugger", "Chips", "Memory", "GFX9000", "Logic analyser", "Profiler" }, ImGuiDir_Right, 0.42f },
-        { { "Assembler", "BASIC", "DSK editor", "CSL scripts", "Printer", "Cheats", "Graphics finder", "CPC keyboard",
+        { { "Assembler", "BASIC", "DSK editor", "CSL scripts", "Printer", "Cheats", "Graphics finder", "CRO editor", "CPC keyboard",
             "Video settings", "Audio settings", "Input settings", "Expansions", "External debugging" }, ImGuiDir_Down, 0.42f },
         // the media windows: tabs together, below the Machine window (a layout saved before
         // they were windows of their own has only "Media")
@@ -374,119 +381,59 @@ void GuiShell::screenPicture(const ShellFrameInfo& info) {
         ImVec2 avail = ImGui::GetContentRegionAvail();
         ImVec2 origin = ImGui::GetCursorScreenPos();
         // With a GFX9000 fitted its own monitor stands beside the CPC's: the two share the
-        // window, the same height, the GFX9000's a 4:3 set.
+        // window, the same height, the GFX9000's as wide as its picture's shape makes it.
+        const ScreenLook& look = host.cpcLook;
         const bool video9000 = host.v9990Enabled && host.gfx9000Monitor == "video9000";
         const bool gfxOnMain = host.gfx9000OnMainScreen() || video9000;
         const bool beside = host.v9990Enabled && host.gfx9000Monitor == "beside";
         const float gap = beside ? 6.0f : 0.0f;
-        const float gfxAspect = 4.0f / 3.0f;
+        const V9990Picture* gfxPic = beside ? gfxPictureTexture() : nullptr;
+        const float gfxAspect = gfxPic ? gfxPictureAspect(*gfxPic) : 4.0f / 3.0f;
         float cpcAvailW = beside ? (avail.x - gap) * 0.5f : avail.x;
         float drawW = cpcAvailW, drawH = avail.y;
-        if (host.maintainAspect) {
+        if (look.maintainAspect) {
             const float cpcAspect = (float)info.textureWidth / (float)info.textureHeight;
             float h = beside ? std::min(avail.y, (avail.x - gap) / (cpcAspect + gfxAspect)) : avail.y;
             float scale = std::min((beside ? h * cpcAspect : avail.x) / (float)info.textureWidth, h / (float)info.textureHeight);
-            if (host.integerScale && scale > 1.0f) scale = std::floor(scale);
+            if (look.integerScale && scale > 1.0f) scale = std::floor(scale);
             drawW = info.textureWidth * scale; drawH = info.textureHeight * scale;
         }
-        const float gfxW = beside ? (host.maintainAspect ? drawH * gfxAspect : cpcAvailW) : 0.0f;
+        const float gfxW = beside ? (look.maintainAspect ? drawH * gfxAspect : cpcAvailW) : 0.0f;
         const float totalW = drawW + gap + gfxW;
         float ox = origin.x + (avail.x - totalW) * 0.5f, oy = origin.y + (avail.y - drawH) * 0.5f;
         ImDrawList* dl = ImGui::GetWindowDrawList();
-        ImTextureID tex = (ImTextureID)(intptr_t)info.screenTexture;
         // the picture's rectangle, for the recorder's "screen" source
         if (gfxOnMain) {
-            float gw = avail.x, gh = avail.y;
-            if (host.maintainAspect) { gh = std::min(avail.y, avail.x * 0.75f); gw = gh * 4.0f / 3.0f; }
-            screenRect[0] = origin.x + (avail.x - gw) * 0.5f; screenRect[1] = origin.y + (avail.y - gh) * 0.5f;
-            screenRect[2] = gw; screenRect[3] = gh;
+            gfxPictureRect(origin.x, origin.y, avail.x, avail.y, screenRect);
         } else {
             screenRect[0] = ox; screenRect[1] = oy; screenRect[2] = totalW; screenRect[3] = drawH;
         }
         screenRectMain = ImGui::GetWindowViewport() == ImGui::GetMainViewport();
         if (gfxOnMain) {
-            // One monitor, switched to the GFX9000: its picture, a 4:3 set filling the window.
-            float gw = avail.x, gh = avail.y;
-            if (host.maintainAspect) { gh = std::min(avail.y, avail.x * 0.75f); gw = gh * 4.0f / 3.0f; }
-            const float gx = origin.x + (avail.x - gw) * 0.5f, gy = origin.y + (avail.y - gh) * 0.5f;
+            // One monitor, switched to the GFX9000: its picture, as the GFX9000 screen's settings say.
             int vw = 0, vh = 0;
             if (video9000 && uploadTexture && host.video9000Picture(video9000Pixels, vw, vh)) {
-                // one monitor through the Video9000: the composed picture
+                // one monitor through the Video9000: the composed picture, a 4:3 set
+                float gw = avail.x, gh = avail.y;
+                if (host.gfxLook.maintainAspect) { gh = std::min(avail.y, avail.x * 0.75f); gw = gh * 4.0f / 3.0f; }
+                const float gx = origin.x + (avail.x - gw) * 0.5f, gy = origin.y + (avail.y - gh) * 0.5f;
                 video9000Texture = uploadTexture(3, video9000Pixels.data(), vw, vh);
                 dl->AddImage((ImTextureID)(intptr_t)video9000Texture, ImVec2(gx, gy), ImVec2(gx + gw, gy + gh));
             } else {
-                drawGfxMonitor(dl, gx, gy, gw, gh);
+                drawGfxMonitor(dl, origin.x, origin.y, avail.x, avail.y);
             }
-        }
-        // The advanced CRT filter: the picture drawn by the GPU at the size it is shown, one
-        // texel a screen pixel (so on whole pixels).
-        bool filtered = false;
-        if (!gfxOnMain && host.crtFilterActive() && crtFilterRender) {
-            const ImVec2 fbScale = ImGui::GetIO().DisplayFramebufferScale;
-            const int outW = (int)std::lround(drawW * fbScale.x), outH = (int)std::lround(drawH * fbScale.y);
-            const bool newFrame = crtFilterFrame != host.framesRun;
-            if (const unsigned t = crtFilterRender(outW, outH, fbScale.y, newFrame)) {
-                crtFilterFrame = host.framesRun;
-                ox = std::round(ox); oy = std::round(oy);
-                dl->AddImage((ImTextureID)(intptr_t)t, ImVec2(ox, oy), ImVec2(ox + drawW, oy + drawH));
-                filtered = true;
-            }
-        }
-        if (!gfxOnMain && !filtered) {
-            // CRT effect, blur: the picture softened, for the plain picture, the slot mask and the bloom
-            if (host.crtEffect && host.crtBlur > 0.001f && uploadTexture && host.video && !host.video->pixels.empty()) {
-                if (!blurTexture || blurFrame != host.framesRun || blurAmount != host.crtBlur) {
-                    softenRender(host.video->pixels.data(), host.video->width, host.video->height, host.crtBlur, blurPixels);
-                    blurTexture = uploadTexture(10, blurPixels.data(), host.video->width, host.video->height);
-                    blurFrame = host.framesRun;
-                    blurAmount = host.crtBlur;
-                }
-                tex = (ImTextureID)(intptr_t)blurTexture;
-            }
-            dl->AddImage(tex, ImVec2(ox, oy), ImVec2(ox + drawW, oy + drawH));
-        }
-        // CRT effect: the tube's pattern -- a slot mask on a colour tube, scanlines (dark lines
-        // every 2 source rows) on a green or grey one, or as chosen -- and a faint bloom.
-        // Cheap, and off unless turned on.
-        if (host.crtEffect && !gfxOnMain && !filtered) {
-            const bool softMask = host.crtPattern == "soft";
-            if ((host.crtSlotMask() || softMask) && host.crtMask > 0.001f && uploadTexture && host.video && !host.video->pixels.empty()) {
-                // the picture through the slot mask, each phosphor slot lit whole, at the
-                // picture's drawn size (to 2560 x 2048), over the plain picture
-                const int w = std::min(2560, (int)std::lround(drawW)), h = std::min(2048, (int)std::lround(drawH));
-                const bool soft = host.crtBlur > 0.001f && blurPixels.size() == host.video->pixels.size();
-                const MaskKey key { host.framesRun, w, h, host.crtMask, host.crtMaskSize, host.crtMaskTurned, soft ? host.crtBlur : 0.0f, softMask };
-                if (!maskTexture || !(key == maskKey)) {
-                    // the phosphor slots (each lit whole, its own colour), or the soft mask over the whole picture
-                    (softMask ? softMaskRender : slotMaskRender)(soft ? blurPixels.data() : host.video->pixels.data(), host.video->width,
-                                                                 host.video->height, w, h, host.crtMask, host.crtMaskSize, host.crtMaskTurned, maskPixels);
-                    maskTexture = uploadTexture(11, maskPixels.data(), w, h);
-                    maskKey = key;
-                }
-                dl->AddImage((ImTextureID)(intptr_t)maskTexture, ImVec2(ox, oy), ImVec2(ox + drawW, oy + drawH));
-            }
-            if (host.crtBloom > 0.001f) {
-                // A glow round each bright pixel: the picture again, offset the same distance
-                // in eight directions, so the light spreads evenly and stays centred on its
-                // pixel. (It was one copy ENLARGED by g on each side: that moved every glow away
-                // from the screen's centre -- up and left in the top-left quarter.) Each copy
-                // adds its light where the renderer can, as a bloom does.
-                const float g = host.crtBloom * 6.0f, d = g * 0.7071f;
-                const ImVec2 taps[8] = { { g, 0 }, { -g, 0 }, { 0, g }, { 0, -g }, { d, d }, { -d, d }, { d, -d }, { -d, -d } };
-                const int a = std::max(1, (int)(host.crtBloom * (additiveBlend ? 16.0f : 9.0f)));
-                if (additiveBlend) dl->AddCallback(additiveBlend, nullptr);
-                for (const ImVec2& t : taps)
-                    dl->AddImage(tex, ImVec2(ox + t.x, oy + t.y), ImVec2(ox + drawW + t.x, oy + drawH + t.y),
-                                 ImVec2(0, 0), ImVec2(1, 1), IM_COL32(255, 255, 255, a));
-                if (additiveBlend) dl->AddCallback(ImDrawCallback_ResetRenderState, nullptr);
-            }
-            if (host.crtScanlines() && host.crtScanline > 0.001f) {
-                ImU32 col = IM_COL32(0, 0, 0, (int)(host.crtScanline * 150.0f));
-                float step = drawH / (float)info.textureHeight * 2.0f;
-                if (step >= 2.0f)
-                    for (float y = oy; y < oy + drawH; y += step)
-                        dl->AddLine(ImVec2(ox, y), ImVec2(ox + drawW, y), col, std::max(1.0f, step * 0.4f));
-            }
+        } else {
+            // the CPC's picture, through the CPC screen's CRT filter or CRT effect
+            LookPicture pic;
+            pic.screen = 0;
+            pic.texture = info.screenTexture;
+            pic.pixels = host.video && !host.video->pixels.empty() ? host.video->pixels.data() : nullptr;
+            pic.width = info.textureWidth; pic.height = info.textureHeight;
+            pic.rowStep = 2;                             // each CPC line is two rows
+            pic.lines = info.textureHeight / 2;
+            pic.frame = host.framesRun;
+            pic.colourTube = host.video && host.video->monitorColourTube;
+            drawThroughLook(dl, look, cpcLookState, pic, ox, oy, drawW, drawH);
         }
         if (beside) drawGfxMonitor(dl, ox + drawW + gap, oy, gfxW, drawH);
         // the raster timing overlay's legend, in the picture's top right corner
@@ -521,6 +468,81 @@ void GuiShell::screenPicture(const ShellFrameInfo& info) {
         if (host.lightgunActive() && !gfxOnMain) lightgunFromScreen(ox, oy, drawW, drawH, info.textureWidth, info.textureHeight);
         if (screenHovered && ImGui::IsMouseDoubleClicked(0) && !host.emulatedMouseActive() && !host.lightgunActive()
             && toggleFullscreen) toggleFullscreen();
+    }
+}
+
+// One screen's picture in a box: through the advanced CRT filter (drawn by the GPU at the size
+// it is shown, one texel a screen pixel, so on whole pixels), or as it is with the CRT effect's
+// blur, phosphor mask, bloom and scanlines over it.
+void GuiShell::drawThroughLook(ImDrawList* dl, const ScreenLook& look, LookState& st, const LookPicture& pic,
+                               float ox, float oy, float drawW, float drawH) {
+    ImTextureID tex = (ImTextureID)(intptr_t)pic.texture;
+    if (look.crtFilterActive() && crtFilterRender && pic.texture) {
+        const ImVec2 fbScale = ImGui::GetIO().DisplayFramebufferScale;
+        const int outW = (int)std::lround(drawW * fbScale.x), outH = (int)std::lround(drawH * fbScale.y);
+        const bool newFrame = st.filterFrame != pic.frame;
+        if (const unsigned t = crtFilterRender(pic.screen, pic.texture, pic.width, pic.height, pic.rowStep, outW, outH, fbScale.y,
+                                               newFrame, look.crtFilter)) {
+            st.filterFrame = pic.frame;
+            ox = std::round(ox); oy = std::round(oy);
+            dl->AddImage((ImTextureID)(intptr_t)t, ImVec2(ox, oy), ImVec2(ox + drawW, oy + drawH));
+            return;
+        }
+    }
+    const bool havePixels = pic.pixels && uploadTexture && pic.width > 0 && pic.height > 0;
+    const size_t count = (size_t)std::max(0, pic.width) * (size_t)std::max(0, pic.height);
+    // CRT effect, blur: the picture softened, for the plain picture, the slot mask and the bloom
+    if (look.crtEffect && look.crtBlur > 0.001f && havePixels) {
+        if (!st.blurTexture || st.blurFrame != pic.frame || st.blurAmount != look.crtBlur || st.blurPixels.size() != count) {
+            softenRender(pic.pixels, pic.width, pic.height, look.crtBlur, st.blurPixels);
+            st.blurTexture = uploadTexture(st.blurSlot, st.blurPixels.data(), pic.width, pic.height);
+            st.blurFrame = pic.frame;
+            st.blurAmount = look.crtBlur;
+        }
+        tex = (ImTextureID)(intptr_t)st.blurTexture;
+    }
+    dl->AddImage(tex, ImVec2(ox, oy), ImVec2(ox + drawW, oy + drawH));
+    if (!look.crtEffect) return;
+    // CRT effect: the tube's pattern (a slot mask on a colour tube, scanlines, that is a dark
+    // line between two of the picture's lines, on a green or grey one, or as chosen) and a
+    // faint bloom. Cheap, and off unless turned on.
+    const bool softMask = look.crtPattern == "soft";
+    if ((look.slotMask(pic.colourTube) || softMask) && look.crtMask > 0.001f && havePixels) {
+        // the picture through the slot mask, each phosphor slot lit whole, at the picture's
+        // drawn size (to 2560 x 2048), over the plain picture
+        const int w = std::min(2560, (int)std::lround(drawW)), h = std::min(2048, (int)std::lround(drawH));
+        const bool soft = look.crtBlur > 0.001f && st.blurPixels.size() == count;
+        const MaskKey key { pic.frame, w, h, look.crtMask, look.crtMaskSize, look.crtMaskTurned, soft ? look.crtBlur : 0.0f, softMask };
+        if (w > 0 && h > 0 && (!st.maskTexture || !(key == st.maskKey))) {
+            // the phosphor slots (each lit whole, its own colour), or the soft mask over the whole picture
+            (softMask ? softMaskRender : slotMaskRender)(soft ? st.blurPixels.data() : pic.pixels, pic.width, pic.height, w, h,
+                                                         look.crtMask, look.crtMaskSize, look.crtMaskTurned, st.maskPixels);
+            st.maskTexture = uploadTexture(st.maskSlot, st.maskPixels.data(), w, h);
+            st.maskKey = key;
+        }
+        if (st.maskTexture) dl->AddImage((ImTextureID)(intptr_t)st.maskTexture, ImVec2(ox, oy), ImVec2(ox + drawW, oy + drawH));
+    }
+    if (look.crtBloom > 0.001f) {
+        // A glow round each bright pixel: the picture again, offset the same distance in
+        // eight directions, so the light spreads evenly and stays centred on its pixel. (It
+        // was one copy ENLARGED by g on each side: that moved every glow away from the
+        // screen's centre: up and left in the top-left quarter.) Each copy adds its light
+        // where the renderer can, as a bloom does.
+        const float g = look.crtBloom * 6.0f, d = g * 0.7071f;
+        const ImVec2 taps[8] = { { g, 0 }, { -g, 0 }, { 0, g }, { 0, -g }, { d, d }, { -d, d }, { d, -d }, { -d, -d } };
+        const int a = std::max(1, (int)(look.crtBloom * (additiveBlend ? 16.0f : 9.0f)));
+        if (additiveBlend) dl->AddCallback(additiveBlend, nullptr);
+        for (const ImVec2& t : taps)
+            dl->AddImage(tex, ImVec2(ox + t.x, oy + t.y), ImVec2(ox + drawW + t.x, oy + drawH + t.y),
+                         ImVec2(0, 0), ImVec2(1, 1), IM_COL32(255, 255, 255, a));
+        if (additiveBlend) dl->AddCallback(ImDrawCallback_ResetRenderState, nullptr);
+    }
+    if (look.scanlines(pic.colourTube) && look.crtScanline > 0.001f && pic.lines > 0) {
+        ImU32 col = IM_COL32(0, 0, 0, (int)(look.crtScanline * 150.0f));
+        float step = drawH / (float)pic.lines;
+        if (step >= 2.0f)
+            for (float y = oy; y < oy + drawH; y += step)
+                dl->AddLine(ImVec2(ox, y), ImVec2(ox + drawW, y), col, std::max(1.0f, step * 0.4f));
     }
 }
 
@@ -968,8 +990,7 @@ void GuiShell::menuMedia() {
         // A CRO with more than one group: which one the machine runs.
         if (host.croGroupLabels.size() > 1 && ImGui::BeginMenu("CRO group")) {
             for (size_t i = 0; i < host.croGroupLabels.size(); i++) {
-                const bool on = host.croGroup >= 0 ? (uint32_t)host.croGroup == host.croGroupNumbers[i]
-                                                   : host.croGroupNumbers[i] == 0;
+                const bool on = host.croCurrentGroup == host.croGroupNumbers[i];
                 if (ImGui::MenuItem((host.croGroupLabels[i] + "##crogroup" + std::to_string(i)).c_str(), nullptr, on))
                     host.loadCroGroup(host.croGroupNumbers[i]);
             }
@@ -1005,6 +1026,7 @@ void GuiShell::menuTools() {
     ImGui::MenuItem("DSK editor", nullptr, &panelOpen("DSK editor"));
     ImGui::MenuItem("Cheats (POKE finder)", nullptr, &panelOpen("Cheats"));
     ImGui::MenuItem("Graphics finder", nullptr, &panelOpen("Graphics finder"));
+    ImGui::MenuItem("CRO editor", nullptr, &panelOpen("CRO editor"));
     ImGui::MenuItem("CSL scripts", nullptr, &panelOpen("CSL scripts"));
     ImGui::MenuItem("Printer output", nullptr, &panelOpen("Printer"));
     ImGui::MenuItem("GFX9000", nullptr, &panelOpen("GFX9000"));
@@ -1071,7 +1093,7 @@ void GuiShell::menuWindow() {
     ImGui::Separator();
     for (const char* w : { "Debugger", "Chips", "Memory", "Logic analyser", "Profiler", "GFX9000", "GFX9000 screen" }) ImGui::MenuItem(w, nullptr, &panelOpen(w));
     ImGui::Separator();
-    for (const char* w : { "Assembler", "BASIC", "DSK editor", "Cheats", "Graphics finder", "CSL scripts", "Printer" }) ImGui::MenuItem(w, nullptr, &panelOpen(w));
+    for (const char* w : { "Assembler", "BASIC", "DSK editor", "Cheats", "Graphics finder", "CRO editor", "CSL scripts", "Printer" }) ImGui::MenuItem(w, nullptr, &panelOpen(w));
     ImGui::Separator();
     if (ImGui::BeginMenu("Interface size")) {
         for (int pct : { 90, 100, 110, 125, 150, 175, 200 }) {
