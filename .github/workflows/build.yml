@@ -126,7 +126,7 @@ jobs:
 
   macos:
     name: macOS (universal, Apple silicon and Intel)
-    runs-on: macos-14
+    runs-on: macos-15
     env:
       # std::filesystem needs macOS 10.15.
       MACOSX_DEPLOYMENT_TARGET: "10.15"
