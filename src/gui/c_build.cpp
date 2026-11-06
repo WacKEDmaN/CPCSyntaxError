@@ -249,6 +249,23 @@ static void setEnv(const char* name, const std::string& value) {
 #endif
 }
 
+// The library cache and the tools' own temporary files: "cache" beside the program, or in the
+// folder CPCSE_HOME names (as the .ini). Never the system's temporary folder.
+std::string defaultCacheFolder() {
+    if (const char* h = std::getenv("CPCSE_HOME"); h && *h) return (fs::u8path(h) / "cache" / "cbuild").u8string();
+    std::error_code ec;
+    fs::path here;
+#ifdef _WIN32
+    wchar_t exe[MAX_PATH];
+    const DWORD n = GetModuleFileNameW(nullptr, exe, MAX_PATH);
+    if (n && n < MAX_PATH) here = fs::path(std::wstring(exe, n)).parent_path();
+#else
+    here = fs::read_symlink("/proc/self/exe", ec).parent_path();
+#endif
+    if (here.empty()) here = fs::current_path(ec);
+    return (here / "cache" / "cbuild").u8string();
+}
+
 // ---------------------------------------------------------------- reading what the tools say
 
 // "file:12: error 20: text", "file:5: warning 112: text", "file:21: Error: <i> text"; a
@@ -736,6 +753,19 @@ static CBuildResult buildZ88dk(const CToolchain& tools, const std::string& mainP
 
 CBuildResult buildC(const CToolchain& tools, const std::string& mainPath, const std::string& cacheFolder,
                     const std::function<void(const std::string&)>& progress) {
+    {
+        // the tools' temporary files go in the cache too (they inherit this environment)
+        std::error_code tec;
+        const fs::path tmp = fs::u8path(cacheFolder) / "tmp";
+        fs::create_directories(tmp, tec);
+        if (!tec || fs::is_directory(tmp, tec)) {
+            setEnv("TEMP", tmp.u8string());
+            setEnv("TMP", tmp.u8string());
+#ifndef _WIN32
+            setEnv("TMPDIR", tmp.u8string());
+#endif
+        }
+    }
     if (tools.compiler == "z88dk") return buildZ88dk(tools, mainPath, progress);
     CBuildResult r;
     std::error_code ec;
@@ -978,6 +1008,22 @@ CBuildResult buildC(const CToolchain& tools, const std::string& mainPath, const 
     }
     note("Compiling " + std::to_string(cfiles.size()) + " C and " + std::to_string(sfiles.size()) + " assembly file(s)");
     runJobs(jobs, nullptr, "compile");
+    // SDCC 4.6.0 stops with "FATAL Compiler Internal Error in file '.../SDCCgenconstprop.cc'"
+    // on some sources (CPCtelera 1.4.x's arkosAudio main.c, with or without --sdcccall 0).
+    // That pass is an optimisation and SDCC can leave it out (--nogenconstprop), so such a
+    // file is compiled once more without it, and the log says so.
+    for (Job& j : jobs) {
+        if (j.code == 0 || j.args.empty() || j.args[0] != sdcc) continue;
+        if (j.output.find("Internal Error") == std::string::npos || j.output.find("SDCCgenconstprop") == std::string::npos) continue;
+        std::vector<std::string> again = j.args;
+        again.insert(std::find(again.begin(), again.end(), std::string("-c")), "--nogenconstprop");
+        std::string out;
+        const int code = runProgram(again, j.cwd, out);
+        note("SDCC's internal error in its constant propagation: compiled again with --nogenconstprop" +
+             std::string(code == 0 ? "" : " (that failed too)"));
+        r.log += commandLine(j.args) + "\n" + j.output;
+        j.args = again; j.output = out; j.code = code;
+    }
     bool compiled = true;
     for (const Job& j : jobs) {
         r.log += commandLine(j.args) + "\n" + j.output;

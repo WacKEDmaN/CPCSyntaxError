@@ -1,6 +1,15 @@
 // CPCSyntaxError — SYMBiFACE III expansion card (see sf3.h for the sources).
 #include "sf3.h"
 
+#include <algorithm>
+#include <cstdio>
+#include <filesystem>
+#include <fstream>
+#include <iterator>
+
+#include "dskfs.h"
+#include "file_write.h"
+
 namespace cpcse {
 
 static int clampi(double value, int mn, int mx) { return std::max(mn, std::min(mx, (int)value)); }
@@ -56,6 +65,125 @@ void Symbiface3::button(int index, bool pressed) {
     if (buttons[index] == next) return;
     buttons[index] = next;
     buttonChanged = true;
+}
+
+// The ROM table (sf3.h): files on the SD card folder, as the real card keeps them.
+void Symbiface3::romTable(int number) {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    auto p = [&](size_t i) { return i < params.size() ? params[i] & 0xff : 0; };
+    auto chars = [&](size_t from) { std::string s; for (size_t i = from; i < params.size(); i++) if (params[i]) s += (char)params[i]; return s; };
+    const fs::path table = fs::u8path(audio->sdFolder) / "CPC" / "ROMTABLE";
+    auto bankDir = [&](int b) { char n[16]; std::snprintf(n, sizeof n, "BANK%03d", b & 0xff); return table / n; };
+    auto romFile = [&](int b, int r, const char* ext) { char n[16]; std::snprintf(n, sizeof n, "ROM%03d.%s", r & 0xff, ext); return bankDir(b) / n; };
+    auto firstLine = [&](const fs::path& f, size_t max) {
+        std::ifstream in(f, std::ios::binary);
+        std::string line;
+        std::getline(in, line);
+        while (!line.empty() && (line.back() == '\r' || line.back() == '\n' || line.back() == ' ')) line.pop_back();
+        return line.substr(0, max);
+    };
+    auto answerText = [&](const std::string& s) { reply.clear(); for (char c : s) reply.push_back((unsigned char)c); reply.push_back(0); };
+    auto answerList = [&](std::vector<int> v) { std::sort(v.begin(), v.end()); reply.assign(v.begin(), v.end()); reply.push_back(255); };
+    auto writeText = [&](const fs::path& f, const std::string& s) {
+        std::string why;
+        if (!writeFileSafely(f.u8string(), s.data(), s.size(), &why)) fail(number, "WRITE ERROR");
+    };
+    // a ROM's 16 KB: an AMSDOS header (a ROM saved from a CPC) left out
+    auto romBytes = [](Bytes d) {
+        if (d.size() >= 128 + 1 && hasAmsdosHeader(d)) d.erase(d.begin(), d.begin() + 128);
+        if (d.size() > 16384) d.resize(16384);
+        return d;
+    };
+    if (number == 63) {
+        const int slot = p(0);
+        const Bytes rom = romBytes(Bytes(params.begin() + (long)std::min<size_t>(2, params.size()), params.end()));
+        if (rom.empty()) fail(number, "NO ROM DATA");
+        else if (!fitRomNow) fail(number, "NOT EMULATED");
+        else fitRomNow(slot, rom);
+        return;
+    }
+    const int sub = p(0);
+    const bool needsCard = sub != 1 && sub != 30 && sub != 31;
+    if (needsCard && audio->sdFolder.empty()) { fail(number, "NO SD CARD"); return; }
+    switch (sub) {
+        case 1: {
+            if (!fittedRoms) { fail(number, "NOT EMULATED"); return; }
+            answerList(fittedRoms());
+            return;
+        }
+        case 14: {
+            const std::string folder = p(1) == 0 ? audio->sdFolder : audio->usbFolder;
+            const std::string name = chars(2);
+            if (folder.empty() || name.empty() || name.find("..") != std::string::npos) { fail(number, "FILE NOT FOUND"); return; }
+            std::ifstream in(fs::u8path(folder) / fs::u8path(name), std::ios::binary);
+            if (!in) { fail(number, "FILE NOT FOUND"); return; }
+            romBuffer.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+            if (romBuffer.size() > 65536) { romBuffer.clear(); fail(number, "FILE TOO LARGE"); }
+            return;
+        }
+        case 20: {
+            if (romBuffer.empty()) { fail(number, "NO FILE LOADED"); return; }
+            fs::create_directories(bankDir(p(1)), ec);
+            const Bytes rom = romBytes(romBuffer);
+            std::string why;
+            if (!writeFileSafely(romFile(p(1), p(2), "BIN").u8string(), rom.data(), rom.size(), &why)) fail(number, "WRITE ERROR");
+            return;
+        }
+        case 21:
+            fs::remove(romFile(p(1), p(2), "BIN"), ec);
+            fs::remove(romFile(p(1), p(2), "TXT"), ec);
+            return;
+        case 22: {
+            std::vector<int> roms;
+            for (const auto& e : fs::directory_iterator(bankDir(p(1)), ec)) {
+                std::string n = e.path().filename().u8string();
+                for (char& c : n) c = (char)std::toupper((unsigned char)c);
+                if (n.size() == 10 && n.compare(0, 3, "ROM") == 0 && n.compare(6, 4, ".BIN") == 0 &&
+                    std::isdigit((unsigned char)n[3]) && std::isdigit((unsigned char)n[4]) && std::isdigit((unsigned char)n[5])) {
+                    const int r = std::atoi(n.substr(3, 3).c_str());
+                    if (r < 255) roms.push_back(r);
+                }
+            }
+            answerList(roms);
+            return;
+        }
+        case 23: {
+            const auto size = fs::file_size(romFile(p(1), p(2), "BIN"), ec);
+            answerText(ec ? std::string() : std::to_string((unsigned long long)size));
+            return;
+        }
+        case 25: writeText(romFile(p(1), p(2), "TXT"), chars(3)); return;
+        case 26: answerText(firstLine(romFile(p(1), p(2), "TXT"), 12)); return;
+        case 30:
+            if (!setStartBank) { fail(number, "NOT EMULATED"); return; }
+            setStartBank(p(1));
+            return;
+        case 31:
+            if (!startBank) { fail(number, "NOT EMULATED"); return; }
+            reply.assign(1, startBank() & 0xff);
+            return;
+        case 33: answerText(firstLine(bankDir(p(1)) / "BANKNAME.TXT", 20)); return;
+        case 34:
+            if (p(1) == 0) { fail(number, "BANK 0"); return; }
+            fs::create_directories(bankDir(p(1)), ec);
+            writeText(bankDir(p(1)) / "BANKNAME.TXT", chars(2));
+            return;
+        case 35: {
+            std::vector<int> banks;
+            for (const auto& e : fs::directory_iterator(table, ec)) {
+                const std::string n = e.path().filename().u8string();
+                if (e.is_directory(ec) && n.size() == 7 && n.compare(0, 4, "BANK") == 0 && std::isdigit((unsigned char)n[4]) &&
+                    std::isdigit((unsigned char)n[5]) && std::isdigit((unsigned char)n[6])) {
+                    const int b = std::atoi(n.c_str() + 4);
+                    if (b >= 1 && b < 255) banks.push_back(b);
+                }
+            }
+            answerList(banks);
+            return;
+        }
+        default: fail(number, "ROM TABLE FUNCTION " + std::to_string(sub) + " NOT EMULATED"); return;
+    }
 }
 
 void Symbiface3::text(const std::vector<std::string>& lines) {
@@ -171,7 +299,8 @@ void Symbiface3::function(int number) {
             break;
         case 7: wifiIn.clear(); wifiOut.clear(); break;
         case 90: wifi(); break;
-        case 62: case 63: case 66: fail(number, "ROM AND FILE FUNCTIONS NOT EMULATED"); break;
+        case 62: case 63: romTable(number); break;
+        case 66: fail(number, "FUNCTION 66 NOT EMULATED"); break;
         default: fail(number, "FUNCTION NOT EMULATED"); break;
     }
     params.clear();
@@ -362,7 +491,7 @@ bool Symbiface3::writePort(int port, int value) {
         else function(value);
         return true;
     }
-    if (params.size() < 2048) params.push_back(value);
+    if (params.size() < 16384 + 128 + 16) params.push_back(value);   // 63 takes a whole ROM
     return true;
 }
 

@@ -282,7 +282,7 @@ int main(int argc, char** argv) {
     // uses, with no window. --shot out.bmp [--model id] [--sna f] [--crtc N] [--gate-array 40007|40008|40010]
     // [--frames N] [--beam] [--gfx9000] [--v9990-shot out.bmp] (the GFX9000's own monitor).
     {
-        std::string shot, modelId, snaPath, saveSnaPath, dumpRamPath, diskPath, cartPath, tapePath, typeStr, keysStr; int croGroup = -1, wantCrtc = -1, wantGa = 0, frames = 200, f1at = -1, wantRam = -1, seq = 0; bool beam = false, diag = false, gfx9000 = false, opl4 = false, playcity = false; std::string v9990Shot, video9000Shot, m4Folder, ideFolder, mouseScript, mouseInterface, cbuildPath, cbuildCpct, cbuildSdcc, wavPath, speechKind, mp3Card, dacType; int cbuildLoc = -1; bool cbuildForce = false; std::string cbuildZ88dk, sf3Usb, sf3Sd, hd20Image; int sf3RomBank = -2; bool cbuildSccz80 = false; bool cbuildUseZ88dk = false; bool sf2 = false, sf3 = false, xmass = false, multiface = false, diskWriteBack = false; int monitorHHold = std::getenv("CPCSE_MONITOR_HHOLD") ? std::atoi(std::getenv("CPCSE_MONITOR_HHOLD")) : 0; int monitorVHold = std::getenv("CPCSE_MONITOR_VHOLD") ? std::atoi(std::getenv("CPCSE_MONITOR_VHOLD")) : 0; std::vector<std::string> xroms; std::string serialLine, recordTape, tapeFast, recordPath, recordFormat = "mjpeg", recordSource = "shown", gfx9000Monitor; bool rasterOverlayOn = false; bool z80Cmos = false, gx4000Ram128 = false, plusExpansionClassic = true; std::string monitorSet; TubeKnobs monitorKnobs; std::array<int, 3> monitorIntensity = TubeKnobs().intensity;
+        std::string shot, modelId, snaPath, saveSnaPath, dumpRamPath, diskPath, cartPath, tapePath, typeStr, keysStr; int croGroup = -1, wantCrtc = -1, wantGa = 0, frames = 200, f1at = -1; bool f1first = false; int wantRam = -1, seq = 0; bool beam = false, diag = false, gfx9000 = false, opl4 = false, playcity = false; std::string v9990Shot, video9000Shot, m4Folder, ideFolder, mouseScript, mouseInterface, cbuildPath, cbuildCpct, cbuildSdcc, wavPath, speechKind, mp3Card, dacType; int cbuildLoc = -1; bool cbuildForce = false; std::string cbuildZ88dk, sf3Usb, sf3Sd, hd20Image; int sf3RomBank = -2; bool cbuildSccz80 = false; bool cbuildUseZ88dk = false; std::string albireoArg[2], albireoUsbArg[2]; bool sf2 = false, sf3 = false, xmass = false, multiface = false, diskWriteBack = false; int monitorHHold = std::getenv("CPCSE_MONITOR_HHOLD") ? std::atoi(std::getenv("CPCSE_MONITOR_HHOLD")) : 0; int monitorVHold = std::getenv("CPCSE_MONITOR_VHOLD") ? std::atoi(std::getenv("CPCSE_MONITOR_VHOLD")) : 0; std::vector<std::string> xroms; std::string serialLine, recordTape, tapeFast, recordPath, recordFormat = "mjpeg", recordSource = "shown", gfx9000Monitor; bool rasterOverlayOn = false; bool z80Cmos = false, gx4000Ram128 = false, plusExpansionClassic = true; std::string monitorSet; TubeKnobs monitorKnobs; std::array<int, 3> monitorIntensity = TubeKnobs().intensity;
         for (int i = 1; i < argc; i++) { std::string a = argv[i];
             if (a == "--shot" && i + 1 < argc) shot = argv[++i];
             else if (a == "--ram" && i + 1 < argc) wantRam = std::atoi(argv[++i]);
@@ -307,6 +307,7 @@ int main(int argc, char** argv) {
             else if (a == "--type" && i + 1 < argc) typeStr = argv[++i];   // typed after boot (\\n = Enter)
             else if (a == "--keys" && i + 1 < argc) keysStr = argv[++i];   // tap after F1 loads: e.g. "Space" launches PD ball
             else if (a == "--f1at" && i + 1 < argc) f1at = std::atoi(argv[++i]);
+            else if (a == "--f1first") f1first = true;   // Plus menu: F1 (BASIC) before --type
             else if (a == "--crtc" && i + 1 < argc) wantCrtc = std::atoi(argv[++i]);
             else if (a == "--gate-array" && i + 1 < argc) wantGa = std::atoi(argv[++i]);   // 40007/40008/40010
             else if (a == "--frames" && i + 1 < argc) frames = std::atoi(argv[++i]);
@@ -341,6 +342,10 @@ int main(int argc, char** argv) {
             else if (a == "--sf3-sd" && i + 1 < argc) { sf3Sd = argv[++i]; sf3 = true; }     // its SD card, this folder
             else if (a == "--hd20" && i + 1 < argc) hd20Image = argv[++i];                 // a Dobbertin HD20, this image
             else if (a == "--sf3-rombank" && i + 1 < argc) { sf3RomBank = std::atoi(argv[++i]); sf3 = true; }   // the SF3 SD card's ROM bank
+            else if (a == "--albireo" && i + 1 < argc) albireoArg[0] = argv[++i];        // board 1 (&FE80): its SD card folder ("-" none)
+            else if (a == "--albireo-usb" && i + 1 < argc) albireoUsbArg[0] = argv[++i]; // its USB port: a folder (a stick), mouse or none
+            else if (a == "--albireo2" && i + 1 < argc) albireoArg[1] = argv[++i];       // board 2 (&FE40), the same
+            else if (a == "--albireo2-usb" && i + 1 < argc) albireoUsbArg[1] = argv[++i];
             else if (a == "--sf3") sf3 = true;                                // a Symbiface III instead (with --ide too)
             else if (a == "--disk-writeback") diskWriteBack = true;              // save the disc's writes into its .dsk (headless: off)
             else if (a == "--multiface") multiface = true;                    // a Multiface II (its ROM from roms/); n in --mouse is STOP
@@ -386,6 +391,15 @@ int main(int argc, char** argv) {
                 if (slot < 0 || !host.fitExpansionRom(slot, x.substr(eq + 1))) { std::printf("[shot] --xrom %s: %s\n", x.c_str(), host.status.c_str()); return 2; }
             }
             if (!ideFolder.empty()) host.ideFolder = ideFolder;
+            for (int b = 0; b < 2; b++) {
+                if (albireoArg[b].empty() && albireoUsbArg[b].empty()) continue;
+                EmuHost::AlbireoBoard& ab = host.albireo[b];
+                ab.enabled = true;
+                ab.sdFolder = albireoArg[b] == "-" ? "" : albireoArg[b];
+                const std::string u = albireoUsbArg[b];
+                ab.usb = u.empty() || u == "none" ? "none" : u == "mouse" ? "mouse" : "stick";
+                ab.usbFolder = ab.usb == "stick" ? u : "";
+            }
             if (!sf3Usb.empty()) host.sf3UsbFolder = sf3Usb;
             if (!sf3Sd.empty()) host.sf3SdFolder = sf3Sd;
             if (!hd20Image.empty()) host.hd20Image = hd20Image;
@@ -434,8 +448,7 @@ int main(int argc, char** argv) {
                 t.forceAssets = cbuildForce;
                 if (cbuildUseZ88dk) { t.compiler = "z88dk"; t.z88dkFolder = cbuildZ88dk; t.z88dkSccz80 = cbuildSccz80; }
                 t.makeSnapshot = host.programSnapshotMaker();
-                std::error_code ec;
-                const CBuildResult res = buildC(t, cbuildPath, (std::filesystem::temp_directory_path(ec) / "cpcse-cbuild").u8string(), nullptr);
+                const CBuildResult res = buildC(t, cbuildPath, defaultCacheFolder(), nullptr);
                 for (const CBuildMessage& m : res.messages)
                     std::printf("[cbuild] %s%s%s\n", m.file.empty() ? "" : (m.file + ":" + std::to_string(m.line) + ": ").c_str(), m.text.c_str(), m.error ? "" : " (warning)");
                 if (diag) std::printf("%s", res.log.c_str());
@@ -465,6 +478,9 @@ int main(int argc, char** argv) {
                 for (char c : text)
                     if (kb && cpcTypeKey(*kb, c, true)) { run(4); cpcTypeKey(*kb, c, false); run(4); }
             };
+            if (f1first && kb) {                            // the Plus menu: F1 for BASIC, then its banner
+                run(100); kb->setKey("F1", true); run(4); kb->setKey("F1", false); run(80);
+            }
             typeText(typeStr);                              // type the boot command
             int last = 0;
             if (f1at >= 0 && kb) {
@@ -865,6 +881,13 @@ int main(int argc, char** argv) {
     host.symbifaceModule = gets("symbiface", "none");
     host.mouseInterface = gets("mouseinterface", "none");   // applied by applySettings (kept out while an SF2/SF3 is fitted)
     host.ideFolder = gets("idefolder", (homeDir() + "symide").c_str());   // the IDE's disc
+    for (int b = 0; b < 2; b++) {                                         // the two Albireo boards
+        const std::string k = "albireo" + std::to_string(b + 1);
+        host.albireo[b].enabled = geti(k.c_str(), 0) != 0;
+        host.albireo[b].sdFolder = gets((k + "sd").c_str(), b == 0 ? (homeDir() + "albireo-sd").c_str() : "");
+        host.albireo[b].usb = gets((k + "usb").c_str(), b == 0 ? "stick" : "mouse");
+        host.albireo[b].usbFolder = gets((k + "usbfolder").c_str(), b == 0 ? (homeDir() + "albireo-usb").c_str() : "");
+    }
     // The ROMs window: the firmware ROMs chosen in place of the model's, and the expansion
     // slots. A file gone since is left out (the status line says which).
     host.osRomPath = gets("rom_os", "");
@@ -1248,7 +1271,7 @@ int main(int argc, char** argv) {
         std::ostringstream f;
         {
             f << "# CPCSyntaxError settings\n";
-            f << "romdir=" << host.romDir << "\n";
+            f << "romdir=" << host.romDirAsGiven << "\n";
             if (commandLineModel >= 0 && host.currentModel == commandLineModel) {
                 // still the command line's machine: the settings keep the one they had
                 f << "model=" << gets("model", "") << "\n";
@@ -1298,6 +1321,13 @@ int main(int argc, char** argv) {
             f << "symbiface=" << host.symbifaceModule << "\n";
             f << "mouseinterface=" << host.mouseInterface << "\n";
             f << "idefolder=" << host.ideFolder << "\n";
+            for (int b = 0; b < 2; b++) {
+                const std::string k = "albireo" + std::to_string(b + 1);
+                f << k << "=" << (host.albireo[b].enabled ? 1 : 0) << "\n";
+                f << k << "sd=" << host.albireo[b].sdFolder << "\n";
+                f << k << "usb=" << host.albireo[b].usb << "\n";
+                f << k << "usbfolder=" << host.albireo[b].usbFolder << "\n";
+            }
             f << "rom_os=" << host.osRomPath << "\n";
             f << "rom_basic=" << host.basicRomPath << "\n";
             f << "rom_amsdos=" << host.amsdosRomPath << "\n";

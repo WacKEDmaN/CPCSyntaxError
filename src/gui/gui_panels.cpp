@@ -752,6 +752,61 @@ void GuiShell::sectionExpansions(bool asMenu) {
         else ImGui::TextDisabled("  (no image)");
     }
 
+    // THE ALBIREO: a CH376 with an SD card and a USB port; a second board at &FE40.
+    static const Choice albUsb[2][3] = {
+        { { "No USB##alb0", "none", nullptr }, { "USB stick##alb0", "stick", "A USB stick: a folder, as one FAT16 disc" },
+          { "USB mouse##alb0", "mouse", "A USB mouse: the PC's mouse (SymbOS, FutureOS)" } },
+        { { "No USB##alb1", "none", nullptr }, { "USB stick##alb1", "stick", "A USB stick: a folder, as one FAT16 disc" },
+          { "USB mouse##alb1", "mouse", "A USB mouse: the PC's mouse (SymbOS, FutureOS)" } } };
+    auto albireoBoard = [&](int b) {
+        EmuHost::AlbireoBoard s = host.albireo[b];
+        const char* title = b == 0 ? "Albireo 1 (&FE80)" : "Albireo 2 (&FE40)";
+        const std::string id = std::to_string(b);
+        auto pickSd = [this, b]() {
+            browser.openDir("Albireo SD card folder", host.albireo[b].sdFolder.empty() ? host.romDir : host.albireo[b].sdFolder,
+                            [this, b](const std::string& dir) { EmuHost::AlbireoBoard n = host.albireo[b]; n.sdFolder = dir; host.setAlbireo(b, n); });
+        };
+        auto pickStick = [this, b]() {
+            browser.openDir("Albireo USB stick folder", host.albireo[b].usbFolder.empty() ? host.romDir : host.albireo[b].usbFolder,
+                            [this, b](const std::string& dir) { EmuHost::AlbireoBoard n = host.albireo[b]; n.usb = "stick"; n.usbFolder = dir; host.setAlbireo(b, n); });
+        };
+        auto pickUsb = [this, b](const char* v) { EmuHost::AlbireoBoard n = host.albireo[b]; n.usb = v; host.setAlbireo(b, n); };
+        if (asMenu) {
+            if (!ImGui::BeginMenu(title)) return;
+            if (ImGui::MenuItem(("Fitted##albon" + id).c_str(), nullptr, s.enabled)) { s.enabled = !s.enabled; host.setAlbireo(b, s); }
+            ImGui::Separator();
+            if (ImGui::MenuItem(("SD card folder...##albsd" + id).c_str())) pickSd();
+            if (ImGui::MenuItem(("No SD card##albnosd" + id).c_str(), nullptr, false, !s.sdFolder.empty())) { s.sdFolder.clear(); host.setAlbireo(b, s); }
+            ImGui::Separator();
+            choiceRow(true, albUsb[b], s.usb, pickUsb);
+            if (ImGui::MenuItem(("USB stick folder...##albstick" + id).c_str())) pickStick();
+            ImGui::EndMenu();
+            return;
+        }
+        ImGui::PushID(b);
+        if (ImGui::Checkbox(title, &s.enabled)) host.setAlbireo(b, s);
+        ImGui::TextUnformatted("SD card");
+        if (after().smallButton("Folder...##sd")) pickSd();
+        if (!s.sdFolder.empty()) { if (after().smallButton("Eject##sd")) { s.sdFolder.clear(); host.setAlbireo(b, s); } }
+        if (!s.sdFolder.empty()) ImGui::TextDisabled("  %s", s.sdFolder.c_str());
+        choiceRow(false, albUsb[b], s.usb, pickUsb);
+        if (s.usb == "stick") {
+            ImGui::TextUnformatted("USB stick");
+            if (after().smallButton("Folder...##stick")) pickStick();
+            if (!s.usbFolder.empty()) ImGui::TextDisabled("  %s", s.usbFolder.c_str());
+        }
+        ImGui::PopID();
+    };
+    if (asMenu) {
+        ImGui::Separator();
+        if (ImGui::BeginMenu("Albireo (USB, SD)")) { albireoBoard(0); albireoBoard(1); ImGui::EndMenu(); }
+    } else {
+        sectionHeading("Albireo (CH376: SD card, USB)");
+        albireoBoard(0);
+        albireoBoard(1);
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Each folder is one FAT16 disc: what the CPC writes goes back into the folder.");
+    }
+
     if (asMenu) {
         ImGui::Separator();
         if (ImGui::BeginMenu("Printer port")) { printerPortItems(true); ImGui::EndMenu(); }
@@ -1422,8 +1477,17 @@ void GuiShell::windowGfxScreen() {
             const ImVec2 ts = ImGui::CalcTextSize(msg);
             dl->AddText(ImVec2(at.x + (avail.x - ts.x) * 0.5f, at.y + (avail.y - ts.y) * 0.5f), ImGui::GetColorU32(ImGuiCol_TextDisabled), msg);
         } else if (host.gfx9000Monitor == "video9000" && uploadTexture && host.video9000Picture(video9000Pixels, vw, vh)) {
+            // the GFX9000 screen's look (CRT effect or filter)
             video9000Texture = uploadTexture(3, video9000Pixels.data(), vw, vh);
-            dl->AddImage((ImTextureID)(intptr_t)video9000Texture, ImVec2(x, y), ImVec2(x + w, y + h));
+            LookPicture pic;
+            pic.screen = 1;
+            pic.texture = video9000Texture;
+            pic.pixels = video9000Pixels.data();
+            pic.width = vw; pic.height = vh;
+            pic.lines = vh > 400 ? vh / 2 : vh;          // interlaced: two rows a line
+            pic.frame = host.framesRun;
+            pic.colourTube = true;
+            drawThroughLook(dl, host.gfxLook, gfxLookState, pic, x, y, w, h);
         } else {
             drawGfxMonitor(dl, at.x, at.y, avail.x, avail.y);
         }

@@ -41,8 +41,23 @@
 // The stick is a host folder shown as one FAT16 partition (the IDE's M4SdCard, m4_storage.h);
 // what SymbOS writes goes back into the folder half a second after the last write.
 //
-// Not emulated, answered with status 2 and an error text: the ROM banks and file functions
-// (62, 63, 66), DFU (70), ROM set (3).
+// The ROM table on the SD card (CPC\ROMTABLE\BANKnnn: ROMnnn.BIN, ROMnnn.TXT, BANKNAME.TXT),
+// as TMTLOGIC's ROM manager SF3-RM.BAS uses it (its REM lines name each one), function 62
+// and a sub-function first:
+//     1               the ROMs fitted now: numbers, then 255 (the SF3-RSX ROM's ROM list)
+//    14 device name   a file into the card's buffer (device 0 the SD card, 1 the USB stick)
+//    20 bank rom      the buffer saved as that ROM        21 bank rom   the ROM deleted
+//    22 bank          the bank's ROM numbers, then 255     23 bank rom   its size, as text, 0
+//    25 bank rom name its name saved                      26 bank rom   its name, 0 at the end
+//    30 bank          the bank the machine starts with      31           that bank
+//    33 bank          the bank's name, 0 at the end        34 bank name  the bank made, named
+//    35               the banks there, then 255
+// and function 63 (the SF3-RSX ROM's |SROM): the ROM number, 0, then the ROM's bytes (16 KB,
+// an AMSDOS header more), put into that slot now.
+//
+// Not emulated, answered with status 2 and an error text: 62's other sub-functions, 66, the
+// firmware update (DFU, 70), ROM set (3), MIDI files and the FM radio (no document gives how
+// the CPC drives them).
 #pragma once
 #include "common.h"
 #include "m4_net.h"
@@ -74,6 +89,13 @@ public:
     // A rewind's copy shares the sound card: its stream and files are not rewound.
     std::shared_ptr<Sf3Audio> audio = std::make_shared<Sf3Audio>();
     std::shared_ptr<M4Network> net = std::make_shared<M4Network>();   // shared the same way
+    // The host's part of the ROM table (62, 63): the ROMs fitted now, the bank the machine
+    // starts with (read, set), and a ROM put into a slot now. Unset: those answer an error.
+    std::function<std::vector<int>()> fittedRoms;
+    std::function<int()> startBank;
+    std::function<void(int bank)> setStartBank;
+    std::function<void(int slot, const Bytes& rom)> fitRomNow;
+    Bytes romBuffer;                           // 62,14's file, for 62,20
 
     // the WiFi command being written, its answer, its state (&FD4E)
     std::vector<int> wifiIn;
@@ -127,6 +149,7 @@ private:
     void function(int number);
     void text(const std::vector<std::string>& lines);
     void fail(int number, const std::string& why);
+    void romTable(int number);                 // functions 62 and 63
     void wifi();
     void wifiPoll();
     int netStatus(int socket);                 // the M4 sock_info status of SF3 socket 0-3

@@ -171,9 +171,13 @@ struct CrtcType0 : CrtcBehaviour {
         return crtc.raster == (r9Value & 0x1f);
     }
     // "If R9.0==1 (C9 parity switched if R9 is odd) Then ParityC9 = C4.0 xor
-    //  ParityFrame" — an assignment from the new C4, not a toggle.
+    //  ParityFrame"; an assignment from the new C4, not a toggle. It runs with R8 at any
+    // value: the row R8 goes to 3 in ends on its ParityC9. SHAKER CO/H1 (R9=7, R8=3 written
+    // on C4=1) on the real CRTC 0: that row is 5 lines on the odd frame and 4 on the even
+    // one, i.e. ParityC9 = 1 xor ParityFrame there. Taking it only in IVM left the frame
+    // start's ParityFrame in place and swapped them (every line printed WRONG).
     void updateRasterParity(CRTC6845& crtc) const override {
-        if (crtc.displayMode() != 3 || (crtc.registers[9] & 1) == 0) return;
+        if ((crtc.registers[9] & 1) == 0) return;
         crtc.rasterParity = (crtc.vertical & 1) ^ (crtc.interlaceField & 1);
     }
     int dispenSkew(CRTC6845& crtc) const override { return crtc.registers[8] >> 4 & 3; }  // §19.2: DISPEN comb (real 6845)

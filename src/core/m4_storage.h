@@ -87,6 +87,9 @@ public:
     bool syncToHost(std::string* report = nullptr);
     uint32_t totalSectors() const { return total; }
     uint64_t capacityBytes() const { return (uint64_t)clusterCount * clusterBytes; }
+    // The first sector of a file's data on this volume (its clusters are in one run), as
+    // the volume is laid out now. False for a directory, an empty file or no such file.
+    bool fileStartSector(const std::string& realPath, uint32_t& lba);
     std::string lastError;
 
 private:
@@ -99,7 +102,7 @@ private:
     uint32_t fatStart = 0, rootStart = 0, dataStart = 0, total = 0, clusterCount = 0, clusterBytes = 4096;
     std::vector<uint8_t> meta;                                  // sectors [0, dataStart)
     std::unordered_map<uint32_t, std::vector<uint8_t>> clusters;  // cluster -> its bytes
-    struct Known { bool dir = false; uint64_t size = 0; uint64_t hash = 0; std::string realPath; };
+    struct Known { bool dir = false; uint64_t size = 0; uint64_t hash = 0; std::string realPath; uint32_t cluster = 0; };
     std::map<std::string, Known> snapshot;                      // lower-cased path -> what the card held
 
     bool ensureBuilt();

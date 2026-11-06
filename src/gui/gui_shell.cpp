@@ -62,6 +62,7 @@ GuiShell::GuiShell(EmuHost& h) : host(h), debugger(h) {
         { "GFX9000", "win_gfx9000", false, false },
         { "GFX9000 screen", "win_gfx9000screen", false, false },
         { "Assembler", "win_asm", false, false },
+        { "C", "win_c", false, false },
         { "BASIC", "win_basic", false, false },
         { "DSK editor", "win_dsk_editor", false, false },
         { "Cheats", "win_cheats", false, false },
@@ -78,6 +79,8 @@ GuiShell::GuiShell(EmuHost& h) : host(h), debugger(h) {
     };
     assembler = std::make_unique<AssemblerWindow>(host, debugger, browser, saver);
     assembler->showInDisassembly = [this](int a) { showInDisassembly(a); };
+    cWindow = std::make_unique<AssemblerWindow>(host, debugger, browser, saver, AssemblerWindow::Language::C);
+    cWindow->showInDisassembly = [this](int a) { showInDisassembly(a); };
     basicWindow = std::make_unique<BasicWindow>(host, browser, saver);
     dskEditor = std::make_unique<DskEditorWindow>(host, browser, saver);
     cheats = std::make_unique<CheatsWindow>(host, browser, saver);
@@ -117,6 +120,7 @@ void GuiShell::loadSettings(const std::map<std::string, std::string>& ini) {
     str("csl_script", cslScript); str("csl_out", cslOut); str("csl_diskdir", cslDiskDir);
     auto ci = ini.find("csl_crtc"); if (ci != ini.end()) cslCrtc = std::atoi(ci->second.c_str());
     assembler->loadSettings(ini);
+    cWindow->loadSettings(ini);
     basicWindow->loadSettings(ini);
     dev->loadSettings(ini);
     loadRememberedFolders(ini);
@@ -133,6 +137,7 @@ void GuiShell::saveSettings(std::ostream& out) const {
     out << "csl_script=" << cslScript << "\n" << "csl_out=" << cslOut << "\n"
         << "csl_diskdir=" << cslDiskDir << "\n" << "csl_crtc=" << cslCrtc << "\n";
     assembler->saveSettings(out);
+    cWindow->saveSettings(out);
     basicWindow->saveSettings(out);
     dev->saveSettings(out);
     saveRememberedFolders(out);
@@ -252,6 +257,10 @@ void GuiShell::draw(const ShellFrameInfo& info) {
         assembler->draw(&panelOpen("Assembler"));
         if (assembler->focused) toolFocusedNow = true;
     }
+    if (panelOpen("C")) {
+        cWindow->draw(&panelOpen("C"));
+        if (cWindow->focused) toolFocusedNow = true;
+    }
     if (panelOpen("BASIC")) {
         basicWindow->draw(&panelOpen("BASIC"));
         if (basicWindow->focused) toolFocusedNow = true;   // keys go to the editor, not the CPC
@@ -315,7 +324,7 @@ void GuiShell::placeNewlyOpened(unsigned dockspaceId) {
     struct Group { std::vector<const char*> titles; ImGuiDir dir; float ratio; };
     static const Group groups[] = {
         { { "Debugger", "Chips", "Memory", "GFX9000", "Logic analyser", "Profiler" }, ImGuiDir_Right, 0.42f },
-        { { "Assembler", "BASIC", "DSK editor", "CSL scripts", "Printer", "Cheats", "Graphics finder", "CRO editor", "CPC keyboard",
+        { { "Assembler", "C", "BASIC", "DSK editor", "CSL scripts", "Printer", "Cheats", "Graphics finder", "CRO editor", "CPC keyboard",
             "Video settings", "Audio settings", "Input settings", "Expansions", "External debugging" }, ImGuiDir_Down, 0.42f },
         // the media windows: tabs together, below the Machine window (a layout saved before
         // they were windows of their own has only "Media")
@@ -417,8 +426,17 @@ void GuiShell::screenPicture(const ShellFrameInfo& info) {
                 float gw = avail.x, gh = avail.y;
                 if (host.gfxLook.maintainAspect) { gh = std::min(avail.y, avail.x * 0.75f); gw = gh * 4.0f / 3.0f; }
                 const float gx = origin.x + (avail.x - gw) * 0.5f, gy = origin.y + (avail.y - gh) * 0.5f;
+                // one monitor: the CPC's, so its look (CRT effect or filter)
                 video9000Texture = uploadTexture(3, video9000Pixels.data(), vw, vh);
-                dl->AddImage((ImTextureID)(intptr_t)video9000Texture, ImVec2(gx, gy), ImVec2(gx + gw, gy + gh));
+                LookPicture pic;
+                pic.screen = 0;
+                pic.texture = video9000Texture;
+                pic.pixels = video9000Pixels.data();
+                pic.width = vw; pic.height = vh;
+                pic.lines = vh > 400 ? vh / 2 : vh;      // interlaced: two rows a line
+                pic.frame = host.framesRun;
+                pic.colourTube = host.video && host.video->monitorColourTube;
+                drawThroughLook(dl, host.cpcLook, cpcLookState, pic, gx, gy, gw, gh);
             } else {
                 drawGfxMonitor(dl, origin.x, origin.y, avail.x, avail.y);
             }
@@ -881,6 +899,7 @@ void GuiShell::menuFile() {
         if (ImGui::MenuItem("Snapshot (.sna)...")) browser.open("Load snapshot", host.romDir, { ".sna" }, [this](const std::string& p) { host.loadSnapshot(p); });
         ImGui::Separator();
         if (ImGui::MenuItem("Assembler source...")) { panelOpen("Assembler") = true; assembler->requestOpen(); }
+        if (ImGui::MenuItem("C program...")) { panelOpen("C") = true; cWindow->requestOpen(); }
         if (ImGui::MenuItem("BASIC program (text)...")) { panelOpen("BASIC") = true; basicWindow->requestOpen(); }
         ImGui::EndMenu();
     }
@@ -1032,6 +1051,7 @@ void GuiShell::menuTools() {
     ImGui::MenuItem("GFX9000", nullptr, &panelOpen("GFX9000"));
     ImGui::Separator();
     ImGui::MenuItem("Assembler", nullptr, &panelOpen("Assembler"));
+    ImGui::MenuItem("C programs", nullptr, &panelOpen("C"));
     if (ImGui::MenuItem("Assemble", "F9")) { panelOpen("Assembler") = true; assembler->assemble(false); }
     if (ImGui::MenuItem("Assemble and run", "Ctrl+F9")) { panelOpen("Assembler") = true; assembler->assemble(true); }
     ImGui::Separator();
@@ -1053,7 +1073,7 @@ void GuiShell::menuDebug() {
     }
     if (ImGui::MenuItem("Remove all watchpoints", nullptr, false, !debugger.watchpoints.empty())) debugger.watchpoints.clear();
     ImGui::Separator();
-    for (const char* w : { "Debugger", "Chips", "Memory", "Logic analyser", "Profiler", "GFX9000", "Assembler", "BASIC" })
+    for (const char* w : { "Debugger", "Chips", "Memory", "Logic analyser", "Profiler", "GFX9000", "Assembler", "C", "BASIC" })
         ImGui::MenuItem(w, nullptr, &panelOpen(w));
     {
         bool overlay = host.rasterOverlay;
@@ -1093,7 +1113,7 @@ void GuiShell::menuWindow() {
     ImGui::Separator();
     for (const char* w : { "Debugger", "Chips", "Memory", "Logic analyser", "Profiler", "GFX9000", "GFX9000 screen" }) ImGui::MenuItem(w, nullptr, &panelOpen(w));
     ImGui::Separator();
-    for (const char* w : { "Assembler", "BASIC", "DSK editor", "Cheats", "Graphics finder", "CRO editor", "CSL scripts", "Printer" }) ImGui::MenuItem(w, nullptr, &panelOpen(w));
+    for (const char* w : { "Assembler", "C", "BASIC", "DSK editor", "Cheats", "Graphics finder", "CRO editor", "CSL scripts", "Printer" }) ImGui::MenuItem(w, nullptr, &panelOpen(w));
     ImGui::Separator();
     if (ImGui::BeginMenu("Interface size")) {
         for (int pct : { 90, 100, 110, 125, 150, 175, 200 }) {

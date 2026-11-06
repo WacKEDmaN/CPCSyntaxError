@@ -94,6 +94,12 @@ target_link_libraries(cpcse-core PUBLIC capsimage)
 # LambdaSpeak 3's Epson / DECtalk speech is the host's voices (SAPI on Windows).
 find_package(Threads REQUIRED)
 target_link_libraries(cpcse-core PUBLIC Threads::Threads)
+# The host MIDI out (host_midi.cpp): AudioToolbox on macOS; dlopen of libasound on Linux.
+if(APPLE)
+  target_link_libraries(cpcse-core PUBLIC "-framework AudioToolbox" "-framework AudioUnit" "-framework CoreAudio" "-framework CoreFoundation")
+elseif(UNIX)
+  target_link_libraries(cpcse-core PUBLIC ${CMAKE_DL_LIBS})
+endif()
 if(WIN32)
   target_link_libraries(cpcse-core PUBLIC ws2_32 sapi ole32 uuid winmm)   # winmm: the host MIDI out (host_midi)
 endif()
@@ -186,6 +192,10 @@ add_library(rasm STATIC
 target_include_directories(rasm PUBLIC ${RASM_DIR})
 set_source_files_properties(${RASM_DIR}/rasm.c PROPERTIES
   COMPILE_DEFINITIONS "INTEGRATED_ASSEMBLY;RASM_PRODUCTION_WITHOUT_AUTOTEST;exit=rasm_bridge_exit")
+if(MINGW)   # salvador's declarations, which rasm.c hides from _WIN32 (src/gui/rasm_mingw.h)
+  set_source_files_properties(${RASM_DIR}/rasm.c PROPERTIES
+    COMPILE_OPTIONS "-include;${CMAKE_CURRENT_SOURCE_DIR}/src/gui/rasm_mingw.h")
+endif()
 # ...and without link-time optimisation: rasm.c declares salvador_compress and
 # salvador_get_max_compressed_size with other types than salvador's sources define them.
 foreach(t rasm rasm-crunchers rasm-apultra rasm-lzsa rasm-salvador)

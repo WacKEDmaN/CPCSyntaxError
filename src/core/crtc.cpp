@@ -58,6 +58,7 @@ void CRTC6845::reset() {
     scanlineInFrame = 0;
     hsyncCounter = 0; hsync = vsync = vblank = false; hsyncOverflow = false;
     r7Match = false; r4Match = false; r9Match = false;
+    c4BeforeLineStep = 0; vsyncThroughLastLine = true; c4ChangedInVsync = false;
     verticalAdjustActive = false; rasterMatchForced = false; lpenStrobe = false; updateReady = true;
     adjustmentInterlaceExtra = 0; adjustLine = 0; verticalStepForced = false; verticalStepSuppressed = false; adjustStateEngaged = false;
     adjustLengthLatched = registers[5] & 0x1f;
@@ -187,11 +188,27 @@ void CRTC6845::writeRegister(int reg, int value) {
         // C9+1, then the line is considered the last and additional management ends...
         // Whether with R5 or R9, IT IS IMPOSSIBLE TO OVERFLOW C9." On CRTC 1 and 2 the
         // same write overflows C5 and counts all the way round instead (§11.3.1/2).
-        if (behaviour->adjustmentCannotOverflow() && limit <= adjustLine) verticalAdjust = 1;
-        else verticalAdjust = (limit - adjustLine) & 0x1f;
+        // The overflow is one round of the 5-bit C5: 1 to 32 lines, never 0. R5 written
+        // equal to the current C5 left (limit - adjustLine) & 31 == 0, a down-counter that
+        // never reached 0 again; SHAKER CE/A and CP/A on CRTC 2 ("R5=1 / ON 1ST ADD LINE,
+        // R5=0" and "R5=3 / ON 2ND ADD LINE, R5=1") printed #0B20 (712 lines); the real
+        // CRTC 2, AmSpiriT and the test's own "expected" print #0080: 32 lines.
+        // ...and the interlace line (§11.9) that follows the R5 lines is not a C5 line: an
+        // R5 written there leaves it the frame's last. SHAKER CP/A "R5=1/R8=3, R5=0 ON 2ND
+        // LINE AFTER LAST LINE" prints #0004 (C4=0 next) on the real CRTC 2.
+        const bool onInterlaceLine = adjustmentInterlaceExtra != 0 && adjustLine >= (r5Previous & 0x1f);
+        if (onInterlaceLine) { /* the R5 lines are over: nothing to recount */ }
+        else if (behaviour->adjustmentCannotOverflow() && limit <= adjustLine) verticalAdjust = 1;
+        else verticalAdjust = ((limit - adjustLine - 1) & 0x1f) + 1;
     }
-    if (reg == 6 && vertical == registers[6] && behaviour->considersR6WriteImmediately()
-        && !(behaviour->r6FirstLineWriteIsConflict() && vertical == 0 && raster == 0)) {
+    // ...and the first-line conflict needs the new-frame state that §18.3.2 lifts it with
+    // ("returns to false because for a new frame (C4=C9=0)"), which comes from the C4/C9
+    // management at C0=0. Under R0=0 on CRTC 0 "all of the CRTC counters are frozen"
+    // (§13.2.4), so the write is the definitive BORDER. SHAKER BU/E on the real CRTC 0:
+    // R6 <- 0 then 13 inside an R0=0 zone on C4=C9=0, BORDER to the end of the frame.
+    const bool firstLineConflict = behaviour->r6FirstLineWriteIsConflict() && vertical == 0 && raster == 0
+        && !behaviour->blocksRasterAdvance(*this);
+    if (reg == 6 && vertical == registers[6] && behaviour->considersR6WriteImmediately() && !firstLineConflict) {
         vDisplay = false;      // ACCC §18.2.2/§18.2.3; not on CRTC 3/4 (§18.2.4)
     }
     // ACCC §17.4 (p.180): "The condition C0=R1 is considered IMMEDIATELY on a line. It
@@ -433,8 +450,15 @@ void CRTC6845::writeRegister(int reg, int value) {
         // REP0D, i.e. no second VSYNC; switching it to #0D, which C4 only reaches after the
         // VSYNC has ended, expects REP10, i.e. a second one. Clearing the latch here made
         // the first three fire as well.
+        // ...and the SECOND protection (p.168) is lifted only "If R7 is modified and C4 is
+        // different from R7 WHEN C9 GOES BACK TO 0": not by the write itself. SHAKER AI/E
+        // ("CRTC 0 LOST & DEAD VSYNC") on the real CRTC 0: R7=C4=1 written on C0vs=0 blocks
+        // the VSYNC (§16.4.1.1), then OUT R7,16 / OUT R7,1 on C0=17,25 of the same line
+        // prints #5E (no VSYNC) and the VSYNC comes only from C4=2 (#6B). Lifting the
+        // latch here started it at C0=25: #5F, #38. startVsyncIfNeeded lifts it at the row.
+        // CRTC 3/4 have no second protection (hasVsyncReentrancyProtection): unchanged.
         if (vsync) { /* §16.3: the comparison is ignored for the duration */ }
-        else if (vertical != registers[7]) r7Match = false;
+        else if (vertical != registers[7]) { if (!behaviour->hasVsyncReentrancyProtection()) r7Match = false; }
         else if (behaviour->startsVsyncOnR7Write(*this) && !r7Match) startVsyncIfNeeded(true);
     }
     behaviour->onRegisterWritten(*this, reg);
@@ -752,11 +776,43 @@ void CRTC6845::startDelayedVsyncLine() {
     vsyncFullLinePending = false;
     if (vsync) return;
     vsyncCounter = 0; vsync = true; traceFrameVsyncs += 1; dbgCrtcVsyncStarts += 1;
-    vsyncGhost = behaviour->vsyncStartIsGhost(*this);
+    vsyncGhost = behaviour->vsyncStartIsGhost(*this, false);
     if (vsyncGhost) traceGhostStart();
     if (!vsyncGhost) onVsyncStart();
 }
 void CRTC6845::startVsyncIfNeeded(bool liveWrite) {
+    // ACCC §16.3 (p.168), the second protection's release: "If R7 is modified and C4 is
+    // different from R7 when C9 goes back to 0"; the C4 of the row that ends, so the row
+    // that starts can begin a VSYNC at once. SHAKER DR/A on the real CRTC 0 ("BLQ VSYNC"):
+    // R7=0 written on C4=C9=C0=0 blocks it (§16.4.1.1), R7=1 on C0=15, and the VSYNC is on
+    // at C4=1/C9=0/C0=3 (#5F). A VSYNC that ran through the ended line keeps the block
+    // (§16.3's first mechanism; SHAKER DT on CRTC 1, R7 moved on during the VSYNC).
+    if (!liveWrite && r7Match && !vsync && !vsyncThroughLastLine && raster == baseRaster()
+        && behaviour->hasVsyncReentrancyProtection() && c4BeforeLineStep != registers[7]) {
+        r7Match = false;
+    }
+    // ...and "For all CRTC's, if the comparison between C4 and R7 changes during VSYNC, the
+    // second blocking mechanism is overridden... Thus, if R7=0 and R4=1, a VSYNC occurs when
+    // C4=0. If R3h=0 and R9=7, then C4 will change to 1 on the 9th line, and return to 0 on
+    // the 17th line. The CRTC's VSYNC will then start again immediately" (p.168). SHAKER DR/A
+    // ("TST COMP C4/R7 ACTIVE DURING VSYNC FOR DEADLOCK") on the real CRTC 0 reads the VSYNC
+    // on at C0=3F, 00 and 01 there. Taken where the VSYNC ends on a row start; with R4=0, C4
+    // never changes and the VSYNC stays blocked (§16.3's own example).
+    if (!liveWrite) {
+        // Only a C4 step that changes the comparison counts: the first mechanism ignores "the
+        // comparison of C4 with R7 when R7 is modified during VSYNC". SHAKER DT/E1 on the real
+        // CRTC 1 and 2: R7=#0A, then #0C written on the VSYNC's first row; the step #0A -> #0B
+        // leaves C4<>R7 as it was, and no second VSYNC comes as C4 reaches #0C (EXPECTED REP0D).
+        // SHAKER C7/A on the real CRTC 2: R7=30, the step 30 -> 31 changes C4=R7 to C4<>R7, then
+        // R7 <- 0 on the last VSYNC line, and the VSYNC is on again at C4=0 (Y). A C4 step on
+        // the ending boundary is not "during" it.
+        if (!vsyncThroughLastLine) c4ChangedInVsync = false;
+        else if ((vertical == registers[7]) != (c4BeforeLineStep == registers[7]) && vsync) c4ChangedInVsync = true;
+        if (r7Match && !vsync && vsyncThroughLastLine && c4ChangedInVsync
+            && raster == baseRaster() && behaviour->hasVsyncReentrancyProtection()) {
+            r7Match = false;
+        }
+    }
     if (!liveWrite && behaviour->blocksAutoVsync(*this)) {
         if (vertical == registers[7]) traceVsyncRefusal("blocksAutoVsync");
         return;
@@ -842,11 +898,14 @@ void CRTC6845::startVsyncIfNeeded(bool liveWrite) {
             vsync = true; traceFrameVsyncs += 1; dbgCrtcVsyncStarts += 1;
             // ACCC §16.4.3: a GHOST VSYNC counts and blocks, but the pin stays low,
             // so nothing downstream (PPI status, Gate Array, renderer) sees it.
-            vsyncGhost = behaviour->vsyncStartIsGhost(*this);
+            vsyncGhost = behaviour->vsyncStartIsGhost(*this, liveWrite);
             if (vsyncGhost) traceGhostStart();
             if (!vsyncGhost) onVsyncStart();
         }
-    } else if (vertical != registers[7] && !vsync) r7Match = false;
+    } else if (vertical != registers[7] && !vsync
+               && (raster == baseRaster() || !behaviour->hasVsyncReentrancyProtection())) {
+        r7Match = false;                    // §16.3 p.168: "when C9 goes back to 0" (above)
+    }
     // ACCC §16.3's first mechanism again, from the per-line side: "it is not possible to
     // trigger or inhibit a VSYNC during a VSYNC". C4 moving away from R7 while the pin is
     // up must not re-arm the comparison either, or a mid-VSYNC R7 write is re-armed by the
@@ -1133,7 +1192,14 @@ bool CRTC6845::updateVerticalGeneral() {
             // where even that first step does not happen: "If R0 goes to 0 on C0=0 of
             // this line, then C9 REMAINS FIXED AT 0 and C4 can only go to 0 when C9 is
             // managed again (as soon as C0=1)."
-            if (!r0FreezeHiccup && verticalAdjust == 0) raster = (raster + rasterStep()) & 0x1f;
+            // ...and that first step counts C9 only if the ended line's C0 reached 1: the
+            // states are armed "on previous C0=0,1,2", and C9 counting is "subordinated
+            // to another status of 'management C9'" that "would in principle be activated
+            // on C0=1 if C0 succeeded in reaching this value" (p.106-107). SHAKER DR/A
+            // ("R0=0 ON C4=R7 AND R3h=1 >> VSYNC DEADLOCK") writes R0=0 on C0=0 of the
+            // line, 200 frames in a row: on the real CRTC 0 the frame keeps 19968 usec
+            // and the last read is #5F; stepping C9 there made each frame 64 usec short.
+            if (!r0FreezeHiccup && verticalAdjust == 0 && c0ReachedOneThisLine) raster = (raster + rasterStep()) & 0x1f;
             // ACCC §13.2.6 (p.109): "If C9=R9 and C4=R4 then C4=R4+1. When R0>0, C4 is
             // managed by C9/R5." — the freeze arms the additional management too, "and
             // which will remain so when C0 can once again exceed 1. It is then R5 which
@@ -1406,6 +1472,8 @@ void CrtcBehaviour::reloadNextRowAddress(CRTC6845& crtc) const {
 }
 void CRTC6845::updateVertical() {
     bool newFrameStarted = false;
+    c4BeforeLineStep = vertical;            // for §16.3's release (startVsyncIfNeeded)
+    vsyncThroughLastLine = vsync;
     // ACCC §17.4.3 (CRTC 2, R1=0): the C0=R1 evaluation is processed before both the
     // last-line evaluation and the VMA=VMA' transfer. C0 is still R0 here — the wrap
     // to 0 happens in the caller straight after — so it is presented as 0 for the test.
@@ -1420,7 +1488,7 @@ void CRTC6845::updateVertical() {
     // it (ACCC §13.2.7, "the change of address does not take place because C4=1").
     int addressBeforeAdvance = rowAddress & 0x3fff;
     rowAddress = nextRowAddress & 0x3fff;
-    if (vsync && !behaviour->blocksRasterAdvance(*this)) {
+    if (vsync && !behaviour->blocksRasterAdvance(*this) && !behaviour->vsyncCounterHeldByR0Zero(*this)) {
         // ACCC §16.4.1: the VSYNC line counter C3h is one of the counters frozen by
         // the CRTC 0 R0=0 state — "the VSYNC is not deactivated if R3h was worth 1
         // (because C3h can no longer reach R3h)". So it must not tick while frozen.
@@ -1460,9 +1528,11 @@ void CRTC6845::updateVertical() {
     // restore the display. Without this, a single overshoot past R6 blanks the whole
     // following 128-step C4 cycle: Shaker A3 on CRTC 1 loses 36 of its 121 rupture
     // lines exactly that way.
-    // ACCC §15.5.2: on CRTC 2 a HSYNC on that C0=0 skips the restore.
+    // ACCC §15.5.2: on CRTC 2 a HSYNC on that C0=0 skips the restore. Not on a C0=0 that
+    // R0=0 has frozen (§13.2.4): the counters are not managed there, so they do not
+    // "return" to zero (SHAKER BU/E, see the R6 write).
     if (!newFrameStarted && vertical == 0 && raster == baseRaster()
-        && behaviour->restoresDisplayOnRunawayWrap()
+        && behaviour->restoresDisplayOnRunawayWrap() && !behaviour->blocksRasterAdvance(*this)
         && !(behaviour->skipsFrameDisplayRestoreDuringHsync() && hsyncReachesLineStart())) {
         vDisplay = behaviour->initialVerticalDisplay(*this);
     }
@@ -1544,7 +1614,7 @@ void CRTC6845::tickCharacter() {
         vsyncC0LeavePending = false;
         if (!vsync) {
             vsyncCounter = 0; vsync = true; traceFrameVsyncs += 1; dbgCrtcVsyncStarts += 1;
-            vsyncGhost = behaviour->vsyncStartIsGhost(*this);
+            vsyncGhost = behaviour->vsyncStartIsGhost(*this, false);
             if (vsyncGhost) traceGhostStart();
             if (!vsyncGhost) onVsyncStart();
         }
@@ -1552,7 +1622,7 @@ void CRTC6845::tickCharacter() {
     if (vsyncHalfLinePending && horizontal == (registers[0] >> 1)) {
         vsyncHalfLinePending = false;
         vsyncCounter = 0; vsync = true; traceFrameVsyncs += 1; dbgCrtcVsyncStarts += 1;
-        vsyncGhost = behaviour->vsyncStartIsGhost(*this);
+        vsyncGhost = behaviour->vsyncStartIsGhost(*this, false);
         if (vsyncGhost) traceGhostStart();
         if (!vsyncGhost) onVsyncStart();
     }
@@ -1576,6 +1646,7 @@ void CRTC6845::tickCharacter() {
         if (registers[0] != 0) horizontalTotalMatch = false;
         updateVertical();
         horizontal = 0;
+        c0ReachedOneThisLine = false;
         hsyncOnLineStart = hsyncReachesLineStart();
         // ACCC §17.5: a fresh line's R1=0 deadline opens HERE, as C0 wraps -- before any
         // write can land on character 0. Reset at the top of the tick that begins with
@@ -1589,6 +1660,7 @@ void CRTC6845::tickCharacter() {
         horizontalOverflowed = false;
     } else {
         horizontal = (horizontal + 1) & 0xff;
+        if (horizontal == 1) c0ReachedOneThisLine = true;
         // ACCC §17.1 (p.176): "if C0 returns to 0 because it reached 255 having
         // overflowed, this does not authorize the display."
         horizontalOverflowed = horizontal == 0;

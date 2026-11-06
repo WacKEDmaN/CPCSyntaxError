@@ -123,6 +123,12 @@ struct CrtcType3 : CrtcBehaviour {
         // ACCC §12.5: "The modification of register 4 is considered immediately at the
         // end of the line." R4 written with the value of C4 ends the frame here.
         if (crtc.vertical == (crtc.registers[4] & 0x7f)) { crtc.verticalMatchForced = true; return; }
+        // ...and a later R4 that differs takes that back: it is the value at the end of the
+        // line that counts. SHAKER AU/A test 8 on the real CRTC 3 and 4 ("UPD R4=0 WHEN C4=1
+        // & C9=7", the writes landing on C0=0..6 of the new frame's first line, then R4=36 on
+        // C0=42): the frame runs on (VSYNC at C4=28 read as 01). The kept match ended it
+        // after row 0, a row early: 00.
+        crtc.verticalMatchForced = false;
         // ACCC §12.5, the CRTC 3 exception: "When R4 is set to 0 on C0=0 while C4
         // should have gone to 0, and in the case where the I/O is active on the CRTC
         // in parallel with 'Rom Select', the CRTC updates R4 before C4 goes to 0. It

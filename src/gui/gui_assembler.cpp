@@ -16,6 +16,7 @@
 #include "gui_debugger.h"
 #include "gui_widgets.h"
 #include "rasm_bridge.h"
+#include "core/dsk_edit.h"
 #include "core/emulator.h"
 #include "core/gate_array.h"
 #include "core/memory.h"
@@ -31,7 +32,6 @@ struct s_rasm_info {
     int run, start;
     unsigned char* emuram; int lenram;
     unsigned char* emurom; int lenrom;
-    int* breakpoint; int nbbreakpoint;         // the source's breakpoints (rasm.h, CPCSyntaxError)
 };
 }
 
@@ -58,9 +58,29 @@ static const char* SAMPLE_SOURCE =
 
 static const char* SYNTAX_NAMES[] = { "RASM", "Maxam (-m)", "AS80 (-ass)", "UZ80 (-uz)", "DAMS (-dams)", "Pasmo (-pasmo)", "WinAPE" };
 
-AssemblerWindow::AssemblerWindow(EmuHost& h, Debugger& d, FileBrowser& b, SaveDialog& s)
-    : host(h), debugger(d), browser(b), saver(s) {
+// One RASM run at a time, from any window: RASM keeps global state, and the folder it reads
+// INCLUDE files from is the process's working folder, set for the run.
+static std::mutex asmLock;
+
+static const char* C_SAMPLE_SOURCE =
+    "// A C program for the CPC. F9 builds it with SDCC (C settings... names its folder),\n"
+    "// Ctrl+F9 builds and runs it. Save it first: SDCC reads its files from the disc.\n"
+    "\n"
+    "void main(void) {\n"
+    "    unsigned char* screen = (unsigned char*)0xC000;\n"
+    "    unsigned int i;\n"
+    "    for (i = 0; i < 80; i++) screen[i] = 0xFF;   // a line at the top of the screen\n"
+    "    while (1) {}\n"
+    "}\n";
+
+AssemblerWindow::AssemblerWindow(EmuHost& h, Debugger& d, FileBrowser& b, SaveDialog& s, Language language)
+    : host(h), debugger(d), browser(b), saver(s), lang(language) {
     newFile();
+}
+
+int AssemblerWindow::mainOfProgram(int program) const {
+    for (int i = 0; i < (int)tabs.size(); i++) if (tabs[(size_t)i].program == program && tabs[(size_t)i].isMain) return i;
+    return -1;
 }
 
 std::string AssemblerWindow::displayName() const {
@@ -92,7 +112,7 @@ static std::string canonical(const std::string& p) {
 // A new program: the sample, in a tab of its own after the others.
 void AssemblerWindow::newFile() {
     Tab t;
-    t.source = SAMPLE_SOURCE;
+    t.source = lang == Language::C ? C_SAMPLE_SOURCE : SAMPLE_SOURCE;
     t.lineCount = countLines(t.source);
     t.program = nextProgram++;
     t.uid = nextUid++;
@@ -370,6 +390,7 @@ int AssemblerWindow::asmLineAddress(int line, std::string& why) {
     const fs::path previous = fs::current_path(ec);
     if (!path.empty()) fs::current_path(fs::path(path).parent_path(), ec);
     unsigned char* out = nullptr; int outLength = 0; s_rasm_info* info = nullptr; int fatal = 0;
+    std::lock_guard<std::mutex> rasmHeld(asmLock);
     const int ret = rasm_bridge_assemble(text.data(), (int)text.size(), syntax, &out, &outLength, &info, &fatal);
     fs::current_path(previous, ec);
     int address = -1;
@@ -588,71 +609,98 @@ void AssemblerWindow::refreshErrorLines() {
 
 void AssemblerWindow::requestOpen() {
     std::string dir = path.empty() ? host.romDir : std::filesystem::path(path).parent_path().string();
-    browser.open("Open source", dir, { ".asm", ".z80", ".s", ".txt", ".inc", ".mac", ".c", ".h" },
-                 [this](const std::string& p) { openFile(p); });
+    if (lang == Language::C)
+        browser.open("Open a C program", dir, { ".c", ".h", ".s" }, [this](const std::string& p) { openFile(p); });
+    else
+        browser.open("Open assembler source", dir, { ".asm", ".z80", ".s", ".txt", ".inc", ".mac" },
+                     [this](const std::string& p) { openFile(p); });
 }
 
 void AssemblerWindow::requestSave(bool saveAs) {
     if (!saveAs && !path.empty()) { saveFile(path); return; }
     std::string dir = path.empty() ? host.romDir : std::filesystem::path(path).parent_path().string();
-    std::string name = path.empty() ? std::string("program.asm") : std::filesystem::path(path).filename().string();
+    std::string name = path.empty() ? std::string(lang == Language::C ? "main.c" : "program.asm") : std::filesystem::path(path).filename().string();
     saver.open("Save source", dir, name, [this](const std::string& p) { saveFile(p); });
 }
 
+// Each window keeps its own files and colours: asm_* for the Assembler, c_* for C (the C
+// window falls back to the Assembler's colours until it has its own). The C tools keep their
+// asm_* names from when one window did both.
+static bool isCFile(const std::string& path) {
+    std::string ext = std::filesystem::path(path).extension().string();
+    for (char& c : ext) c = (char)std::tolower((unsigned char)c);
+    return ext == ".c" || ext == ".h";
+}
+
 void AssemblerWindow::loadSettings(const std::map<std::string, std::string>& ini) {
-    auto it = ini.find("asm_syntax");
+    auto find = [&](const std::string& k) { return ini.find(k); };
+    auto it = find("asm_syntax");
     if (it != ini.end()) syntax = std::clamp(std::atoi(it->second.c_str()), 0, (int)IM_ARRAYSIZE(SYNTAX_NAMES) - 1);
-    it = ini.find("asm_brk");
+    it = find("asm_brk");
     if (it != ini.end()) brkLabels = std::atoi(it->second.c_str()) != 0;
-    it = ini.find("asm_highlight");
+    it = find(key("highlight"));
+    if (it == ini.end()) it = find("asm_highlight");
     if (it != ini.end()) highlight = std::atoi(it->second.c_str()) != 0;
     for (size_t k = 0; k < colours.size(); k++) {
-        it = ini.find(std::string("asm_colour_") + asmTokenKey((AsmToken)k));
+        it = find(key("colour_") + asmTokenKey((AsmToken)k));
+        if (it == ini.end()) it = find(std::string("asm_colour_") + asmTokenKey((AsmToken)k));
         if (it == ini.end() || it->second.size() != 6) continue;
         char* end = nullptr;
         const unsigned long v = std::strtoul(it->second.c_str(), &end, 16);
         if (end && !*end) colours[k] = (uint32_t)v & 0xffffff;
     }
-    if ((it = ini.find("asm_sdcc")) != ini.end()) ctools.sdccFolder = it->second;
-    if ((it = ini.find("asm_cpctelera")) != ini.end()) ctools.cpcteleraFolder = it->second;
-    if ((it = ini.find("asm_cflags")) != ini.end()) ctools.extraFlags = it->second;
-    if ((it = ini.find("asm_ccompiler")) != ini.end()) ctools.compiler = it->second == "z88dk" ? "z88dk" : "sdcc";
-    if ((it = ini.find("asm_z88dk")) != ini.end()) ctools.z88dkFolder = it->second;
-    if ((it = ini.find("asm_z88dk_sccz80")) != ini.end()) ctools.z88dkSccz80 = std::atoi(it->second.c_str()) != 0;
-    if ((it = ini.find("asm_codeloc")) != ini.end()) ctools.codeLoc = (int)std::strtol(it->second.c_str(), nullptr, 0) & 0xffff;
-    // the other programs first, then the one that was on show
+    if ((it = find("asm_sdcc")) != ini.end()) ctools.sdccFolder = it->second;
+    if ((it = find("asm_cpctelera")) != ini.end()) ctools.cpcteleraFolder = it->second;
+    if ((it = find("asm_cflags")) != ini.end()) ctools.extraFlags = it->second;
+    if ((it = find("asm_ccompiler")) != ini.end()) ctools.compiler = it->second == "z88dk" ? "z88dk" : "sdcc";
+    if ((it = find("asm_z88dk")) != ini.end()) ctools.z88dkFolder = it->second;
+    if ((it = find("asm_z88dk_sccz80")) != ini.end()) ctools.z88dkSccz80 = std::atoi(it->second.c_str()) != 0;
+    if ((it = find("asm_codeloc")) != ini.end()) ctools.codeLoc = (int)std::strtol(it->second.c_str(), nullptr, 0) & 0xffff;
+    // The programs: the other ones first, then the one that was on show. A settings file
+    // from before the two windows has its C programs under asm_file: they go to C.
+    std::vector<std::string> files;
+    auto take = [&](const std::string& base) {
+        for (int n = 1; n <= 64; n++) {
+            auto f = find(base + "." + std::to_string(n));
+            if (f == ini.end()) break;
+            files.push_back(f->second);
+        }
+        auto f = find(base);
+        if (f != ini.end()) files.push_back(f->second);
+    };
+    if (lang == Language::C) take("c_file");
+    take("asm_file");
     std::error_code ec;
-    for (int n = 1; n <= 64; n++) {
-        it = ini.find("asm_file." + std::to_string(n));
-        if (it == ini.end()) break;
-        if (!it->second.empty() && std::filesystem::exists(it->second, ec)) openFile(it->second);
-    }
-    it = ini.find("asm_file");
-    if (it != ini.end() && !it->second.empty() && std::filesystem::exists(it->second, ec)) openFile(it->second);
+    for (const std::string& f : files)
+        if (!f.empty() && isCFile(f) == (lang == Language::C) && std::filesystem::exists(f, ec)) openFile(f);
 }
 
 void AssemblerWindow::saveSettings(std::ostream& out) const {
-    out << "asm_syntax=" << syntax << "\n";
-    out << "asm_brk=" << (brkLabels ? 1 : 0) << "\n";
-    // every program's main file (each brings its links); asm_file is the one on show
-    out << "asm_file=" << tabPath(mainTab()) << "\n";
+    if (lang == Language::Asm) {
+        out << "asm_syntax=" << syntax << "\n";
+        out << "asm_brk=" << (brkLabels ? 1 : 0) << "\n";
+    }
+    // every program's main file (each brings its links); <key>file is the one on show
+    out << key("file") << "=" << tabPath(mainTab()) << "\n";
     int n = 0;
     for (int i = 0; i < (int)tabs.size(); i++)
-        if (tabs[(size_t)i].isMain && i != mainTab() && !tabPath(i).empty()) out << "asm_file." << ++n << "=" << tabPath(i) << "\n";
-    out << "asm_highlight=" << (highlight ? 1 : 0) << "\n";
-    out << "asm_sdcc=" << ctools.sdccFolder << "\n";
-    out << "asm_cpctelera=" << ctools.cpcteleraFolder << "\n";
-    out << "asm_cflags=" << ctools.extraFlags << "\n";
-    out << "asm_ccompiler=" << ctools.compiler << "\n";
-    out << "asm_z88dk=" << ctools.z88dkFolder << "\n";
-    out << "asm_z88dk_sccz80=" << (ctools.z88dkSccz80 ? 1 : 0) << "\n";
-    char loc[16];
-    std::snprintf(loc, sizeof loc, "0x%04X", ctools.codeLoc & 0xffff);
-    out << "asm_codeloc=" << loc << "\n";
+        if (tabs[(size_t)i].isMain && i != mainTab() && !tabPath(i).empty()) out << key("file") << "." << ++n << "=" << tabPath(i) << "\n";
+    out << key("highlight") << "=" << (highlight ? 1 : 0) << "\n";
+    if (lang == Language::C) {
+        out << "asm_sdcc=" << ctools.sdccFolder << "\n";
+        out << "asm_cpctelera=" << ctools.cpcteleraFolder << "\n";
+        out << "asm_cflags=" << ctools.extraFlags << "\n";
+        out << "asm_ccompiler=" << ctools.compiler << "\n";
+        out << "asm_z88dk=" << ctools.z88dkFolder << "\n";
+        out << "asm_z88dk_sccz80=" << (ctools.z88dkSccz80 ? 1 : 0) << "\n";
+        char loc[16];
+        std::snprintf(loc, sizeof loc, "0x%04X", ctools.codeLoc & 0xffff);
+        out << "asm_codeloc=" << loc << "\n";
+    }
     for (size_t k = 0; k < colours.size(); k++) {
         char hex[8];
         std::snprintf(hex, sizeof hex, "%06X", (unsigned)colours[k] & 0xffffff);
-        out << "asm_colour_" << asmTokenKey((AsmToken)k) << "=" << hex << "\n";
+        out << key("colour_") << asmTokenKey((AsmToken)k) << "=" << hex << "\n";
     }
 }
 
@@ -767,6 +815,7 @@ bool AssemblerWindow::cSyntax() const {
 }
 
 bool AssemblerWindow::cMode() const {
+    if (lang == Language::C) return true;
     const std::string mainPath = tabPath(mainTab());
     std::string ext = std::filesystem::path(mainPath).extension().string();
     for (char& c : ext) c = (char)std::tolower((unsigned char)c);
@@ -795,7 +844,7 @@ void AssemblerWindow::startCBuild(bool thenRun, bool assetsOnly) {
     if (!notSaved.empty()) { Message m; m.text = "Could not save before building:" + notSaved; messages.push_back(m); }
     const std::string mainPath = tabPath(mainTab());
     std::error_code ec;
-    const std::string cache = (fs::temp_directory_path(ec) / "cpcse-cbuild").u8string();
+    const std::string cache = defaultCacheFolder();
     auto run = std::make_shared<CRun>();
     run->thenRun = thenRun;
     run->assetsOnly = assetsOnly;
@@ -980,8 +1029,8 @@ void AssemblerWindow::cSettingsPopup() {
 
 void AssemblerWindow::assemble(bool thenRun) {
     namespace fs = std::filesystem;
-    std::error_code ec;
     if (cMode()) { startCBuild(thenRun); return; }
+    if (asmRun) return;                                 // one assembly at a time
     // rasm reads the linked files from disk: an edited tab is saved first, so it assembles
     // what is on show. The main file goes in from its tab, saved or not.
     storeActive();
@@ -996,49 +1045,91 @@ void AssemblerWindow::assemble(bool thenRun) {
             if ((int)i == activeTab) modified = false;
         } else notSaved += " " + fs::path(t.path).filename().string();
     }
-    const std::string mainSource = tabSource(mainTab());
-    const std::string mainPath = tabPath(mainTab());
-    // INCLUDE / INCBIN / SAVE resolve against the main file's own folder, as from the command line.
-    fs::path previous = fs::current_path(ec);
-    if (!mainPath.empty()) fs::current_path(fs::path(mainPath).parent_path(), ec);
-
-    unsigned char* out = nullptr; int outLength = 0; s_rasm_info* info = nullptr; int fatal = 0;
-    int ret = rasm_bridge_assemble(mainSource.data(), (int)mainSource.size(), syntax, &out, &outLength, &info, &fatal);
-    fs::current_path(previous, ec);
-    openLinked(mainSource, mainPath, 0);                // a file linked since it was opened
-
-    messages.clear(); errorLines.clear(); symbols.clear(); sourceBreakpoints.clear();
-    lastOk = false; lastStart = -1; lastRun = -1; lastLength = 0;
-    if (info) {
-        for (int i = 0; i < info->nberror; i++) {
-            Message m;
-            m.line = info->error[i].line;
-            m.file = info->error[i].filename ? info->error[i].filename : "";
-            m.text = cleanMessage(info->error[i].msg, info->error[i].lenmsg);
-            // The editor's text is fed to rasm as a stream; its "file" is the current
-            // directory. Anything else came from an INCLUDE.
-            m.inEditor = m.file.empty() || m.file == "<internal>" || m.file.back() == '/' || m.file.back() == '\\';
-            m.tab = m.inEditor ? mainTab() : tabFor(m.file, program);
-            messages.push_back(m);
+    auto run = std::make_shared<AsmRun>();
+    run->thenRun = thenRun;
+    run->program = program;
+    run->source = tabSource(mainTab());
+    run->path = tabPath(mainTab());
+    run->syntax = syntax;
+    run->notSaved = notSaved;
+    AsmRun* r = run.get();
+    run->worker = std::thread([r]() {
+        unsigned char* out = nullptr; int outLength = 0; s_rasm_info* info = nullptr; int fatal = 0;
+        int ret;
+        {
+            std::lock_guard<std::mutex> rasmHeld(asmLock);
+            // INCLUDE / INCBIN / SAVE resolve against the main file's own folder, as from the command line.
+            std::error_code ec;
+            const fs::path previous = fs::current_path(ec);
+            if (!r->path.empty()) fs::current_path(fs::path(r->path).parent_path(), ec);
+            ret =rasm_bridge_assemble(r->source.data(), (int)r->source.size(), r->syntax, &out, &outLength, &info, &fatal);
+            fs::current_path(previous, ec);
         }
-        for (int i = 0; i < info->nbsymbol; i++)
-            if (info->symbol[i].name) symbols.emplace_back(info->symbol[i].name, info->symbol[i].v);
-        sourceBreakpoints.assign(info->breakpoint, info->breakpoint + std::max(0, info->nbbreakpoint));
-        lastRun = info->run;
-        lastStart = info->start;
+        std::lock_guard<std::mutex> g(r->lock);
+        r->ret = ret;
+        r->fatal = fatal;
+        if (out && outLength > 0) r->out.assign(out, out + outLength);
+        if (info) {
+            for (int i = 0; i < info->nberror; i++) {
+                AsmRun::Error e;
+                e.line = info->error[i].line;
+                e.file = info->error[i].filename ? info->error[i].filename : "";
+                e.text = cleanMessage(info->error[i].msg, info->error[i].lenmsg);
+                r->errors.push_back(e);
+            }
+            for (int i = 0; i < info->nbsymbol; i++)
+                if (info->symbol[i].name) r->symbols.emplace_back(info->symbol[i].name, info->symbol[i].v);
+            r->run = info->run;
+            r->start = info->start;
+        }
+        rasm_bridge_free(out, info);
+        r->done = true;
+    });
+    asmRun = run;
+    lastOk = false;
+    summary = "Assembling...";
+}
+
+// The assembly's result, taken in on the UI thread: messages on their tabs, the bytes into
+// the machine, the symbols and BRK labels to the debugger, and the run when asked.
+void AssemblerWindow::finishAsm() {
+    if (!asmRun) return;
+    if (asmRun->worker.joinable()) asmRun->worker.join();
+    const std::shared_ptr<AsmRun> res = asmRun;
+    asmRun.reset();
+    const bool thenRun = res->thenRun;
+    const int program = res->program;
+    const int main = mainOfProgram(program);
+    if (main >= 0 && main == mainTab()) openLinked(res->source, res->path, 0);   // a file linked since it was opened
+
+    messages.clear(); errorLines.clear(); symbols.clear();
+    lastOk = false; lastStart = res->start; lastRun = res->run; lastLength = 0;
+    for (const AsmRun::Error& e : res->errors) {
+        Message m;
+        m.line = e.line;
+        m.file = e.file;
+        m.text = e.text;
+        // The editor's text is fed to rasm as a stream; its "file" is the current
+        // directory. Anything else came from an INCLUDE.
+        m.inEditor = m.file.empty() || m.file == "<internal>" || m.file.back() == '/' || m.file.back() == '\\';
+        m.tab = m.inEditor ? mainOfProgram(program) : tabFor(m.file, program);
+        messages.push_back(m);
     }
-    if (fatal) {
-        Message m; m.text = "rasm stopped (fatal error " + std::to_string(fatal) + ")"; messages.push_back(m);
+    symbols = res->symbols;
+    if (res->fatal) {
+        Message m; m.text = "rasm stopped (fatal error " + std::to_string(res->fatal) + ")"; messages.push_back(m);
     }
-    if (!notSaved.empty()) { Message m; m.text = "Could not save before assembling:" + notSaved; messages.push_back(m); }
+    if (!res->notSaved.empty()) { Message m; m.text = "Could not save before assembling:" + res->notSaved; messages.push_back(m); }
     refreshErrorLines();
+    const int outLength = (int)res->out.size();
     lastLength = outLength;
 
-    if (ret == 0 && !fatal) {
+    if (res->ret == 0 && !res->fatal) {
         lastOk = true;
-        char b[160];
-        if (outLength > 0 && host.booted() && host.emu && host.emu->memory) {
-            for (int i = 0; i < outLength; i++) host.emu->memory->write((lastStart + i) & 0xffff, out[i]);
+        char b[200];
+        const bool machine = host.booted() && host.emu && host.emu->memory;
+        if (outLength > 0 && machine) {
+            for (int i = 0; i < outLength; i++) host.emu->memory->write((lastStart + i) & 0xffff, res->out[(size_t)i]);
             host.timelineEdited();
             std::snprintf(b, sizeof(b), "Assembled %d bytes, loaded at &%04X-&%04X", outLength,
                           lastStart & 0xffff, (lastStart + outLength - 1) & 0xffff);
@@ -1052,7 +1143,6 @@ void AssemblerWindow::assemble(bool thenRun) {
         setCLines({});                              // an assembled program has no C lines
         symbolSizes.clear();
         debugger.clearAssemblerBreakpoints();
-        for (int address : sourceBreakpoints) debugger.addBreakpoint(address, "", true);
         if (brkLabels) {
             for (const auto& s : symbols) {
                 std::string u = s.first;
@@ -1064,13 +1154,13 @@ void AssemblerWindow::assemble(bool thenRun) {
         }
         programStarted = false;
         lastBytes.clear();
-        if (thenRun && outLength > 0 && host.booted()) {
+        if (thenRun && lastLength > 0 && host.booted()) {
             int entry = lastRun >= 0 ? lastRun : lastStart;
             programStarted = true;
-            pageForRun(lastStart, outLength);
+            pageForRun(lastStart, lastLength);
             debugger.setPc(entry);
             debugger.run();
-            std::snprintf(b, sizeof(b), "  -- running from &%04X", entry & 0xffff);
+            std::snprintf(b, sizeof(b), ": running from &%04X", entry & 0xffff);
             summary += b;
         }
     } else {
@@ -1078,7 +1168,6 @@ void AssemblerWindow::assemble(bool thenRun) {
         for (const auto& m : messages) if (!m.text.empty()) errors++;
         summary = "Assembly failed: " + std::to_string(errors) + " message" + (errors == 1 ? "" : "s");
     }
-    rasm_bridge_free(out, info);
 }
 
 int AssemblerWindow::editorCallback(ImGuiInputTextCallbackData* data) {
@@ -1104,7 +1193,7 @@ int AssemblerWindow::editorCallback(ImGuiInputTextCallbackData* data) {
 void AssemblerWindow::draw(bool* open) {
     focused = false;
     ImGui::SetNextWindowSize(ImVec2(640, 480), ImGuiCond_FirstUseEver);
-    if (!ImGui::Begin("Assembler", open)) { ImGui::End(); return; }
+    if (!ImGui::Begin(title(), open)) { ImGui::End(); return; }
     ImGui::PushTextWrapPos(0.0f);             // text wraps at the window's edge
     focused = ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows);
     ImGuiIO& io = ImGui::GetIO();
@@ -1113,20 +1202,25 @@ void AssemblerWindow::draw(bool* open) {
         if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_S, false)) requestSave(io.KeyShift);
         if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_O, false)) requestOpen();
         if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_F10, false)) runToCursor();
-        else if (!debugger.sourceLines.empty()) {
+        else if (lang == Language::C && !debugger.sourceLines.empty()) {
             if (ImGui::IsKeyPressed(ImGuiKey_F10, false)) debugger.stepLine(true);
             if (ImGui::IsKeyPressed(ImGuiKey_F11, false)) { if (io.KeyShift) debugger.stepOut(); else debugger.stepLine(false); }
         }
     }
-    followStoppedLine();
+    if (lang == Language::C) followStoppedLine();   // the C lines are the C window's
 
     if (cRun) {
         bool done;
         { std::lock_guard<std::mutex> g(cRun->lock); done = cRun->done; }
         if (done) finishCBuild();
     }
+    if (asmRun) {
+        bool done;
+        { std::lock_guard<std::mutex> g(asmRun->lock); done = asmRun->done; }
+        if (done) finishAsm();
+    }
     const bool c = cMode();
-    const bool building = cRun != nullptr;
+    const bool building = this->building();
 
     // ---- toolbar
     if (ImGui::Button("New")) newFile();
@@ -1166,10 +1260,9 @@ void AssemblerWindow::draw(bool* open) {
         after().field(130, "##syntax");
         ImGui::Combo("##syntax", &syntax, SYNTAX_NAMES, IM_ARRAYSIZE(SYNTAX_NAMES));
         if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("rasm's compatibility switches. WinAPE: & is hex, Maxam's expressions, and WinAPE's own\n"
-                              "directives (BYTE, TEXT, WORD, RMEM, DEFL, END, BRK as RST &30, RUN address,breakpoint,\n"
-                              "macro parameters by name). WRITE / WRITE DIRECT / CLOSE are passed over: the code goes\n"
-                              "into the machine as always. CHECKSUM and memory() are not supported.");
+            ImGui::SetTooltip("rasm's compatibility switches. WinAPE: & is hex and Maxam's expressions (-m, no\n"
+                              "ampersand). The WinAPE directives rasm knows itself (BRK, LIST, NOLIST, LET, CHARSET,\n"
+                              "RELOCATE_START...) work in every mode.");
         after().checkbox("BRK labels", &brkLabels);
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("Labels named BRK..., @BRK... or ....BRK become breakpoints (rasm -eb)");
     }

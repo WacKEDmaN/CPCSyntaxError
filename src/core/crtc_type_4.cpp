@@ -28,10 +28,6 @@ struct CrtcType4 : CrtcType3 {
     // ASIC is not affected by this exception."
     bool hasRomSelectR4Exception() const override { return false; }
 
-    // The R0=0 VSYNC wait was measured on the 6128 Plus (40489, SHAKER AI). On this chip
-    // SHAKER AI/A's photograph is already matched without it, and with it it was not.
-    bool vsyncWaitsForC0LeavingZero() const override { return false; }
-
     // ACCC §9.3.4.1 (p.54): "On CRTC's 0, 1 and 2, the GATE ARRAY switches the mode
     // update to the 6th pixel mode 2 (i.e. the 3rd pixel mode 1, the 2nd pixel mode
     // 0). On the CRTC 4, the GATE ARRAY switches the mode change to the 4th pixel

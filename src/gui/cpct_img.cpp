@@ -2,6 +2,7 @@
 #include "cpct_img.h"
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <cmath>
 #include <cstdio>
@@ -66,16 +67,30 @@ bool convertImage(const ImgConvert& job, std::string& why, std::vector<std::stri
     if (job.mode < 0 || job.mode > 2) { why = "mode must be 0, 1 or 2"; return false; }
     const int perByte = job.mode == 0 ? 2 : job.mode == 1 ? 4 : 8;
     const int maxColours = job.mode == 0 ? 16 : job.mode == 1 ? 4 : 2;
-    if (job.firmwarePalette.empty() || (int)job.firmwarePalette.size() > maxColours + 1) { why = "the palette has too many colours for the mode"; return false; }
-    for (int fw : job.firmwarePalette) if (fw < 0 || fw > 26) { why = "firmware colour " + std::to_string(fw) + " is not 0-26"; return false; }
+    // The palette's colours: the firmware ones at img2cpc's RGB, or -rgbp's own. img2cpc's
+    // UpdateMaxEntries: the mode's colours (+1 with a mask), or 16 for hardware sprites.
+    std::vector<std::array<uint8_t, 3>> paletteRgb;
+    if (!job.rgbPalette.empty()) {
+        for (uint32_t v : job.rgbPalette) {
+            if (v > 0xFFFFFF) { why = "RGB colour " + std::to_string(v) + " is not 0x000000-0xFFFFFF"; return false; }
+            paletteRgb.push_back({ (uint8_t)(v >> 16), (uint8_t)(v >> 8), (uint8_t)v });
+        }
+    } else {
+        for (int fw : job.firmwarePalette) {
+            if (fw < 0 || fw > 26) { why = "firmware colour " + std::to_string(fw) + " is not 0-26"; return false; }
+            paletteRgb.push_back({ FW_RGB[fw][0], FW_RGB[fw][1], FW_RGB[fw][2] });
+        }
+    }
+    const int maxEntries = job.hardwareSprites ? 16 : maxColours + 1;
+    if (paletteRgb.empty() || (int)paletteRgb.size() > maxEntries) { why = "the palette has too many colours for the mode"; return false; }
 
     // the nearest palette entry (img2cpc's TPalette::getNearestIndex and Color::Distance)
     auto nearest = [&](const uint8_t* p) {
         int best = -1;
         double bestDist = 1e300;
-        for (size_t i = 0; i < job.firmwarePalette.size(); i++) {
+        for (size_t i = 0; i < paletteRgb.size(); i++) {
             // the palette's colours are opaque (A 255), so "both transparent" never applies
-            const uint8_t* c = FW_RGB[job.firmwarePalette[i]];
+            const uint8_t* c = paletteRgb[i].data();
             const int da = (int)p[3] - 255, dr = (int)p[0] - c[0], dg = (int)p[1] - c[1], db = (int)p[2] - c[2];
             const double d = std::sqrt((double)(da * da + dr * dr + dg * dg + db * db));
             if (d < bestDist) { bestDist = d; best = (int)i; }
@@ -85,7 +100,8 @@ bool convertImage(const ImgConvert& job, std::string& why, std::vector<std::stri
     const uint8_t transparent = (uint8_t)job.transparentIndex;    // as img2cpc: -1 becomes 255
     const uint8_t maskAll = (uint8_t)(maxColours - 1);
 
-    const int tw = job.tileW > 0 ? job.tileW : iw, th = job.tileH > 0 ? job.tileH : ih;
+    // -sh: img2cpc cuts 16x16 whatever the tile size given (extractConversionOptions)
+    const int tw = job.hardwareSprites ? 16 : job.tileW > 0 ? job.tileW : iw, th = job.hardwareSprites ? 16 : job.tileH > 0 ? job.tileH : ih;
     const int tilesX = (iw + tw - 1) / tw, tilesY = (ih + th - 1) / th, total = tilesX * tilesY;
     const int digits = (int)std::log10((double)total) + 1;
     std::string stem = fs::u8path(job.image).filename().u8string();
@@ -124,7 +140,28 @@ bool convertImage(const ImgConvert& job, std::string& why, std::vector<std::stri
                 t.data.push_back(pack(colours));
                 t.mask.push_back(pack(masks));
             };
-            if (job.screen) {
+            if (job.hardwareSprites) {
+                // img2cpc 1.04a fillTileHardSprite: 16x16, one byte a pixel, its pen 0-15; pen 0
+                // for a fully transparent pixel, for the transparent index, and outside the image;
+                // -z mirrors the odd rows. No mask data (NoMaskData).
+                t.width = t.height = t.widthBytes = 16;
+                for (int y = 0; y < 16; y++) {
+                    const bool flip = job.zigZag && (y & 1);
+                    for (int x = 0; x < 16; x++) {
+                        const int sx = flip ? 15 - x : x;
+                        uint8_t pen = 0;
+                        if (sx < w && y < h) {
+                            const uint8_t* p = &rgba[((size_t)(py + y) * iw + (px + sx)) * 4];
+                            if (p[3] != 0) {
+                                const int idx = nearest(p);
+                                pen = (job.transparentIndex >= 0 && idx == job.transparentIndex) ? 0 : (uint8_t)(idx & 0x0F);
+                            }
+                        }
+                        t.data.push_back(pen);
+                        t.mask.push_back(0);
+                    }
+                }
+            } else if (job.screen) {
                 // eight 2K blocks, one a pixel row of each character line (img2cpc fillTileSCR)
                 const int lines = (int)order.size();
                 const int chars = h / lines + (h % lines ? 1 : 0);
@@ -157,11 +194,27 @@ bool convertImage(const ImgConvert& job, std::string& why, std::vector<std::stri
         }
     }
 
-    const bool masks = job.transparentIndex >= 0;
+    const bool masks = job.transparentIndex >= 0 && !job.hardwareSprites;
     const std::string paletteId = base.empty() ? "palette" : base + "_palette";
     const std::string tilesetId = base.empty() ? "tileset" : base + "_tileset";
     std::vector<int> hwPalette;
-    if (job.hardwarePalette) for (int fw : job.firmwarePalette) hwPalette.push_back(firmwareToHardware(fw));
+    if (job.hardwarePalette && job.rgbPalette.empty()) for (int fw : job.firmwarePalette) hwPalette.push_back(firmwareToHardware(fw));
+    if (job.hardwarePalette && !job.rgbPalette.empty()) {
+        // img2cpc GetPaletteAsHW: the nearest hardware colour, lowest value first on a tie
+        for (const auto& c : paletteRgb) {
+            int bestHw = -1;
+            double bestDist = 1e300;
+            for (int hw = 0x40; hw <= 0x5F; hw++) {
+                const int fw = (int)(std::find(HW, HW + 27, hw) - HW);
+                const int alias = hw == 0x50 ? 1 : hw == 0x48 ? 7 : hw == 0x41 ? 13 : hw == 0x51 ? 19 : hw == 0x49 ? 25 : fw;
+                if (alias >= 27) continue;
+                const int dr = c[0] - FW_RGB[alias][0], dg = c[1] - FW_RGB[alias][1], db = c[2] - FW_RGB[alias][2];
+                const double d = std::sqrt((double)(dr * dr + dg * dg + db * db));
+                if (d < bestDist) { bestDist = d; bestHw = hw; }
+            }
+            hwPalette.push_back(bestHw);
+        }
+    }
     const std::string created = "// Data created with Img2CPC - (c) Retroworks - 2007-2017\n";
     // cpct_img2tileset's renames, done on the text before it is written
     auto renamed = [&](std::string s) {

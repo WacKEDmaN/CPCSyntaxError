@@ -2,4 +2,4 @@
 // release's tag without its "v": change it with each release.
 #pragma once
 
-#define CPCSE_VERSION "0.12.0"
+#define CPCSE_VERSION "0.13.0"

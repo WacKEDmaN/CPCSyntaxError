@@ -28,16 +28,21 @@ struct SaveDialog;
 
 class AssemblerWindow {
 public:
-    AssemblerWindow(EmuHost& host, Debugger& debugger, FileBrowser& browser, SaveDialog& saver);
+    // Two windows: the Assembler (RASM) and C (SDCC / z88dk), each with its own programs.
+    enum class Language { Asm, C };
+    AssemblerWindow(EmuHost& host, Debugger& debugger, FileBrowser& browser, SaveDialog& saver, Language language = Language::Asm);
+    Language language() const { return lang; }
+    const char* title() const { return lang == Language::C ? "C" : "Assembler"; }
 
     void draw(bool* open);
     bool focused = false;                       // the window (or its editor) has focus this frame
     std::function<void(int address)> showInDisassembly;
 
     void assemble(bool thenRun);                // F9 / Ctrl+F9
-    // A C build runs on a thread and draw() takes its result in; this waits for it instead
-    // (the checks, which draw no frames).
-    void waitForBuild() { if (cRun) finishCBuild(); }
+    // An assembly and a C build each run on a thread, and draw() takes the result in; this
+    // waits for them instead (the checks, which draw no frames).
+    void waitForBuild() { if (asmRun) finishAsm(); if (cRun) finishCBuild(); }
+    bool building() const { return asmRun != nullptr || cRun != nullptr; }
     void setCToolchain(const CToolchain& t) { ctools = t; }
     const CToolchain& cToolchain() const { return ctools; }
     const std::string& buildLog() const { return cLog; }
@@ -72,6 +77,33 @@ private:
     Debugger& debugger;
     FileBrowser& browser;
     SaveDialog& saver;
+    Language lang;
+    std::string key(const char* name) const { return std::string(lang == Language::C ? "c_" : "asm_") + name; }
+
+    // RASM on a thread: what it needs is copied in, what it gives is copied out, and draw()
+    // (or waitForBuild) takes it in on the UI thread. One assembly at a time (asmLock in
+    // gui_assembler.cpp: RASM has global state, and the folder it reads from is the process's).
+    struct AsmRun {
+        std::thread worker;
+        std::mutex lock;
+        bool done = false, thenRun = false;
+        int program = 0;                        // the program assembled: its messages go to its tabs
+        std::string source, path, notSaved;
+        int syntax = 0;
+        int ret = -1, fatal = 0, run = -1, start = -1;
+        std::vector<uint8_t> out;
+        struct Error { int line = 0; std::string file, text; };
+        std::vector<Error> errors;
+        std::vector<std::pair<std::string, int>> symbols;
+        // file empty: memory, through the RAM configuration; else WinAPE's WRITE / SAVE file,
+        // on drive A's disc (direct) or in the source's folder
+        ~AsmRun() { if (worker.joinable()) worker.join(); }
+    };
+    std::shared_ptr<AsmRun> asmRun;
+    void finishAsm();
+    // A WinAPE WRITE / SAVE file: on drive A's disc (direct, with an AMSDOS header) or beside
+    // the source. "" or why not.
+    int mainOfProgram(int program) const;       // its main file's tab, -1 if it was closed
 
     // The open files, one tab each. Several PROGRAMS can be open: each has its main file (the
     // one assembled or built) and the files it links (INCLUDE / READ, found and opened by
@@ -120,7 +152,6 @@ private:
     std::vector<Message> messages;
     std::set<int> errorLines;
     std::vector<std::pair<std::string, int>> symbols;
-    std::vector<int> sourceBreakpoints;          // the breakpoints the source sets (BREAKPOINT, WinAPE's BRK and RUN)
     std::string summary = "Nothing assembled yet.";
     bool lastOk = false;
     char symbolFilter[64] = {0};

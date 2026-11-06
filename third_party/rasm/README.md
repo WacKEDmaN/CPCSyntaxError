@@ -31,6 +31,7 @@ There is a cool French and English documentation, you should read it ;)
 
 ## Debug output
 
+- relevant error messages
 - web socket support
 - symbols import, or export in files, CPC snapshot
 - breakpoint export in CPC snapshot or files
@@ -59,6 +60,8 @@ There is a cool French and English documentation, you should read it ;)
 ## Newschool is beautiful
 
 - native FLOAT24 declaration support (which can be use with float24 library in RASM sources asset directory)
+- integration in any software with all embedded possibilities
+- AI/LLM easy usage with optimised markdown documentation of RASM in https://github.com/EdouardBERGE/rasm/tree/master/resources/md
 
 ## Quality
 
@@ -110,6 +113,9 @@ NEW! RASM on your CPC with developper studio! https://norecess464.weebly.com/new
 
 ![RASM on a CPC](https://github.com/EdouardBERGE/rasm/blob/master/Norecess.png)
 
+RASM embedded in CPCSyntaxError emulator https://github.com/WacKEDmaN/CPCSyntaxError
+
+![RASM embedded in CPCSyntaxError emulator](https://github.com/EdouardBERGE/rasm/blob/master/assets/cpcSyntax.png)
 
 BTW there is many other assemblers you could try:
 

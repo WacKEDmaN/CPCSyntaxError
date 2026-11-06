@@ -79,6 +79,14 @@ struct CrtcType1 : CrtcBehaviour {
     // lines. (This replaced a register-sniffing special case that returned 15 for
     // R4=62/R9=4/R5=0, which is not in the compendium.)
     int vsyncWidth(CRTC6845&) const override { return 16; }
+    // MEASURED on SHAKER AI/A ("LOST VSYNC ON R0=0 (EVENT)", R7=30, R0=0 written on C0=0 of
+    // C4=29/C9=7's line, R0>2 again ~18 usec later): the real CRTC 1 reads VSYNC ON
+    // throughout (#5F), the real CRTC 2 OFF. Our counter took the 1 usec lines of R0=0 as
+    // VSYNC lines (C4 and C9 do count them here, ACCC §13 p.111) and ended it in 16 usec.
+    // So the VSYNC line counter steps only on lines whose C0 moved, as ACCC p.170 states for
+    // CRTC 0 ("frozen" on R0=0, "incremented when C0 returns from 1 to 0" on R0=1); the
+    // R0=1 groups read ON here and on the photo either way. No ACCC chapter states it.
+    bool vsyncCounterHeldByR0Zero(CRTC6845& crtc) const override { return (crtc.registers[0] & 0xff) == 0; }
     bool cancelsHsyncOnZeroWidth() const override { return true; }   // ACCC §14.5.2
     // ACCC §15.3.4: this chip alone gets its "invisible" end of HSYNC in before the
     // restart, so the GATE ARRAY re-zeroes H06 and emits a SECOND monitor sync.
@@ -94,6 +102,12 @@ struct CrtcType1 : CrtcBehaviour {
     // 1/16 on the same page. It makes the screen shift 7 pixels per R3l step here,
     // which is the paragraph's "instead of the expected 8 pixels".
     int hsyncFallPhase16(int) const override { return 2; }
+    // The later edge (§14.4: 2/16-3/16 against 1/16-2/16 on CRTC 0 and 2) also catches an
+    // instruction that leaves 1 idle T-state: SHAKER DI/B4 (ADD HL,DE) on the real CRTC 1.
+    // And with none: with 1 here, SHAKER module E ("R5 STORIES 2") took about 2.5 s longer
+    // per page on CRTC 1 and lost its last screen (03FD) to the script's key times; with 0
+    // (the rule this chip always had) every page comes on time. No photo decides idle 0.
+    int interruptMissMinIdleT() const override { return 0; }
     // ACCC §9.3.4.3 (p.58): the zone lasts 32 Pixel-M2 from the 6th, so it ends on the
     // 6th of the character after the HSYNC. That is also the Pixel-M2 the GATE ARRAY
     // changes mode on, which is why "on CRTC 1, the reactivation of the display

@@ -100,7 +100,7 @@ struct CrtcType2 : CrtcBehaviour {
     bool considersVsyncAtAnyRaster() const override { return true; }   // ACCC §16.4.3
     bool usesLastFrameLineLatch() const override { return true; }     // ACCC §10.3.3
     bool hasSeparateAdjustCounter() const override { return true; }   // ACCC §11.1
-    bool vsyncStartIsGhost(CRTC6845& crtc) const override {
+    bool vsyncStartIsGhost(CRTC6845& crtc, bool written) const override {
         // ACCC §16.4.3: "If the VSYNC condition occurs during a HSYNC from C0=R2 to
         // C0=R2+R3 (1 usec longer than the visual size of the HSYNC) then the CRTC
         // generates a GHOST VSYNC" -- the pulse, and the character C3 ends it on. Counted
@@ -116,6 +116,11 @@ struct CrtcType2 : CrtcBehaviour {
         // SHAKER BR/D-F's VSYNC, and the monitor carried the half-line slip into BI/A-H,
         // where the photo and AmSpiriT show every line of the HSYNC box black.)
         if ((crtc.registers[2] & 0xff) == 0) return false;
+        // The extra microsecond is the line-start case only. An R7 write that lands on
+        // the character the pulse ended on is a VSYNC on the pin: SHAKER AI/D on the real
+        // CRTC 2 (R2=46, R3=14, R7=C4 written on C0=3 onwards of C9=0 and 1, the PPI read
+        // 5 usec later) reads off for writes on C0=46..59 and on from C0=60, on both lines.
+        if (written) return crtc.hsync;
         return crtc.hsync || crtc.hsyncDroppedThisCharacter;
     }
     // ACCC §13.4 (p.114): on the MC6845 "the R8 SKEW DISP function does not exist".
@@ -230,7 +235,12 @@ struct CrtcType2 : CrtcBehaviour {
         //  satisfies the Last Line condition occurs during a HSYNC (the Last Line
         //  state remains false)."
         if (!crtc.lastLineManagement || crtc.hsync) return;
-        if (atLastLine(crtc)) crtc.lastFrameLine = true;
+        // ...and, as at C0==0, not when "the previous line was itself a last line" (p.96):
+        // "a line that remains continuously a 'Last Line' cannot be recognized indefinitely
+        // as such" (p.97). SHAKER CRETURN/A on the real CRTC 2 ("R3=15 ON C4=R4/C9=R9 (7),
+        // THEN R9=0/7 TO FORCE LAST LINE EVAL"): the R9 pulse does not end the frame, C4
+        // overflows and the next VSYNC is missed (5E,5E); ours ended it (5E,5F).
+        if (atLastLine(crtc) && !crtc.lastPreviousLine) crtc.lastFrameLine = true;
     }
     void onCharacterPosition(CRTC6845& crtc, int c0) const override {
         // "During a HSYNC, a test is performed on position C0=R2+R3-1, in order to
@@ -246,8 +256,12 @@ struct CrtcType2 : CrtcBehaviour {
         // on the last character of the HSYNC. Thus, if a 'Last Line' condition has
         // already been activated before the suppression of the HSYNC, this state can
         // remain active indefinitely."
+        // A HSYNC that runs past R0 has its last character on the next line: "C0=R2+R3-1,
+        // within the limit of R0, as a HSYNC can overflow onto the following line" counts
+        // C0 round R0, it does not stop at it. (R2=50, R3=15, R0=63: C0=0 of the next line,
+        // where that line's own C4/C9 are compared; SHAKER CRETURN/A group 7, above.)
         int hsyncEnd = (crtc.registers[2] + (crtc.registers[3] & 0x0f) - 1) & 0xff;
-        if (hsyncEnd > crtc.registers[0]) hsyncEnd = crtc.registers[0];
+        while (hsyncEnd > crtc.registers[0]) hsyncEnd -= crtc.registers[0] + 1;
         if (crtc.registers[2] <= crtc.registers[0] && c0 == hsyncEnd) {
             bool last = atLastLine(crtc);
             crtc.lastPreviousLine = last;

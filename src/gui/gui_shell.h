@@ -116,7 +116,8 @@ private:
     FileBrowser browser;
     SaveDialog saver;
     Debugger debugger;
-    std::unique_ptr<AssemblerWindow> assembler;
+    std::unique_ptr<AssemblerWindow> assembler;   // RASM
+    std::unique_ptr<AssemblerWindow> cWindow;     // C programs (SDCC, z88dk)
     std::unique_ptr<BasicWindow> basicWindow;
     std::unique_ptr<DskEditorWindow> dskEditor;
     std::unique_ptr<CheatsWindow> cheats;

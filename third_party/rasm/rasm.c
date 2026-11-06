@@ -226,9 +226,7 @@ void assign(BLOCK **ptr, BLOCK *chain);
 //BLOCK *zx0_optimize(unsigned char *input_data, int input_size, int skip, int offset_limit);
 //unsigned char *zx0_compress(BLOCK *optimal, unsigned char *input_data, int input_size, int skip, int backwards_mode, int invert_mode, int *output_size, int *delta);
 
-/* CPCSyntaxError: MinGW defines _WIN32 too, but it needs these declarations. Without them, GCC 13
-   assumes an int result (wrong for size_t) and GCC 14 and later stop with an error. */
-#if !defined(_WIN32) || defined(__MINGW32__)
+#ifndef _WIN32
 size_t salvador_compress(const unsigned char *pInputData, unsigned char *pOutBuffer, const size_t nInputSize, const size_t nMaxOutBufferSize,
    const unsigned int nFlags, const size_t nMaxOffset, const size_t nDictionarySize, void(*progress)(long long nOriginalSize, long long nCompressedSize), void *pStats);
 size_t salvador_get_max_compressed_size(const size_t nInputSize);
@@ -363,7 +361,6 @@ struct s_compute_core_data {
 	/* evaluator v3 may be recursive */
 	char *varbuffer;
 	//int maxivar;
-	int varbuffersize;   /* CPCSyntaxError: its size (VarBufferFits grows it) */
 	struct s_compute_element *tokenstack;
 	int maxtokenstack;
 	struct s_compute_element *operatorstack;
@@ -424,8 +421,7 @@ enum e_expression {
 	E_EXPRESSION_RUN,    /* delayed RUN value */
 	E_EXPRESSION_ZXRUN,  /* delayed RUN value for ZX snapshot */
 	E_EXPRESSION_ZXSTACK,/* delayed STACK value for ZX snapshot */
-	E_EXPRESSION_BRS,    /* delayed shifting for BIT, RES, SET */
-	E_EXPRESSION_RUNBRK  /* CPCSyntaxError: WinAPE's RUN address,breakpoint: the breakpoint */
+	E_EXPRESSION_BRS     /* delayed shifting for BIT, RES, SET */
 };
 
 struct s_expression {
@@ -727,8 +723,9 @@ enum e_edsk_action {
 	E_EDSK_ACTION_PUTFILE,
 	E_EDSK_ACTION_GETFILE,
 	E_EDSK_ACTION_UPGRADE,
-	E_EDSK_ACTION_MERGE,
+	E_EDSK_ACTION_CAT,
 	/* deferred */
+	E_EDSK_ACTION_MERGE,
 	E_EDSK_ACTION_DELFILE,
 	E_EDSK_ACTION_COPYFILE,
 	E_EDSK_ACTION_SAVEFILE,
@@ -1241,7 +1238,7 @@ struct s_assenv {
 	int codeadrwrapwarned;             // avoids spamming one warning per byte when codeadr wraps past 0xFFFF in an EXTENDED bank, reset by __ORG
 	struct s_orgzone *orgzone;         // each ORG is monitored to avoid conflicts
 	int io,mo;
-	int deadend,insideORG;
+	int deadend,insideORG,orgDone;
 	struct s_memory_localisation *memory_localisation;
 	int imemory_localisation,mmemory_localisation;
 	/* Struct */
@@ -1260,7 +1257,6 @@ struct s_assenv {
 	float rough;
 	struct s_compute_core_data *computectx,ctx1,ctx2;
 	char *fastVarBuffer;
-	int fastVarBufferSize;   /* CPCSyntaxError: its size, for ExpressionFastTranslate to grow it */
 	struct s_crcstring_tree stringtree;
 	/* label */
 	struct s_label *label;
@@ -1349,7 +1345,6 @@ struct s_assenv {
 	unsigned char dmatab[256];
 	unsigned char psgfine[256];
 	int noampersand;
-	int winape;          /* CPCSyntaxError: WinAPE's directives (see WinapeRenameWord) */
 	/* output */
 	char *outputfilename;
 	int export_sym,export_local,export_multisym;
@@ -1955,22 +1950,19 @@ char *TxtReplace(char *in_str, const char *in_substr, const char *out_substr, co
 				m1=out_str+sl;
 				m2=m1+dif;
 				sl+=dif;
-				/* CPCSyntaxError: the tail after the match (its 0 included) moves dif on; the
-				 * loop stopped at str_look+l1-dif, before the match or the buffer's start
-				 * when the new text was longer than l1 */
-				while (m1>=str_look+l1)
+				while (m1!=str_look+l1-dif)
 				{
 					*m2=*m1;
 					m1--;m2--;
 				}
 				/* then we copy the replace string (can't be NULL in this case) */
 				memcpy(str_look,out_substr,l2);
-
+				
 				/* look for next replace */
 				if (!recurse)
 					str_look=strstr(str_look+l2,in_substr);
 				else
-					str_look=strstr(out_str,in_substr);   /* CPCSyntaxError: in_str may be freed by the realloc */
+					str_look=strstr(in_str,in_substr);
 					
 				/* to prevent from naughty overlap */
 				cpt--;
@@ -3189,11 +3181,6 @@ void _internal_RasmFreeInfoStruct(struct s_rasm_info *debug)
 			MemFree(debug->symbol[i].name);
 		}
 		MemFree(debug->symbol);
-	}
-	if (debug->breakpoint) {
-		MemFree(debug->breakpoint);
-		debug->breakpoint=NULL;
-		debug->nbbreakpoint=0;
 	}
 	memset(debug,0,sizeof(struct s_rasm_info));
 }
@@ -4545,7 +4532,7 @@ char *TranslateTag(struct s_assenv *ae, char *varbuffer, int *touched, const int
 	while ((starttag=strchr(varbuffer+1,'{'))!=NULL) {
 		if ((endtag=strchr(starttag,'}'))==NULL) {
 			MakeError(ae,ae->idx,GetCurrentFile(ae),GetExpLine(ae,0),"invalid tag in string [%s]\n",varbuffer);
-			return varbuffer;   /* CPCSyntaxError: never NULL: 22 callers use it unchecked; the error is made */
+			return TxtStrDup("invalid tag");
 		}
 		/* allow inception */
 		tagcount=1;
@@ -4556,7 +4543,7 @@ char *TranslateTag(struct s_assenv *ae, char *varbuffer, int *touched, const int
 		}
 		if (tagcount) {
 			MakeError(ae,ae->idx,GetCurrentFile(ae),GetExpLine(ae,0),"invalid brackets combination in string [%s]\n",varbuffer);
-			return varbuffer;   /* CPCSyntaxError: never NULL (see above) */
+			return TxtStrDup("invalid tag");
 		} else {
 			endtag=tagcheck-1;
 		}
@@ -6193,16 +6180,6 @@ char *getOperatorStr(const int operator) {
 	return opStr;
 }
 
-/* CPCSyntaxError: the context's varbuffer holds `need` bytes. It was sized from the longest
- * source line, but a macro or a {tag} makes longer text; the callers reach it through the
- * context each time, never by a pointer kept, so it may move. */
-static void VarBufferFits(struct s_compute_core_data *ctx, int need) {
-	if (need>ctx->varbuffersize) {
-		ctx->varbuffer=MemRealloc(ctx->varbuffer,need);
-		ctx->varbuffersize=need;
-	}
-}
-
 double ComputeExpressionCore(struct s_assenv *ae,char *original_zeexpression,const int ptr, const int didx)
 {
 	#undef FUNC
@@ -6269,7 +6246,6 @@ double ComputeExpressionCore(struct s_assenv *ae,char *original_zeexpression,con
 	if (!zeexpression[0]) {
 		return 0;
 	}
-	VarBufferFits(ae->computectx,(int)strlen(zeexpression)+256);
 	/* double hack if the first value is negative */
 	if (zeexpression[0]=='-') {
 		if (ae->AutomateExpressionValidCharFirst[(int)zeexpression[1]&0xFF]) {
@@ -6769,7 +6745,6 @@ double ComputeExpressionCore(struct s_assenv *ae,char *original_zeexpression,con
 	printf("après curly [%s]\n",minivarbuffer);
 #endif
 						ae->computectx=&ae->ctx1;
-						VarBufferFits(ae->computectx,minusptr+(int)strlen(minivarbuffer)+256);
 						strcpy(ae->computectx->varbuffer+minusptr,minivarbuffer);
 						//if (!touched) {
 						//	strcpy(ae->computectx->varbuffer+minusptr,minivarbuffer);
@@ -7657,21 +7632,21 @@ printf("=== STACK EXECUTION ===\n");
 					paccu--;
 					break;
 				case E_COMPUTE_OPERATION_SHL:if (paccu>1) accu[paccu-2]=((int)accu[paccu-2])<<((int)accu[paccu-1]);
-								if (paccu>1 && (((int)accu[paccu-1])>31 || ((int)accu[paccu-1])<-31)) {   /* CPCSyntaxError: only with both operands */
+								if (((int)accu[paccu-1])>31 || ((int)accu[paccu-1])<-31) {
 									if (!ae->nowarning) {
 										rasm_printf(ae,KWARNING"[%s:%d] Warning - shifting %d is architecture dependant, result forced to ZERO\n",GetExpFile(ae,didx),GetExpLine(ae,didx),(int)accu[paccu-1]);
 										if (ae->erronwarn) MaxError(ae);
 									}
-									accu[paccu-2]=0;
+									if (paccu>1) accu[paccu-2]=0;
 								}
 								paccu--;break;
 				case E_COMPUTE_OPERATION_SHR:if (paccu>1) accu[paccu-2]=((int)accu[paccu-2])>>((int)accu[paccu-1]);
-								if (paccu>1 && (((int)accu[paccu-1])>31 || ((int)accu[paccu-1])<-31)) {   /* CPCSyntaxError: only with both operands */
+								if (((int)accu[paccu-1])>31 || ((int)accu[paccu-1])<-31) {
 									if (!ae->nowarning) {
 										rasm_printf(ae,KWARNING"[%s:%d] Warning - shifting %d is architecture dependant, result forced to ZERO\n",GetExpFile(ae,didx),GetExpLine(ae,didx),(int)accu[paccu-1]);
 										if (ae->erronwarn) MaxError(ae);
 									}
-									accu[paccu-2]=0;
+									if (paccu>1) accu[paccu-2]=0;
 								}
 								paccu--;break;
 				case E_COMPUTE_OPERATION_BAND:if (paccu>1) accu[paccu-2]=((int)accu[paccu-2]&&(int)accu[paccu-1])&workinterval;paccu--;break;
@@ -7982,7 +7957,7 @@ printf("=== STACK EXECUTION ===\n");
 								  break;
 				default:MakeError(ae,GetExpIdx(ae,didx),GetCurrentFile(ae),GetExpLine(ae,didx),"invalid computing state! (%d)\n",computestack[i].operator);paccu=0;
 			}
-			if (paccu<=0) {   /* CPCSyntaxError: an operator with too few operands takes it below 0 */
+			if (!paccu) {
 				if (zeexpression[0]=='&') {
 					MakeError(ae,GetExpIdx(ae,didx),GetExpFile(ae,didx),GetExpLine(ae,didx),"Missing operand for calculation [%s] Did you use & for an hexadecimal value?\n",TradExpression(zeexpression));
 				} else {
@@ -8136,21 +8111,21 @@ printf("=== STACK EXECUTION ===\n");
 					paccu--;
 					break;
 				case E_COMPUTE_OPERATION_SHL:if (paccu>1) accu[paccu-2]=((int)floor(accu[paccu-2]+0.5))<<((int)floor(accu[paccu-1]+0.5));
-								if (paccu>1 && (((int)accu[paccu-1])>31 || ((int)accu[paccu-1])<-31)) {   /* CPCSyntaxError: only with both operands */
+								if (((int)accu[paccu-1])>31 || ((int)accu[paccu-1])<-31) {
 									if (!ae->nowarning) {
 										rasm_printf(ae,KWARNING"[%s:%d] Warning - shifting %d is architecture dependant, result forced to ZERO\n",GetExpFile(ae,didx),GetExpLine(ae,didx),(int)accu[paccu-1]);
 										if (ae->erronwarn) MaxError(ae);
 									}
-									accu[paccu-2]=0;
+									if (paccu>1) accu[paccu-2]=0;
 								}
 								paccu--;break;
 				case E_COMPUTE_OPERATION_SHR:if (paccu>1) accu[paccu-2]=((int)floor(accu[paccu-2]+0.5))>>((int)floor(accu[paccu-1]+0.5));
-								if (paccu>1 && (((int)accu[paccu-1])>31 || ((int)accu[paccu-1])<-31)) {   /* CPCSyntaxError: only with both operands */
+								if (((int)accu[paccu-1])>31 || ((int)accu[paccu-1])<-31) {
 									if (!ae->nowarning) {
 										rasm_printf(ae,KWARNING"[%s:%d] Warning - shifting %d is architecture dependant, result forced to ZERO\n",GetExpFile(ae,didx),GetExpLine(ae,didx),(int)accu[paccu-1]);
 										if (ae->erronwarn) MaxError(ae);
 									}
-									accu[paccu-2]=0;
+									if (paccu>1) accu[paccu-2]=0;
 								}
 								paccu--;break;
 				case E_COMPUTE_OPERATION_BAND:if (paccu>1) accu[paccu-2]=((int)floor(accu[paccu-2]+0.5))&&((int)floor(accu[paccu-1]+0.5));paccu--;break;
@@ -8463,7 +8438,7 @@ printf("=== STACK EXECUTION ===\n");
 								  break;
 				default:MakeError(ae,GetExpIdx(ae,didx),GetCurrentFile(ae),GetExpLine(ae,didx),"invalid computing state! (%d)\n",computestack[i].operator);paccu=0;
 			}
-			if (paccu<=0) {   /* CPCSyntaxError: an operator with too few operands takes it below 0 */
+			if (!paccu) {
 				if (zeexpression[0]=='&') {
 					MakeError(ae,GetExpIdx(ae,didx),GetExpFile(ae,didx),GetExpLine(ae,didx),"Missing operand for calculation [%s] Did you use & for an hexadecimal value?\n",TradExpression(zeexpression));
 				} else {
@@ -8573,12 +8548,6 @@ printf("MakeAlias (2) EXPR=[%s EQU %s]\n",expr,ptr_exp2);
 #endif
 			} else {
 				curalias.alias=TxtStrDup(expr);
-			}
-			/* CPCSyntaxError: a tag TranslateTag refuses (a { never closed: "y{ equ 1") gave
-			 * NULL, read just below */
-			if (!curalias.alias) {
-				MakeError(ae,ae->idx,GetCurrentFile(ae),GetExpLine(ae,0),"invalid {tag} in alias name [%s]\n",expr);
-				return 0;
 			}
 
 			/* handle module prefix */
@@ -8835,16 +8804,6 @@ void ExpressionFastTranslate(struct s_assenv *ae, char **ptr_expr, const int ful
 	int recurse=-1,recursecount=0;
 
 	//StateMachineResizeBuffer(&varbuffer,128,&maxivar);
-	/* CPCSyntaxError: the buffer was sized from the longest source line; an expression made
-	 * later (a macro, a tag) can be longer, and a source of empty lines gave 0 bytes. It
-	 * grows to hold this expression (a name in it is never longer than the expression). */
-	{
-		int need=(int)strlen(*ptr_expr)+256;
-		if (need>ae->fastVarBufferSize) {
-			ae->fastVarBuffer=MemRealloc(ae->fastVarBuffer,need);
-			ae->fastVarBufferSize=need;
-		}
-	}
 	varbuffer=ae->fastVarBuffer;
 	expr=*ptr_expr;
 
@@ -9440,7 +9399,6 @@ void PushExpression(struct s_assenv *ae,const int iw,const enum e_expression zet
 			case E_EXPRESSION_RSTC:curexp.ptr=ae->codeadr;ae->outputadr++;ae->codeadr++;ae->external_mapping_size=0;break;
 			case E_EXPRESSION_IM:  curexp.ptr=ae->codeadr;ae->outputadr++;ae->codeadr+=2;ae->external_mapping_size=0;break;
 			case E_EXPRESSION_RUN:
-			case E_EXPRESSION_RUNBRK:
 			case E_EXPRESSION_ZXRUN:
 			case E_EXPRESSION_ZXSTACK:ae->external_mapping_size=0;break;
 			case E_EXPRESSION_BRS:curexp.ptr=ae->codeadr;ae->external_mapping_size=0;break; // minimum syndical
@@ -9510,7 +9468,6 @@ void PushExpression(struct s_assenv *ae,const int iw,const enum e_expression zet
 			case E_EXPRESSION_RSTC:
 			case E_EXPRESSION_IM:ae->outputadr++;ae->codeadr++;break;
 			case E_EXPRESSION_RUN:break;
-			case E_EXPRESSION_RUNBRK:break;
 			case E_EXPRESSION_ZXRUN:break;
 			case E_EXPRESSION_ZXSTACK:break;
 			case E_EXPRESSION_BRS:break;
@@ -10486,13 +10443,6 @@ void PopAllExpression(struct s_assenv *ae, const int crunched_zone)
 				ae->snapshot.registers.LPC=r&0xFF;
 				ae->snapshot.registers.HPC=(r>>8)&0xFF;
 				break;			
-			case E_EXPRESSION_RUNBRK:
-				{
-					struct s_breakpoint breakpoint={0};
-					breakpoint.address=r&0xFFFF;
-					ObjectArrayAddDynamicValueConcat((void **)&ae->breakpoint,&ae->ibreakpoint,&ae->maxbreakpoint,&breakpoint,sizeof(struct s_breakpoint));
-				}
-				break;
 			case E_EXPRESSION_ZXRUN:
 				if (r<0 || r>65535) {
 					if (!ae->nowarning) {
@@ -10613,11 +10563,6 @@ void PushLabel(struct s_assenv *ae)
 					i++;
 					if (ae->wl[ae->idx].w[i]=='}') tagcount--;
 				} while (tagcount && ae->wl[ae->idx].w[i]);
-				if (tagcount) {
-					/* CPCSyntaxError: a { never closed was read on, past the label's end */
-					MakeError(ae,ae->idx,GetCurrentFile(ae),ae->wl[ae->idx].l,"missing } in label declaration\n");
-					return;
-				}
 				continue;
 			}
 			if (!ae->AutomateValidLabel[(int)ae->wl[ae->idx].w[i]&0xFF]) {
@@ -15971,6 +15916,72 @@ void __edsk_putfile(struct s_assenv *ae, struct s_edsk_action *action) {
 	MemFree(filedata);
 }
 
+void __edsk_cat(struct s_assenv *ae, struct s_edsk_action *action) {
+	struct s_edsk_global_struct *edsk=NULL;
+	int side,sidedest,sizetoread=0x1234567;
+	int i,curtrack,s,j,k,extended=0;
+	char *edskfilename;
+
+	edskfilename=action->filename;
+	sidedest=__edsk_get_side_from_name(edskfilename);
+
+	if (action->nbparam<2 || action->nbparam>3) {
+		MakeError(ae,ae->idx,GetCurrentFile(ae),ae->wl[ae->idx].l,"Usage is : EDSK CAT,'edskfilename:side'[,EXTENDED]\n");
+		return;
+	}
+
+	// no tag ?
+	if (!ae->wl[action->iw+1].t && !ae->wl[action->iw+2].t) {
+		if (strcmp(ae->wl[action->iw+3].w,"EXTENDED")==0) extended=1;
+	}
+
+	// create DSK if it does not exists
+	if (!FileExists(edskfilename)) {
+		edsk=edsktool_NewEDSK("DATA",sidedest+1);
+	} else {
+		edsk=edsktool_EDSK_load(ae,edskfilename);
+		if (!edsk) {
+			MakeError(ae,0,NULL,0,"Error loading edsk [%s]\n",edskfilename);
+			return;
+		}
+	}
+	amsdos_build_entries(ae,edsk, sidedest);
+
+	if (extended) {
+		printf("  fileName  | U |protected|hidden|onDisk|size\n");
+		printf("---------------------------------------------\n");
+		for (i=0;i<64;i++) {
+			if (edsk->floppy_entries[i].filename[0]) {
+				if (edsk->floppy_entries[i].isdisplayable) {
+					printf("%s|#%02X|%s|%s|%s|%3dK\n",
+						edsk->floppy_entries[i].filename,
+						edsk->floppy_entries[i].user,
+						edsk->floppy_entries[i].isprotected?"protected":"         ",
+						edsk->floppy_entries[i].ishidden?"hidden":"      ",
+						edsk->floppy_entries[i].isondisk?"onDisk":"      ",
+						edsk->floppy_entries[i].allocsize
+						);
+				} else {
+					printf("invalidChar|#%02X|%s|%s|%s|%dK\n",
+						edsk->floppy_entries[i].user,
+						edsk->floppy_entries[i].isprotected?"protected":"         ",
+						edsk->floppy_entries[i].ishidden?"hidden":"      ",
+						edsk->floppy_entries[i].isondisk?"onDisk":"      ",
+						edsk->floppy_entries[i].allocsize
+						);
+				}
+			}
+		}
+		printf("---------------------------------------------\n");
+	} else {
+		for (i=0;i<64;i++) {
+			if (edsk->floppy_entries[i].filename[0]) {
+				printf("%s|%dK\n",edsk->floppy_entries[i].filename,edsk->floppy_entries[i].allocsize);
+			}
+		}
+	}
+}
+
 void __edsk_getfile(struct s_assenv *ae, struct s_edsk_action *action) {
 	struct s_edsk_global_struct *edsk=NULL;
 	int side,sidedest,sizetoread=0x1234567;
@@ -17296,8 +17307,10 @@ void __edsk_writesect(struct s_assenv *ae, struct s_edsk_action *action) {
  * EDSK  PUTFILE,'filename.dsk','source filename on host',[,'destination filename on dsk']
  * EDSK  GETFILE,'filename.dsk','source filename on DSK',[,'destination filename on host']
  * EDSK  UPGRADE,'filename.dsk','outputfilename.dsk'
+ * EDSK      CAT,'filename.dsk:side'
  *
  * == deferred execution ==
+ * EDSK    MERGE,'filename.dsk:side','filename.dsk:side','outputfilename.dsk'
  * EDSK  DELFILE,'filename.dsk','filename'
  * EDSK  COPYFILE,'filename.dsk','filename','filename.dsk','filename'
  * EDSK  SAVEFILE,'filename.dsk','filename',<start_addr>,<length>[,RAW]
@@ -17308,7 +17321,6 @@ void __edsk_writesect(struct s_assenv *ae, struct s_edsk_action *action) {
  * EDSK       ADD,'filename.dsk','location',<size>,...
  * EDSK    RESIZE,'filename.dsk','location',<size>,...
  * EDSK   REORDER,'filename.dsk','location',position,...
- * EDSK     MERGE,'filename.dsk:side','filename.dsk:side','outputfilename.dsk'
  * EDSK     CHECK,'filename.dsk','location',<size>,<start_addr> @@TODO => la doc!
 ***************************************************************************************************************************/
 void __EDSK(struct s_assenv *ae) {
@@ -17323,9 +17335,10 @@ void __EDSK(struct s_assenv *ae) {
 			case 'A':if (strcmp(ae->wl[ae->idx+1].w,"ADD")==0)	curaction.action=E_EDSK_ACTION_ADD; else cmderr=1;break; // add sector
 			case 'C':if (strcmp(ae->wl[ae->idx+1].w,"CREATE")==0)	curaction.action=E_EDSK_ACTION_CREATE; else // nombre de pistes + format éventuel
 			         if (strcmp(ae->wl[ae->idx+1].w,"CHECK")==0)	curaction.action=E_EDSK_ACTION_CHECK; else  // location, size, memory address
+			         if (strcmp(ae->wl[ae->idx+1].w,"CAT")==0)	curaction.action=E_EDSK_ACTION_CAT; else  // catalog
 			         if (strcmp(ae->wl[ae->idx+1].w,"COPYFILE")==0)	curaction.action=E_EDSK_ACTION_COPYFILE; else cmderr=1;break; // copy file from one DSK to another
 			case 'D':if (strcmp(ae->wl[ae->idx+1].w,"DROP")==0)	curaction.action=E_EDSK_ACTION_DROP; else // drop track or sector
-				if (strcmp(ae->wl[ae->idx+1].w,"DELFILE")==0)	curaction.action=E_EDSK_ACTION_DELFILE; else cmderr=1;break; // delete a file on DSK
+				 if (strcmp(ae->wl[ae->idx+1].w,"DELFILE")==0)	curaction.action=E_EDSK_ACTION_DELFILE; else cmderr=1;break; // delete a file on DSK
 			case 'G':if (strcmp(ae->wl[ae->idx+1].w,"GAPFIX")==0)	curaction.action=E_EDSK_ACTION_GAPFIX; else // fix GAP to fit an ideal track
 				 if (strcmp(ae->wl[ae->idx+1].w,"GETFILE")==0)	curaction.action=E_EDSK_ACTION_GETFILE; else cmderr=1;break; // get FILE from a DSK and save it on host
 			case 'M':if (strcmp(ae->wl[ae->idx+1].w,"MERGE")==0)	curaction.action=E_EDSK_ACTION_MERGE; else // merge edsk
@@ -17353,6 +17366,7 @@ void __EDSK(struct s_assenv *ae) {
 		switch (curaction.action) {
 			case E_EDSK_ACTION_ADD: case E_EDSK_ACTION_CREATE: case E_EDSK_ACTION_DROP: case E_EDSK_ACTION_MAP: case E_EDSK_ACTION_REORDER:
 			case E_EDSK_ACTION_RESIZE: case E_EDSK_ACTION_READSECT: case E_EDSK_ACTION_WRITESECT: case E_EDSK_ACTION_GAPFIX: case E_EDSK_ACTION_CHECK:
+			case E_EDSK_ACTION_CAT:
 				nbfilename=1;break;
 			case E_EDSK_ACTION_UPGRADE:case E_EDSK_ACTION_READFILE:case E_EDSK_ACTION_DELFILE:case E_EDSK_ACTION_SAVEFILE:
 				nbfilename=2;break;
@@ -17424,6 +17438,7 @@ void __EDSK(struct s_assenv *ae) {
 			case E_EDSK_ACTION_PUTFILE: __edsk_putfile(ae,&curaction);break;
 			case E_EDSK_ACTION_GETFILE: __edsk_getfile(ae,&curaction);break;
 			case E_EDSK_ACTION_UPGRADE: __edsk_upgrade(ae,&curaction);break;
+			case E_EDSK_ACTION_CAT:     __edsk_cat(ae,&curaction);break;
 			// deferred execution
 			case E_EDSK_ACTION_DELFILE:
 			case E_EDSK_ACTION_COPYFILE:
@@ -17476,10 +17491,10 @@ void PopAllEDSK(struct s_assenv *ae) {
 			case E_EDSK_ACTION_DELFILE:	__edsk_delfile(ae,&ae->edsk_action[i]);break;
 			case E_EDSK_ACTION_MAP:		__edsk_map(ae,&ae->edsk_action[i]);break;
 			case E_EDSK_ACTION_GAPFIX:	__edsk_gapfix(ae,&ae->edsk_action[i]);break;
-			case E_EDSK_ACTION_MERGE:	__edsk_merge(ae,&ae->edsk_action[i]);break;
 			case E_EDSK_ACTION_RESIZE:	__edsk_resize(ae,&ae->edsk_action[i]);break;
 			case E_EDSK_ACTION_REORDER:	__edsk_reorder(ae,&ae->edsk_action[i]);break;
 			case E_EDSK_ACTION_DROP:	__edsk_drop(ae,&ae->edsk_action[i]);break;
+			case E_EDSK_ACTION_MERGE:       __edsk_merge(ae,&ae->edsk_action[i]);break;
 			case E_EDSK_ACTION_COPYFILE:	__edsk_copyfile(ae,&ae->edsk_action[i]);break;
 			case E_EDSK_ACTION_SAVEFILE:	__edsk_savefile(ae,&ae->edsk_action[i]);break;
 			case E_EDSK_ACTION_WRITESECT:	__edsk_writesect(ae,&ae->edsk_action[i]);break;
@@ -17664,7 +17679,11 @@ void PopAllAPI(struct s_assenv *ae) {
 				} else if (strcmp(ae->wl[ae->idx].w,"PORT")==0) {
 					// change socket port
 					ae->idx++;
-					ae->web_port=RoundComputeExpressionCore(ae,ae->wl[ae->idx].w,ae->api_send[iapi].ptr,0);
+					if (StringIsQuote(ae->wl[ae->idx].w)) {
+						MakeError(ae,ae->idx,GetCurrentFile(ae),ae->wl[ae->idx].l,"syntax is API_SEND PORT,<port value without quote!>\n");
+					} else {
+						ae->web_port=RoundComputeExpressionCore(ae,ae->wl[ae->idx].w,ae->api_send[iapi].ptr,0);
+					}
 				} else {
 					MakeError(ae,ae->idx,GetCurrentFile(ae),ae->wl[ae->idx].l,"API_SEND unknown keyword [%s]\n",ae->wl[ae->idx].w);
 					break;
@@ -18273,6 +18292,12 @@ void __BUILDOBJ(struct s_assenv *ae) {
 	} else {
 		// pure OBJ output
 	}
+	if (ae->orgDone || ae->codeadr || ae->outputadr) {
+		if (!ae->nowarning) {
+			rasm_printf(ae,KWARNING"[%s:%d] Warning: using BUILDOBJ whereas there was a previous ORG or code\n",GetCurrentFile(ae),ae->wl[ae->idx].l);
+			if (ae->erronwarn) MaxError(ae);
+		}
+	}
 }
 void __BUILDZX(struct s_assenv *ae) {
 	if (!ae->wl[ae->idx].t) {
@@ -18283,6 +18308,12 @@ void __BUILDZX(struct s_assenv *ae) {
 		ae->forcezx=1;
 	} else {
 		MakeError(ae,ae->idx,GetCurrentFile(ae),ae->wl[ae->idx].l,"Cannot select ZX output when already in Amstrad ROM/cartridge/snapshot/tape output\n");
+	}
+	if (ae->orgDone || ae->codeadr || ae->outputadr) {
+		if (!ae->nowarning) {
+			rasm_printf(ae,KWARNING"[%s:%d] Warning: using BUILDZX whereas there was a previous ORG or code\n",GetCurrentFile(ae),ae->wl[ae->idx].l);
+			if (ae->erronwarn) MaxError(ae);
+		}
 	}
 }
 void __BUILDCPR(struct s_assenv *ae) {
@@ -18318,6 +18349,12 @@ void __BUILDCPR(struct s_assenv *ae) {
 			MakeError(ae,ae->idx,GetCurrentFile(ae),ae->wl[ae->idx].l,"BUILDCPR unknown parameter, may be EXTENDED, LEGACY, SYMBOL(S) or 'filename'\n");
 		}
 	}
+	if (ae->orgDone || ae->codeadr || ae->outputadr) {
+		if (!ae->nowarning) {
+			rasm_printf(ae,KWARNING"[%s:%d] Warning: using BUILDCPR whereas there was a previous ORG or code\n",GetCurrentFile(ae),ae->wl[ae->idx].l);
+			if (ae->erronwarn) MaxError(ae);
+		}
+	}
 	if (!ae->forcesnapshot && !ae->forcetape && !ae->forcezx && !ae->forceROM) {
 		ae->forcecpr=1;
 	} else {
@@ -18325,6 +18362,12 @@ void __BUILDCPR(struct s_assenv *ae) {
 	}
 }
 void __BUILDROM(struct s_assenv *ae) {
+	if (ae->orgDone || ae->codeadr || ae->outputadr) {
+		if (!ae->nowarning) {
+			rasm_printf(ae,KWARNING"[%s:%d] Warning: using BUILDROM whereas there was a previous ORG or code\n",GetCurrentFile(ae),ae->wl[ae->idx].l);
+			if (ae->erronwarn) MaxError(ae);
+		}
+	}
 	if (!ae->forcesnapshot && !ae->forcetape && !ae->forcezx && !ae->forcecpr) {
 		if (!ae->wl[ae->idx].t && ae->wl[ae->idx+1].t) {
 			if (strcmp(ae->wl[ae->idx+1].w,"CONCAT")==0) {
@@ -18705,6 +18748,14 @@ void __BUILDSNA(struct s_assenv *ae) {
 		}
 		ae->idx++;
 	}
+
+	if (ae->orgDone || ae->codeadr || ae->outputadr) {
+		if (!ae->nowarning) {
+			rasm_printf(ae,KWARNING"[%s:%d] Warning: using BUILDSNA whereas there was a previous ORG or code\n",GetCurrentFile(ae),ae->wl[ae->idx].l);
+			if (ae->erronwarn) MaxError(ae);
+		}
+	}
+
 	if (!ae->forcecpr && !ae->forcetape && !ae->forcezx && !ae->forceROM) {
 		ae->forcesnapshot=1;
 		ae->remu=1;
@@ -18734,6 +18785,12 @@ void __BUILDTAPE(struct s_assenv *ae) {
 			}
 		} else {
 			MakeError(ae,ae->idx,GetCurrentFile(ae),ae->wl[ae->idx].l,"BUILDTAPE optional parameter must be a string\n");
+		}
+	}
+	if (ae->orgDone || ae->codeadr || ae->outputadr) {
+		if (!ae->nowarning) {
+			rasm_printf(ae,KWARNING"[%s:%d] Warning: using BUILDTAPE whereas there was a previous ORG or code\n",GetCurrentFile(ae),ae->wl[ae->idx].l);
+			if (ae->erronwarn) MaxError(ae);
 		}
 	}
 	if (!ae->forcesnapshot && !ae->forcecpr && !ae->forcezx && !ae->forceROM) {
@@ -19677,73 +19734,12 @@ printf("<== PopGlobal on Stack [%s] igs=%d\n",ae->globalLabelStack[ae->igs].labe
 }
 
 
-/* CPCSyntaxError: WinAPE mode.
- * Its words with another name in RASM, renamed as the preprocessor reads them, where a
- * statement's directive goes: first in the statement, or second after a label (a word that
- * is no directive or instruction). An operand of the same name (CALL TEXT) is left alone. */
-static void WinapeRenameWord(char *w, int *lw, struct s_wordlist *wordlist, int nbword) {
-	static const char *map[][2]={
-		{"BYTE","DEFB"},{"TEXT","DEFB"},{"WORD","DEFW"},{"RMEM","DEFS"},
-		{"END","WINAPEEND"},{"STOP","WINAPESTOP"},
-		{"PAUSE","WINAPENOP"},{"TITLE","WINAPENOP"},{"DUMP","WINAPENOP"},{"WRITE","WINAPENOP"},{"CLOSE","WINAPENOP"},
-		{"CHECKSUM","WINAPECHECKSUM"},
-		{NULL,NULL}};
-	int i,first;
-	for (i=0;map[i][0];i++) if (strcmp(w,map[i][0])==0) break;
-	if (!map[i][0]) return;
-	first=nbword==0 || wordlist[nbword-1].t;
-	if (!first && !((nbword<2 || wordlist[nbword-2].t) && !IsDirective(wordlist[nbword-1].w))) return;
-	strcpy(w,map[i][1]);
-	*lw=strlen(w);
-}
-/* SWITCH's words are not WinAPE's: there they are labels (its own sample names one BREAK). */
-static int WinapeHidden(const char *mnemo) {
-	return strcmp(mnemo,"BREAK")==0 || strcmp(mnemo,"CASE")==0 || strcmp(mnemo,"DEFAULT")==0
-		|| strcmp(mnemo,"SWITCH")==0 || strcmp(mnemo,"ENDSWITCH")==0;
-}
-/* A WinAPE macro uses its parameters by name; RASM's are {name}. Each whole word of the
- * body equal to a parameter gets its braces, before the definition is read. */
-static int WinapeIdChar(char c) { return isalnum((unsigned char)c) || c=='_' || c=='@' || c=='.' || c=='{' || c=='}'; }
-static char *WinapeBraceWord(char *w, const char *name) {
-	int ln=strlen(name),lw=strlen(w),i,n=0,o=0;
-	char *out;
-	for (i=0;i+ln<=lw;i++) if (strncmp(w+i,name,ln)==0 && (i==0 || !WinapeIdChar(w[i-1])) && !WinapeIdChar(w[i+ln])) n++;
-	if (!n) return w;
-	out=MemMalloc(lw+2*n+1);
-	for (i=0;i<lw;) {
-		if (i+ln<=lw && strncmp(w+i,name,ln)==0 && (i==0 || !WinapeIdChar(w[i-1])) && !WinapeIdChar(w[i+ln])) {
-			out[o++]='{'; memcpy(out+o,name,ln); o+=ln; out[o++]='}'; i+=ln;
-		} else out[o++]=w[i++];
-	}
-	out[o]=0;
-	MemFree(w);
-	return out;
-}
-static void WinapeMacroParams(struct s_assenv *ae) {
-	int k,body,p;
-	if (ae->wl[ae->idx].t || ae->wl[ae->idx+1].t) return;          /* no name, or no parameter */
-	/* the parameters: after the name, to the end of the statement */
-	for (body=ae->idx+2;ae->wl[body].t==0;body++);
-	if (ae->wl[body].t==2) return;
-	body++;
-	for (k=body;ae->wl[k].t!=2;k++) {
-		if (strcmp(ae->wl[k].w,"MEND")==0 || strcmp(ae->wl[k].w,"ENDM")==0) break;
-		for (p=ae->idx+2;p<body;p++) {
-			if (ae->wl[p].w[0]=='{' || strcmp(ae->wl[p].w,"...")==0) continue;
-			ae->wl[k].w=WinapeBraceWord(ae->wl[k].w,ae->wl[p].w);
-		}
-		ae->wl[k].len=strlen(ae->wl[k].w);
-	}
-}
-
 void __MACRO(struct s_assenv *ae) {
 	struct s_macro curmacro={0};
 	char *referentfilename,*zeparam;
 	int refidx,idx,getparam=1,i,redo=1;
 	struct s_wordlist curwl;
 	int enumCount=0;
-
-	if (ae->winape) WinapeMacroParams(ae);
 
 	if (ae->getstruct==1) {
 		MakeError(ae,ae->idx,GetCurrentFile(ae),ae->wl[ae->idx].l,"Please, why define a MACRO inside a structure declaration?\n");
@@ -20293,11 +20289,7 @@ void __RUN(struct s_assenv *ae) {
 		} else {
 			PushExpression(ae,ae->idx+1,E_EXPRESSION_RUN); // delayed RUN value
 			ae->idx++;
-			if (!ae->wl[ae->idx].t && ae->winape) {
-				/* WinAPE: RUN address,breakpoint */
-				PushExpression(ae,ae->idx+1,E_EXPRESSION_RUNBRK);
-				ae->idx++;
-			} else if (!ae->wl[ae->idx].t) {
+			if (!ae->wl[ae->idx].t) {
 				//ExpressionFastTranslate(ae,&ae->wl[ae->idx+1].w,0);
 				ramconf=RoundComputeExpression(ae,ae->wl[ae->idx+1].w,ae->codeadr,0,0);
 				ae->idx++;
@@ -20701,15 +20693,7 @@ void __BRK(struct s_assenv *ae) {
 	if (!ae->wl[ae->idx].t) {
 		MakeError(ae,ae->idx,GetCurrentFile(ae),ae->wl[ae->idx].l,"BRK Winape directive does not need parameter\n");
 	} else {
-		if (!ae->winapeBRKidx && ae->winape) {
-			/* WinAPE: "an rst #30 Maxam-style breakpoint", and a breakpoint on it */
-			struct s_breakpoint breakpoint={0};
-			breakpoint.address=ae->codeadr;
-			if (ae->activebank>3) breakpoint.bank=1;
-			ObjectArrayAddDynamicValueConcat((void **)&ae->breakpoint,&ae->ibreakpoint,&ae->maxbreakpoint,&breakpoint,sizeof(struct s_breakpoint));
-			___output(ae,0xF7);
-			ae->nop+=4;
-		} else if (!ae->winapeBRKidx) {
+		if (!ae->winapeBRKidx) {
 			___output(ae,0xED);
 			___output(ae,0xFF);
 			ae->nop+=2;
@@ -20725,29 +20709,6 @@ void __BRK(struct s_assenv *ae) {
 
 void __STOP(struct s_assenv *ae) {
 	rasm_printf(ae,"[%s:%d] STOP assembling requested\n",GetCurrentFile(ae),ae->wl[ae->idx].l);
-	while (ae->wl[ae->idx].t!=2) ae->idx++;
-	ae->idx--;
-	ae->stop=1;
-}
-
-/* CPCSyntaxError: WinAPE's directives with no RASM twin (the preprocessor renames them, in
- * WinAPE mode only). PAUSE, TITLE and DUMP are "not implemented" in WinAPE itself; WRITE /
- * WRITE DIRECT / CLOSE choose where WinAPE puts the code, here it goes into the machine as
- * always: their parameters are passed over. END ignores the rest, in every file; STOP halts
- * with an error. */
-void __WINAPENOP(struct s_assenv *ae) {
-}
-void __WINAPEEND(struct s_assenv *ae) {
-	/* the rest of the source passed over; what came before is the program */
-	while (ae->wl[ae->idx+1].t!=2) ae->idx++;
-}
-/* CHECKSUM RESET and the checksum() / memory() functions are not here: an error, never a
- * wrong value (RASM would take CHECKSUM for a label). */
-void __WINAPECHECKSUM(struct s_assenv *ae) {
-	MakeError(ae,ae->idx,GetCurrentFile(ae),ae->wl[ae->idx].l,"WinAPE's CHECKSUM is not supported\n");
-}
-void __WINAPESTOP(struct s_assenv *ae) {
-	MakeError(ae,ae->idx,GetCurrentFile(ae),ae->wl[ae->idx].l,"Assembly Stopped\n");
 	while (ae->wl[ae->idx].t!=2) ae->idx++;
 	ae->idx--;
 	ae->stop=1;
@@ -21132,13 +21093,6 @@ void ___internal_skip_loop_block(struct s_assenv *ae, const int eloopstyle) {
 	IntArrayAddDynamicValueConcat(&loopstyle,&iloop,&mloop,eloopstyle);
 	/* look for WEND */
 	while (iloop) {
-		/* CPCSyntaxError: the source ends first (a WHILE or REPEAT on the last line read on
-		 * past the last word, into whatever memory followed) */
-		if (cidx>=ae->nbword || ae->wl[cidx-1].t==2) {
-			MakeError(ae,ae->idx,GetCurrentFile(ae),ae->wl[ae->idx].l,"loop with no end (WEND, REND or UNTIL missing)\n");
-			cidx=ae->nbword-1;          /* ae->idx on the word before the final END */
-			break;
-		}
 		if (strcmp(ae->wl[cidx].w,"REPEAT")==0) {
 			if (ae->wl[cidx].t) {
 				IntArrayAddDynamicValueConcat(&loopstyle,&iloop,&mloop,E_LOOPSTYLE_REPEATUNTIL);
@@ -21179,6 +21133,10 @@ void ___internal_skip_loop_block(struct s_assenv *ae, const int eloopstyle) {
 			}
 		}
 		while (!ae->wl[cidx].t) cidx++;
+		if (ae->wl[cidx].t==2) {
+			if (iloop) MakeError(ae,ae->idx,GetCurrentFile(ae),ae->wl[ae->idx].l,"End of file encountered with unclosed loop(s)\n");
+			break;
+		}
 		cidx++;
 	}
 	MemFree(loopstyle);
@@ -22098,7 +22056,9 @@ void __ORG(struct s_assenv *ae) {
 		return;
 	}
 	___org_close(ae);
-	
+
+	ae->orgDone=1;
+
 	if (!ae->wl[ae->idx].t) {
 		ae->codeadrwrapwarned = 0; // a new explicit ORG re-arms the codeadr-wrap warning
 		ae->insideORG=1;
@@ -23206,6 +23166,7 @@ void __HEXBIN(struct s_assenv *ae) {
 	int ifExists=0;
 	int skipHeader=0;
 	int maxOpt;
+	int strata=0,tilew,tileh,alignementCheck=0,misaligned=0;
 #if TRACE_HEXBIN
 printf("Hexbin ae->idx=%d\n",ae->idx);
 #endif
@@ -23268,6 +23229,27 @@ printf("Hexbin check wl[%d]=[%s]\n",ae->idx,ae->wl[ae->idx].w);
 							}
 						} else {
 							MakeError(ae,ae->idx,GetCurrentFile(ae),ae->wl[ae->idx].l,"INCBIN REMAP need a number of columns for reordering\n");
+						}
+					} else if (strcmp("SLICE",ae->wl[ae->idx].w)==0 || strcmp("ISLICE",ae->wl[ae->idx].w)==0) {
+						if (ae->wl[ae->idx].w[0]=='I') strata=2; else strata=1; // 2:gray coded 1:vertically linear
+													//
+						if (!ae->wl[ae->idx].t) {
+							ae->idx++;
+							tilew=RoundComputeExpressionCore(ae,ae->wl[ae->idx].w,ae->codeadr,0);
+							if (!ae->wl[ae->idx].t) {
+								ae->idx++;
+								tileh=RoundComputeExpressionCore(ae,ae->wl[ae->idx].w,ae->codeadr,0);
+								if (!ae->wl[ae->idx].t && strcmp("MISALIGNED",ae->wl[ae->idx+1].w)==0) {
+									ae->idx++;
+									misaligned=1;
+								}
+							} else {
+								MakeError(ae,ae->idx,GetCurrentFile(ae),ae->wl[ae->idx].l,"usage is INCBIN'file',(I)SLICE,width,height\n");
+								strata=0;
+							}
+						} else {
+							MakeError(ae,ae->idx,GetCurrentFile(ae),ae->wl[ae->idx].l,"usage is INCBIN'file',(I)SLICE,width,height\n");
+							strata=0;
 						}
 					} else if (strcmp("GTILES",ae->wl[ae->idx].w)==0) {
 						/*** entrelace les tiles, besoin de hauteur et largeur de la tile ***/
@@ -23568,11 +23550,11 @@ printf("taille nulle et offset=%d -> conversion en %d\n",offset,size);
 #endif
 			}
 			if (size>ae->hexbin[hbinidx].datalen) {
-				MakeError(ae,ae->idx,GetCurrentFile(ae),ae->wl[ae->idx].l,"INCBIN size is greater than filesize\n");
+				MakeError(ae,ae->idx,GetCurrentFile(ae),ae->wl[ae->idx].l,"INCBIN size is greater than filesize (%d>%d)\n",size,ae->hexbin[hbinidx].datalen);
 				return;
 			}
 			if (size+offset>ae->hexbin[hbinidx].datalen) {
-				MakeError(ae,ae->idx,GetCurrentFile(ae),ae->wl[ae->idx].l,"INCBIN size+offset is greater than filesize\n");
+				MakeError(ae,ae->idx,GetCurrentFile(ae),ae->wl[ae->idx].l,"INCBIN size+offset is greater than filesize (%d+%d>%d)\n",size,offset,ae->hexbin[hbinidx].datalen);
 				return;
 			}
 			outputdata=MemMalloc(ae->hexbin[hbinidx].datalen);
@@ -23586,7 +23568,69 @@ printf("revert DATA on selected  area\n");
 #endif
 				zx0_reverse(ae->hexbin[hbinidx].data+offset,ae->hexbin[hbinidx].data+offset+size-1);
 			}
-			if (itiles || gtiles) {
+			if (strata) {
+				int tilesize;
+				tilesize=tilew*tileh;
+				/* sliced tiles reordering */
+				if (tilew<1 || tilew>256 || tileh<1) {
+					MakeError(ae,ae->idx,GetCurrentFile(ae),ae->wl[ae->idx].l,"INCBIN SLICE need a tile width in the range [1-256] and a proper height\n");
+				} else if (ae->hexbin[hbinidx].datalen==0 || ((ae->hexbin[hbinidx].datalen % tilesize)!=0)) {
+					MakeError(ae,ae->idx,GetCurrentFile(ae),ae->wl[ae->idx].l,"INCBIN SLICE need input data to be a multiple of tiles size\n");
+				} else if (strata==2 && (tileh&7)) {
+					MakeError(ae,ae->idx,GetCurrentFile(ae),ae->wl[ae->idx].l,"INCBIN ISLICE need tile height to be 8 factor\n");
+				} else {
+					int ntiles,tpg,totalsize,groups;
+					int n,y,g,ig,it;
+
+					ntiles=ae->hexbin[hbinidx].datalen/tilesize;
+					tpg=256/tilew;
+					groups=(ntiles+tpg-1)/tpg;
+					totalsize=(groups*tileh-1)*256+tilew*(ntiles-(groups-1)*tpg);
+
+		//printf("tpg=%d\n",tpg);
+		//printf("groups=%d\n",groups);
+		//printf("totalsize=%d => outputidx\n",totalsize);
+
+					if (totalsize>65536) {
+						MakeError(ae,ae->idx,GetCurrentFile(ae),ae->wl[ae->idx].l,"INCBIN SLICE outputdata will be too big (>64K)\n");
+					} else {
+						alignementCheck=1;
+						outputdata=MemRealloc(outputdata,totalsize);
+						memset(outputdata,0,totalsize); // we need to clear everything because there may be some holes!
+
+						// optional GRAY code
+						if (strata==2) {
+							int b8;
+
+							// les lignes 0,1,3,2,6,7,5,4 ont pour destination 0,1,2,3,4,5,6,7
+							// les lignes     3,2,6,7,5,4 ont pour destination     2,3,4,5,6,7
+							b8=ntiles*tileh/8;
+							for (it=0;it<b8;it++) {
+								memcpy(outputdata,ae->hexbin[hbinidx].data+it*tilew*8+tilew*2,tilew); // backup 2
+								memcpy(ae->hexbin[hbinidx].data+it*tilew*8+tilew*2,ae->hexbin[hbinidx].data+it*tilew*8+tilew*3,tilew); // 3 => 2
+								memcpy(ae->hexbin[hbinidx].data+it*tilew*8+tilew*3,outputdata,tilew); // 2 => 3
+																//
+								memcpy(outputdata,ae->hexbin[hbinidx].data+it*tilew*8+tilew*4,tilew); // backup 4
+								memcpy(ae->hexbin[hbinidx].data+it*tilew*8+tilew*4,ae->hexbin[hbinidx].data+it*tilew*8+tilew*6,tilew); // 6 => 4
+								memcpy(ae->hexbin[hbinidx].data+it*tilew*8+tilew*6,ae->hexbin[hbinidx].data+it*tilew*8+tilew*5,tilew); // 5 => 6
+								memcpy(ae->hexbin[hbinidx].data+it*tilew*8+tilew*5,ae->hexbin[hbinidx].data+it*tilew*8+tilew*7,tilew); // 7 => 5
+								memcpy(ae->hexbin[hbinidx].data+it*tilew*8+tilew*7,outputdata,tilew); // 4 => 7
+							}
+							memset(outputdata,0,tilew); // reset (not really needed but hey...)
+						}
+
+						// conversion
+						for (it=0;it<ntiles;it++) {
+							g=it/tpg;
+							ig=(it%tpg)*tilew; // décalage à l'intérieur du groupe
+							for (y=0;y<tileh;y++) {
+								memcpy(outputdata+(g*tileh+y)*256+ig,ae->hexbin[hbinidx].data+it*tilesize+y*tilew,tilew);
+							}
+						}
+						outputidx=totalsize;
+					}
+				}
+			} else if (itiles || gtiles) {
 				/* tiles data reordering */
 				int tx,it;
 				if (tilex<=0 || tilex>256) {
@@ -23831,6 +23875,15 @@ if (curhexbin->crunch) printf("CRUNCHED! (%d)\n",curhexbin->crunch);
 				outputidx=0;
 			}
 
+			if (alignementCheck && !misaligned) {
+				if (ae->codeadr&0xFF) {
+					while (ae->codeadr&0xFF) ___output(ae,0);
+					if (!ae->nowarning) {
+						rasm_printf(ae,KWARNING"[%s:%d] Warning: INCBIN ISLICE was automatically aligned, use MISALIGNED to force in place\n",GetCurrentFile(ae),ae->wl[ae->idx].l);
+						if (ae->erronwarn) MaxError(ae);
+					}
+				}
+			}
 			if (overwritecheck) {
 				for (idx=0;idx<outputidx;idx++) {
 					___output(ae,outputdata[idx]);
@@ -24423,10 +24476,6 @@ struct s_asm_keyword instruction[]={
 {"EDSK",0,0,__EDSK},
 {"HFE",0,0,__HFE},
 {"ERRRD",0,0,__ERRRD},
-{"WINAPENOP",0,0,__WINAPENOP},
-{"WINAPEEND",0,0,__WINAPEEND},
-{"WINAPESTOP",0,0,__WINAPESTOP},
-{"WINAPECHECKSUM",0,0,__WINAPECHECKSUM},
 {"",0,0,NULL}
 };
 
@@ -25051,7 +25100,6 @@ int Assemble(struct s_assenv *ae, unsigned char **dataout, int *lenout, struct s
 					// we have no collision with CRC on our list so we will break even it's not the directive
 					if (instruction[ifast].crc==curcrc) {
 						if (strcmp(instruction[ifast].mnemo+1,wordlist[ae->idx].w+1)==0) {
-							if (ae->winape && WinapeHidden(instruction[ifast].mnemo)) break;
 							instruction[ifast].makemnemo(ae);
 							wordlist=ae->wl;
 							// normalement inutile => boucles!
@@ -25240,7 +25288,6 @@ int Assemble(struct s_assenv *ae, unsigned char **dataout, int *lenout, struct s
 			if (ilength<INSTRUCTION_MAXLENGTH && (ifast=ae->fastmatch[(int)wordlist[ae->idx].w[0]][ilength])!=-1) {
 				while (instruction[ifast].mnemo[0]==wordlist[ae->idx].w[0]) {
 					if (instruction[ifast].crc==curcrc && strcmp(instruction[ifast].mnemo,wordlist[ae->idx].w)==0) {
-						if (ae->winape && WinapeHidden(instruction[ifast].mnemo)) break;
 						if (curcrc==CRC_REND) {
 							if (ae->ir) {
 								printf(KBOLD"----- "KLWHITE"REND"KNORMAL" "KBOLD"----- ;"KNORMAL" counter=%d Level %d ",ae->repeat[ae->ir-1].repeat_counter,ae->ir-1);
@@ -26285,7 +26332,11 @@ int Assemble(struct s_assenv *ae, unsigned char **dataout, int *lenout, struct s
 						sprintf(TMP_filename,"%s.sna",ae->outputfilename);
 					}
 					FileRemoveIfExists(TMP_filename);
-					
+				
+					if (!ae->mem[0]) {ae->mem[0]=MemMalloc(65536);memset(ae->mem[0],0,65536);}
+					if (!ae->mem[2]) {ae->mem[2]=MemMalloc(65536);memset(ae->mem[2],0,65536);}
+					if (!ae->mem[5]) {ae->mem[5]=MemMalloc(65536);memset(ae->mem[5],0,65536);}
+
 					/* do we have a bankset? */
 					/* zx bootstrap */
 					zxsnapheader[0x13]=0; /* 0:DI 4:EI */
@@ -27364,12 +27415,6 @@ printf("lab[%s]\n",ae->label[i].name);
 			ae->debug.run=-1;
 		}
 		ae->debug.start=minmem;
-		/* CPCSyntaxError: the breakpoints, for the emulator's debugger */
-		if (ae->ibreakpoint && !ae->debug.breakpoint) {
-			ae->debug.breakpoint=MemMalloc(sizeof(int)*ae->ibreakpoint);
-			for (i=0;i<ae->ibreakpoint;i++) ae->debug.breakpoint[i]=ae->breakpoint[i].address&0xFFFF;
-			ae->debug.nbbreakpoint=ae->ibreakpoint;
-		}
 	}
 	ae->debug.warnerr=ae->nberr;
 /*******************************************************************************************
@@ -27897,7 +27942,6 @@ printf("paramz 1\n");
 		ae->rom_name=param->rom_name;
 		ae->checkmode=param->checkmode;
 		ae->noampersand=param->noampersand;
-		ae->winape=param->winape;
 		ae->module_separator[0]=param->module_separator;
 		ae->enforce_symbol_case=param->enforce_symbol_case;
 		if (param->rough) ae->maxam=0; else ae->maxam=1;
@@ -27928,6 +27972,9 @@ printf("paramz 1\n");
 		// default!
 		ae->snapshot.version=3;
 	}
+	if (!ae->web_host) ae->web_host="127.0.0.1";
+	if (!ae->web_port) ae->web_port=6128;
+
 #if TRACE_PREPRO
 printf("init 0 amper=%d\n",ae->noampersand);
 #endif
@@ -29002,7 +29049,6 @@ printf("*** separator='%c'   texpr=%d wordlist.t=%d wordlist.e=%d hadcomma=%d\n"
 				
 				if (lw) {
 					w[lw]=0;
-					if (ae->winape && lw==4 && strcmp(w,"DEFL")==0) {strcpy(w,"EQU");lw=3;}   /* WinAPE: DEFL is EQU */
 					if (lw==3 && strcmp(w,"EQU")==0) {
 #if TRACE_PREPRO
 printf("separator => test EQU match!\n");
@@ -29030,7 +29076,6 @@ printf("separator => test EQU match!\n");
 						}
 					} else {
 						int keymatched=0;
-						if (ae->winape) WinapeRenameWord(w,&lw,wordlist,nbword);
 						curw.len=lw; curw.w=MemMalloc(lw+1); memcpy(curw.w,w,lw+1);
 						curw.l=listing[l].iline;
 						curw.ifile=listing[l].ifile;
@@ -29144,7 +29189,6 @@ printf("after concat [%s]\n",wordlist[nbword].w);
 #endif
 						{
 						/* mot de fin de ligne */
-						if (ae->winape) {int wl_=strlen(w); WinapeRenameWord(w,&wl_,wordlist,nbword);}
 						curw.len=strlen(w); curw.w=MemMalloc(curw.len+1); memcpy(curw.w,w,curw.len+1);
 						curw.l=listing[l].iline;
 						curw.ifile=listing[l].ifile;
@@ -29323,11 +29367,9 @@ printf("END\n");
 
 //printf("maxLen=%d\n",midx);
 
-	ae->ctx1.varbuffersize=ae->ctx2.varbuffersize=midx*10+4096;   /* CPCSyntaxError: never 0 bytes */
-	ae->ctx1.varbuffer=MemMalloc(ae->ctx1.varbuffersize);
-	ae->ctx2.varbuffer=MemMalloc(ae->ctx2.varbuffersize);
-	ae->fastVarBufferSize=midx*10+4096;
-	ae->fastVarBuffer=MemMalloc(ae->fastVarBufferSize);
+	ae->ctx1.varbuffer=MemMalloc(midx*10);
+	ae->ctx2.varbuffer=MemMalloc(midx*10);
+	ae->fastVarBuffer=MemMalloc(midx*10);
 
 	/* switch words for macro declaration with AS80 & UZ80 */
 	if (param && param->as80) {
@@ -30901,7 +30943,13 @@ struct s_autotest_keyword autotest_keyword[]={
 	{"repeat 5:nop:rend",0},{"repeat 100000:a=5:rend",1},{"repeat -5:nop:rend",1},{"repeat repeat:nop:rend",1},
 	{"macro bidule:nop:mend:bidule",0},{"macro bidule:nop:macro glop:nop:mend:mend:bidule",1},
 	{"macro bidule:nop",1},{"macro bidule:nop:mend:macro glop:nop:bidule",1},
-
+	// must not segfault!
+	{"repeat l",1},
+	{"repeat 0",1},
+	{"f{ equ 1",1},
+	{"f{ equ",1},
+	{"aa=4<<456",0},
+	{"aa=5:aa<<=456",0},
 
 	{"defb getnop(1)",1},{"defb getnop(-1)",1},{"defb getnop(10)",1},{"defb getnop(\"rien\")",1},{"defb getnop()",1},{"defb getnop(\"djNz\")",0},
 	{"assert getnop('nop')==1 : nop",0},
@@ -31539,13 +31587,6 @@ struct s_autotest_keyword autotest_keyword[]={
 	{"nop : assert 270/256>1 : assert 270\\256>=1",0},
 	{"nop : assert 240/256>0.8 : assert 240\\256==0",0},
 
-	/*
-	 *
-	 * will need to test resize + format then meta review test!
-	 *
-	 *
-	 *
-
 	{"api_send host,'127.0.0.1',port,8080,txt,'{ \"cmd\":\"sendBytes\",\"bytes\":[',txtdata,bite,10,txt,'],\"versionLone\":\"',BASE64,bite,10,txt,'\" }' :bite:defb 'roudoudou',0 ",0}, // regular usage
 	{"api_send : nop ",1},
 	{"api_send 0 : nop ",1},
@@ -31558,7 +31599,26 @@ struct s_autotest_keyword autotest_keyword[]={
 	{"api_send txtdata : nop ",1},
 	{"api_send txt : nop ",1},
 	{"api_send txtdata,0 : nop ",1},
-	{"",},{"",},
+	{" repeat 20,t: repeat 16,y: repeat 16,x: defb ((x+16*y)^(t*4))&255 : rend: rend: rend: save 'rasmoutput_tiles.bin',0,$ ",0}, // for further testing tiles with minimal hash
+
+	// fix dynamic alloc when not using all ZX rom	
+	{"buildzx : nop",0},
+	// memory directive must warn (no error)
+	{"nop : buildzx : nop",0}, {"org #100 : buildzx : nop",0},
+	{"nop : buildsna : nop",0}, {"org #100 : buildsna : nop",0},
+	{"nop : buildcpr : nop",0}, {"org #100 : buildcpr : nop",0},
+	{"nop : buildrom : nop",0}, {"org #100 : buildrom : nop",0},
+	{"nop : buildtape : nop",0}, {"org #100 : buildtape : nop",0},
+
+	/*
+	 *
+	 * will need to test resize + format then meta review test!
+	 *
+	 *
+	 *
+
+																      //
+	{"",},
 	{"",},{"",},{"",},{"",},{"",},
 	{"",},{"",},{"",},{"",},{"",},{"",},
 	{"",},{"",},{"",},{"",},{"",},{"",},{"",},{"",},{"",},{"",},{"",},{"",},
@@ -31981,6 +32041,90 @@ printf("testing BANK/ORG OK\n");
 	if (!ret) {} else {printf("Autotest %03d ERROR (BANKROM + bank prefixes)\n",cpt);exit(-1);}
 	if (opcode) MemFree(opcode);opcode=NULL;cpt++;
 printf("testing BANKROM+bank tags OK\n");
+
+
+#define AUTOTEST_LATE_0 "nop : buildzx : nop"
+#define AUTOTEST_LATE_1 "org #100 : buildzx : nop"
+#define AUTOTEST_LATE_2 "nop : buildsna : nop"
+#define AUTOTEST_LATE_3 "org #100 : buildsna : nop"
+#define AUTOTEST_LATE_4 "nop : buildcpr : nop"
+#define AUTOTEST_LATE_5 "org #100 : buildcpr : nop"
+#define AUTOTEST_LATE_6 "nop : buildrom : nop"
+#define AUTOTEST_LATE_7 "org #100 : buildrom : nop"
+#define AUTOTEST_LATE_8 "nop : buildtape : nop"
+#define AUTOTEST_LATE_9 "org #100 : buildtape : nop"
+	memset(&param,0,sizeof(struct s_parameter));
+	param.erronwarn=1;
+	ret=RasmAssembleInfoParam(AUTOTEST_LATE_0,strlen(AUTOTEST_LATE_0),&opcode,&opcodelen,&debug,&param);
+	if (ret) {} else {printf("Autotest %03d ERROR (No warning with BUILDZX and previous code)\n",cpt);exit(-1);}
+	if (opcode) MemFree(opcode);opcode=NULL;cpt++;
+printf("testing BUILDZX late declaration 1 OK\n");
+
+	memset(&param,0,sizeof(struct s_parameter));
+	param.erronwarn=1;
+	ret=RasmAssembleInfoParam(AUTOTEST_LATE_1,strlen(AUTOTEST_LATE_1),&opcode,&opcodelen,&debug,&param);
+	if (ret) {} else {printf("Autotest %03d ERROR (No warning with BUILDZX and previous code)\n",cpt);exit(-1);}
+	if (opcode) MemFree(opcode);opcode=NULL;cpt++;
+printf("testing BUILDZX late declaration 2 OK\n");
+
+	memset(&param,0,sizeof(struct s_parameter));
+	param.erronwarn=1;
+	ret=RasmAssembleInfoParam(AUTOTEST_LATE_2,strlen(AUTOTEST_LATE_2),&opcode,&opcodelen,&debug,&param);
+	if (ret) {} else {printf("Autotest %03d ERROR (No warning with BUILDSNA and previous code)\n",cpt);exit(-1);}
+	if (opcode) MemFree(opcode);opcode=NULL;cpt++;
+printf("testing BUILDSNA late declaration 1 OK\n");
+
+	memset(&param,0,sizeof(struct s_parameter));
+	param.erronwarn=1;
+	ret=RasmAssembleInfoParam(AUTOTEST_LATE_3,strlen(AUTOTEST_LATE_3),&opcode,&opcodelen,&debug,&param);
+	if (ret) {} else {printf("Autotest %03d ERROR (No warning with BUILDSNA and previous code)\n",cpt);exit(-1);}
+	if (opcode) MemFree(opcode);opcode=NULL;cpt++;
+printf("testing BUILDSNA late declaration 2 OK\n");
+
+	memset(&param,0,sizeof(struct s_parameter));
+	param.erronwarn=1;
+	ret=RasmAssembleInfoParam(AUTOTEST_LATE_4,strlen(AUTOTEST_LATE_4),&opcode,&opcodelen,&debug,&param);
+	if (ret) {} else {printf("Autotest %03d ERROR (No warning with BUILDCPR and previous code)\n",cpt);exit(-1);}
+	if (opcode) MemFree(opcode);opcode=NULL;cpt++;
+printf("testing BUILDCPR late declaration 1 OK\n");
+
+	memset(&param,0,sizeof(struct s_parameter));
+	param.erronwarn=1;
+	ret=RasmAssembleInfoParam(AUTOTEST_LATE_5,strlen(AUTOTEST_LATE_5),&opcode,&opcodelen,&debug,&param);
+	if (ret) {} else {printf("Autotest %03d ERROR (No warning with BUILDCPR and previous code)\n",cpt);exit(-1);}
+	if (opcode) MemFree(opcode);opcode=NULL;cpt++;
+printf("testing BUILDCPR late declaration 2 OK\n");
+
+	memset(&param,0,sizeof(struct s_parameter));
+	param.erronwarn=1;
+	ret=RasmAssembleInfoParam(AUTOTEST_LATE_6,strlen(AUTOTEST_LATE_6),&opcode,&opcodelen,&debug,&param);
+	if (ret) {} else {printf("Autotest %03d ERROR (No warning with BUILDROM and previous code)\n",cpt);exit(-1);}
+	if (opcode) MemFree(opcode);opcode=NULL;cpt++;
+printf("testing BUILDROM late declaration 1 OK\n");
+
+	memset(&param,0,sizeof(struct s_parameter));
+	param.erronwarn=1;
+	ret=RasmAssembleInfoParam(AUTOTEST_LATE_7,strlen(AUTOTEST_LATE_7),&opcode,&opcodelen,&debug,&param);
+	if (ret) {} else {printf("Autotest %03d ERROR (No warning with BUILDROM and previous code)\n",cpt);exit(-1);}
+	if (opcode) MemFree(opcode);opcode=NULL;cpt++;
+printf("testing BUILDROM late declaration 2 OK\n");
+
+	memset(&param,0,sizeof(struct s_parameter));
+	param.erronwarn=1;
+	ret=RasmAssembleInfoParam(AUTOTEST_LATE_8,strlen(AUTOTEST_LATE_8),&opcode,&opcodelen,&debug,&param);
+	if (ret) {} else {printf("Autotest %03d ERROR (No warning with BUILDTAPE and previous code)\n",cpt);exit(-1);}
+	if (opcode) MemFree(opcode);opcode=NULL;cpt++;
+printf("testing BUILDTAPE late declaration 1 OK\n");
+
+	memset(&param,0,sizeof(struct s_parameter));
+	param.erronwarn=1;
+	ret=RasmAssembleInfoParam(AUTOTEST_LATE_9,strlen(AUTOTEST_LATE_9),&opcode,&opcodelen,&debug,&param);
+	if (ret) {} else {printf("Autotest %03d ERROR (No warning with BUILDTAPE and previous code)\n",cpt);exit(-1);}
+	if (opcode) MemFree(opcode);opcode=NULL;cpt++;
+printf("testing BUILDTAPE late declaration 2 OK\n");
+
+
+
 
 
 	ret=RasmAssemble(AUTOTEST_LIMITOK1,strlen(AUTOTEST_LIMITOK1),&opcode,&opcodelen);
@@ -33643,6 +33787,37 @@ printf("testing INCBIN+offset OK\n");
 	if (!ret && opcodelen==1000) {} else {printf("Autotest %03d ERROR (INCBIN+size)\n",cpt);MiniDump(opcode,opcodelen);exit(-1);}
 	if (opcode) MemFree(opcode);opcode=NULL;cpt++;
 printf("testing INCBIN+size OK\n");
+
+
+#define AUTOTEST_SLICE "repeat 16,tile,0: repeat 16,tileh,0: org tileh*256+tile*16: incbin 'rasmoutput_tiles.bin',256*tile+16*tileh,16: rend: rend:"\
+	"repeat 4,tile,0: repeat 16,tileh,0: org 16*256+tileh*256+tile*16: incbin 'rasmoutput_tiles.bin',256*(tile+16)+16*tileh,16: rend: rend:"\
+	"align 256:incbin 'rasmoutput_tiles.bin',SLICE,16,16"
+	ret=RasmAssemble(AUTOTEST_SLICE,strlen(AUTOTEST_SLICE),&opcode,&opcodelen);
+	if (!ret && opcodelen==8000+8192 && memcmp(opcode,opcode+8192,8000)==0) {} else {printf("Autotest %03d ERROR (INCBIN+SLICE)\n",cpt);MiniDump(opcode,opcodelen);exit(-1);}
+	if (opcode) MemFree(opcode);opcode=NULL;cpt++;
+printf("testing INCBIN+SLICE option OK\n");
+
+#define AUTOTEST_SLICE_MIS "repeat 16,tile,0: repeat 16,tileh,0: org tileh*256+tile*16: incbin 'rasmoutput_tiles.bin',256*tile+16*tileh,16: rend: rend:"\
+	"repeat 4,tile,0: repeat 16,tileh,0: org 16*256+tileh*256+tile*16: incbin 'rasmoutput_tiles.bin',256*(tile+16)+16*tileh,16: rend: rend:"\
+	"incbin 'rasmoutput_tiles.bin',SLICE,16,16"
+	ret=RasmAssemble(AUTOTEST_SLICE_MIS,strlen(AUTOTEST_SLICE_MIS),&opcode,&opcodelen);
+	if (!ret && opcodelen==8000+8192 && memcmp(opcode,opcode+8192,8000)==0) {} else {printf("Autotest %03d ERROR (INCBIN+misaligned SLICE)\n",cpt);MiniDump(opcode,opcodelen);exit(-1);}
+	if (opcode) MemFree(opcode);opcode=NULL;cpt++;
+printf("testing INCBIN+misaligned SLICE option OK\n");
+
+#define AUTOTEST_SLICE_GRAY " gray0=0: gray1=1: gray2=3: gray3=2: gray4=6: gray5=7: gray6=5: gray7=4: gray8=0+8: gray9=1+8: gray10=3+8:"\
+	"gray11=2+8: gray12=6+8: gray13=7+8: gray14=5+8: gray15=4+8: repeat 16,tile,0: repeat 16,tileh,0: org tileh*256+tile*16:"\
+	"incbin 'rasmoutput_tiles.bin',256*tile+16*gray{tileh},16: rend: rend: repeat 4,tile,0: repeat 16,tileh,0: org 16*256+tileh*256+tile*16:"\
+	"incbin 'rasmoutput_tiles.bin',256*(tile+16)+16*gray{tileh},16: rend: rend: align 256:incbin 'rasmoutput_tiles.bin',ISLICE,16,16"
+	ret=RasmAssemble(AUTOTEST_SLICE_GRAY,strlen(AUTOTEST_SLICE_GRAY),&opcode,&opcodelen);
+	if (!ret && opcodelen==8000+8192 && memcmp(opcode,opcode+8192,8000)==0) {} else {printf("Autotest %03d ERROR (INCBIN+ISLICE)\n",cpt);MiniDump(opcode,opcodelen);exit(-1);}
+	if (opcode) MemFree(opcode);opcode=NULL;cpt++;
+printf("testing INCBIN+ISLICE option OK\n");
+
+
+#ifndef OS_WIN
+	FileRemoveIfExists("rasmoutput_tiles.raw"); // we have done with tiles
+#endif
 
 #ifndef NO_3RD_PARTIES
 	ret=RasmAssemble(AUTOTEST_LZ4_A,strlen(AUTOTEST_LZ4_A),&opcode,&opcodelen);

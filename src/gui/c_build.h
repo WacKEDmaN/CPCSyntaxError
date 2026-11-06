@@ -97,6 +97,9 @@ std::string findCpctelera(const std::string& folder);
 // folder beside this program's, else the zcc on the PATH. "" when none.
 std::string findZ88dk(const std::string& folder);
 
+// "cache/cbuild" beside the program (or under CPCSE_HOME): the cacheFolder to give buildC.
+std::string defaultCacheFolder();
+
 // Build the project the main file belongs to. Runs the tools on threads; calls progress
 // with a line now and then (from those threads). Safe to run off the UI thread.
 CBuildResult buildC(const CToolchain& tools, const std::string& mainPath, const std::string& cacheFolder,

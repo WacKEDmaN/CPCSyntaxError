@@ -562,13 +562,21 @@ bool M4SdCard::build() {
 
     for (auto& n : nodes) {
         if (n.get() == rootNode) continue;
-        Known k; k.dir = n->dir; k.size = n->size; k.realPath = n->realPath;
+        Known k; k.dir = n->dir; k.size = n->size; k.realPath = n->realPath; k.cluster = n->cluster;
         k.hash = n->dir ? 0 : fnv(n->data.data(), n->data.size());
         snapshot[M4Storage::lower(n->realPath)] = k;
     }
     builtRevision = storage.revision;
     dirtySectors = false;
     built = true;
+    return true;
+}
+
+bool M4SdCard::fileStartSector(const std::string& realPath, uint32_t& lba) {
+    if (!ensureBuilt()) return false;
+    auto it = snapshot.find(M4Storage::lower(realPath));
+    if (it == snapshot.end() || it->second.dir || it->second.cluster < 2) return false;
+    lba = dataStart + (it->second.cluster - 2) * spc;
     return true;
 }
 

@@ -156,6 +156,10 @@ Select the expansions in the **Expansions** menu or in the Settings window.
   is a folder on your PC: `symide` next to the program, or a folder that you select. SymbOS
   reads and writes it as one FAT16 partition. The **X-MASS** is the same IDE/CF interface
   alone, at `&FD08`.
+- **Albireo** (one or two boards, at `&FE80` and `&FE40`): the CH376 chip with an **SD card**
+  and a **USB port**. The SD card is a folder on your PC, as one FAT16 disc. The USB port
+  takes a USB stick (a folder) or a USB mouse (your PC's mouse, for SymbOS and FutureOS).
+  UniDOS with its Albireo node finds the board, and SAVE and LOAD work on the card.
 - **SYMBiFACE III**, more:
   - **Its sound card** (the SE-ONE at `&FF20`): SymAmp plays MP3 files through it, with
     volume, balance, bass, treble and the spectrum. TMTLOGIC's SE-ONE player, samples, speech
@@ -253,17 +257,21 @@ Select the expansions in the **Expansions** menu or in the Settings window.
   run. You can change the colours of the syntax.
   - Several programs can be open, each in its tab with the files it links after it. F9 builds
     the program of the tab on show.
-  - The **WinAPE** syntax choice takes WinAPE's directives (`&` hex, `byte`, `text`, `defl`,
-    macro parameters by name, `brk`, `run address,breakpoint`, `end`). Not supported:
-    `checksum`, `memory()`, and the files of `write` and `save`.
+  - RASM is the original from its GitHub, with no changes of ours.
+  - The **WinAPE** syntax choice gives RASM's own options: `&` is hex and expressions work as
+    in Maxam. RASM knows `brk`, `list`, `nolist`, `let`, `charset` and the `relocate`
+    directives itself. A `brk` label sets a debugger breakpoint.
 - **C programs** in the same window. Open a `.c` file: F9 builds it with
   [SDCC](https://sdcc.sourceforge.net) and, if you name a copy of
   [CPCtelera](https://github.com/Arnaud6128/cpctelera/tree/cpctelera_next) in **C settings...**,
   with CPCtelera's library. Ctrl+F9 builds it and runs it from BASIC, as a real CPC runs a
   binary. You do not need Cygwin, make or bash.
   - The project's `cfg/*.mk` asset steps run first: images, Tiled maps, Arkos Tracker 3 music,
-    packed data (zx0, zx1, zx7b) and `.bin` files. **Convert assets** runs all of them again.
-  - All 58 example projects of CPCtelera's "next" branch build and run.
+    packed data (zx0, zx1, zx7b, RLE-WB) and `.bin` files. Plus palettes and Plus hardware
+    sprites are made too. **Convert assets** runs all of them again.
+  - All 60 example projects of CPCtelera_next 1.04a build and run.
+  - The library cache and the build's temporary files are in the `cache` folder next to the
+    program.
   - SDCC is not included: install it separately. [z88dk](https://z88dk.org) can be the
     compiler in its place (sccz80 or zsdcc), in **C settings...**.
   - A CPCtelera project's disc and tape images and an SNA snapshot are made too.
@@ -428,6 +436,9 @@ cpcse.exe --shot out.bmp --model cpc6128 --frames 200 [--disk game.dsk] [--type 
   `mjpeg`, the default), an `.mp4` (`h264`, with ffmpeg), or a `.wav` with the sound only.
   `--record-source` picks the picture.
 - `--sf3-usb` and `--sf3-sd` fit a SYMBiFACE III with that folder as its USB stick or SD card.
+- `--albireo <folder>` fits an Albireo at `&FE80` with that folder as its SD card (`-` for
+  none). `--albireo-usb` gives its USB port: a folder (a USB stick), `mouse` or `none`.
+  `--albireo2` and `--albireo2-usb` do the same for a second board at `&FE40`.
 - `--tape-fast` sets the fast loading of the tape: a speed in baud, `instant`, or `off`. At
   the end, the emulator prints the decision for each block.
 - `--mouse` runs a small script after all the other steps. The commands are: `w` (wait
@@ -605,7 +616,8 @@ third_party/   Dear ImGui (docking branch), RASM, ymfm, the SP0256 core, minimp3
 | M4 board | Working. Files, DSK images and raw SD sectors use a folder on the PC. The ROM source of the M4 checks them. The WiFi uses the network of your PC. |
 | Multiface II | Working: STOP, the menu, save and reload. |
 | Symbiface II and III, X-MASS | Working: the mouse, the RTC and the IDE/CF interface. The ATA standard and SymbOS check them. |
-| SYMBiFACE III sound card, WiFi and functions | Working: SymAmp's MP3 driver, TMTLOGIC's programs (SEPLAYER, SAMPLER, SE-TALK, SE-SYNTH, EMR, WEB-DK) and ROM, and SF3Monitor. Not emulated: the ROM banks, the file functions, DFU, MIDI files, the FM radio's sound. |
+| Albireo | Working: the SD card, a USB stick and a USB mouse. The CH376 datasheets, the Albireo manual and UniDOS check them. Only the Albireo 2.0 (no UART, no interrupt line). |
+| SYMBiFACE III sound card, WiFi and functions | Working: SymAmp's MP3 driver, TMTLOGIC's programs (SEPLAYER, SAMPLER, SE-TALK, SE-SYNTH, EMR, WEB-DK) and ROM, and SF3Monitor. The ROM banks of the SD card work with SF3-RM.BAS. Not emulated: the file functions, DFU, MIDI files, the FM radio's sound. |
 | Mouse interfaces (AMX, Kempston, MultiPlay) | Working. Their CPCWiki pages check them. They are not yet tested with AMX Art, OCP Art Studio or Carrier Command. |
 | CRO ROM containers | Working. The two example files of the format start on the Plus. The CRO editor writes files byte for byte as Logon-System's CRO manager. |
 | GFX9000 (V9990) and Video9000 | Working. The data comes from the application manual from Yamaha and from tests of a real V9990 on a CPC. The blitter speeds are from the measurements of openMSX. |

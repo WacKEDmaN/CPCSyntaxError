@@ -23,6 +23,7 @@
 #include "sf2_rtc.h"
 #include "sf3.h"
 #include "symbiface_ide.h"
+#include "ch376.h"
 #include "hd20.h"
 #include "multiface.h"
 #include "monitor_model.h"
@@ -52,6 +53,8 @@ GX4000::GX4000() {
     sf2Rtc = new Symbiface2Rtc();
     sf3 = new Symbiface3();
     ide = new SymbifaceIde();
+    albireo[0] = new Ch376(0xfe80);
+    albireo[1] = new Ch376(0xfe40);
     hd20 = new Hd20();
     multiface = new Multiface2();
     memory->setUpperRomReadHandler([this](int address, int rom) { return m4 ? m4->readMemory(address, rom) : -1; });
@@ -101,7 +104,7 @@ GX4000::GX4000() {
         // WHOLE HSYNC (§15.1 p.146, "over a length R3 usec"), and only the end was being
         // delayed here, which stretched every pulse by a usec (GateArray::cHsyncFallArmed).
         if (hsyncDelay > 0) { gateArray->armCHsyncFall(hsyncDelay); gateArrayHsyncPending = hsyncDelay + 1; }
-        else gateArray->onHsync();
+        else { gateArray->onHsync(); if (plusHardware) asic->onHsyncEnd(((crtc->vertical & 0x3f) << 3) | (crtc->raster & 7)); }
         crtc->gateArrayBlanking = gateArray->blanking();   // ACCC §16.2.1
         // ACCC §16.1: C-SYNC reaches the monitor when V26 reaches 2, two HSYNCs
         // after the CRTC raised VSYNC.
@@ -154,6 +157,7 @@ GX4000::GX4000() {
     o.onCharacter = [this]() {
         if (gateArrayHsyncPending > 0 && --gateArrayHsyncPending == 0) {
             gateArray->onHsync();                         // ACCC §27.6.5 (ASIC lag)
+            if (plusHardware) asic->onHsyncEnd(((crtc->vertical & 0x3f) << 3) | (crtc->raster & 7));
             crtc->gateArrayBlanking = gateArray->blanking();
         }
         gateArray->onCrtcVsyncPin(crtc->vsync);          // ACCC §16.2.3 / p.164 (CRTC 3/4)
@@ -192,21 +196,6 @@ GX4000::GX4000() {
     // Plus as on the CPC. The Plus used to file one record per CRTC line and close its
     // picture at the CRTC frame after a VSYNC, which an R0 rupture (sixteen CRTC lines
     // in one monitor line, SHAKER A3) or a suppressed VSYNC (Alcon 2020) tore apart.
-    o.onScanline = [this](int) {
-        if (plusHardware) {
-            int scanline = ((crtc->vertical & 0x3f) << 3) | (crtc->raster & 7);
-            if (asic->rasterInterruptEnabled() && scanline == asic->rasterInterruptLine) {
-                int r2 = crtc->registers[2];
-                int width = (crtc->registers[3] & 0x0f) ? (crtc->registers[3] & 0x0f) : 16;
-                int r0 = crtc->registers[0];
-                if (r2 + width >= r0 && !asic->rasterInterruptPending) {
-                    asic->raiseRasterInterrupt(cpu);
-                    asic->rasterInterruptDelay = 0;
-                    asic->suppressPriDelayLine = scanline;
-                }
-            }
-        }
-    };
     o.onSelect = [this](int value) { if (plusHardware) asic->advanceUnlock(value); };
     o.onLightgunBeam = [this](int, int) {
         // asked first, and the mode read in place: a copy of the string each call was a
@@ -243,6 +232,20 @@ GX4000::GX4000() {
     crtc = new CRTC6845(o);
 
     asic->onSoftScrollChange = [this]() { crtc->vlc = crtc->videoRaster(asic->verticalScroll); };
+    // CPCSE_TRACE_ASIC=<n>: the first n writes to &6800-&6807 (PRI, SPLT, SSA, SSCR, IVR) with the
+    // CRTC counters they land on, from frame CPCSE_TRACE_ASIC_FROM on. To stderr.
+    if (const char* want = std::getenv("CPCSE_TRACE_ASIC")) {
+        static long budget = 0;
+        static long from = 0;
+        budget = std::atol(want);
+        from = std::getenv("CPCSE_TRACE_ASIC_FROM") ? std::atol(std::getenv("CPCSE_TRACE_ASIC_FROM")) : 0;
+        asic->onRegisterWrite = [this](int address, int value) {
+            if (budget <= 0 || crtc->frame < from) return;
+            budget -= 1;
+            std::fprintf(stderr, "f%-6d &%04X <- %02X  C0=%2d C4=%3d C9=%d  pc=%04X\n", crtc->frame,
+                         0x4000 + address, value & 0xff, crtc->horizontal, crtc->vertical, crtc->raster, cpu->pc & 0xffff);
+        };
+    }
     keyboard = new KeyboardMatrix();
     keyboard->onLightgunRead = [this](const std::string& mode) {
         if (mode == "trojan") crtc->refreshTrojanLightgun();
@@ -344,7 +347,7 @@ GX4000::GX4000() {
 
 GX4000::~GX4000() {
     delete cpu; delete fdc; delete gamepad; delete ppi; delete tape; delete dac; delete ay; delete keyboard;
-    delete crtc; delete monitorRenderer; delete sf3; delete ide; delete hd20; delete multiface; delete sf2Rtc; delete symbifaceMouse; delete v9990; delete opl4; delete playcity; delete serial; delete speech;
+    delete crtc; delete monitorRenderer; delete sf3; delete ide; delete albireo[0]; delete albireo[1]; delete hd20; delete multiface; delete sf2Rtc; delete symbifaceMouse; delete v9990; delete opl4; delete playcity; delete serial; delete speech;
     delete m4; delete gateArray; delete asic; delete memory;
 }
 
@@ -1004,6 +1007,7 @@ void GX4000::writePort(int port, int value) {
     if (sf2Rtc->handlesWritePort(port)) { sf2Rtc->writePort(port, value); return; }
     if (sf3->handlesWritePort(port)) { sf3->writePort(port, value); return; }
     if (ide->handlesPort(port)) { ide->writePort(port, value); return; }
+    for (Ch376* a : albireo) if (a->handlesPort(port)) { a->writePort(port, value, machineCycles + hardwareCyclesAdvanced); return; }
     if (hd20->handlesPort(port)) { hd20->writePort(port, value); return; }
     // M4: DATAPORT &FExx takes the command, ACKPORT &FCxx starts it (M4ROM.s)
     if (m4->enabled && high == 0xfe) { m4->dataPortWrite(value); return; }
@@ -1079,6 +1083,7 @@ int GX4000::readPortUntraced(int port) {
     if (sf2Rtc->handlesPort(port)) return sf2Rtc->readPort(port);
     if (sf3->handlesPort(port)) return sf3->readPort(port);
     if (ide->handlesPort(port)) return ide->readPort(port);
+    for (Ch376* a : albireo) if (a->handlesPort(port)) return a->readPort(port, machineCycles + hardwareCyclesAdvanced);
     if (hd20->handlesPort(port)) return hd20->readPort(port);
     if (mouseIf.handlesPort(port)) return mouseIf.readPort(port);
     if (m4->enabled && high == 0xfe) return m4->dataPortRead();
@@ -1155,9 +1160,11 @@ int GX4000::cpcInstructionCycles(int z80Cycles, bool ioAccessed) {
     if (ioAccessed && (z80Cycles & 3) == 0) cycles += 4;
     // ACCC §27.4 (p.286): "The Z80A RST #38 instruction lasts 4 µsec when called by
     // code. When an interrupt occurs, the call in #38 lasts 5 µsec." The difference is
-    // the interrupt-acknowledge cycle. (The chapter states the figure for IM 1; the
-    // acknowledge is common to both modes, so IM 2 carries it too.)
-    if (cpu->lastWasInterrupt) return cycles + 4;
+    // the interrupt-acknowledge cycle. §27.5 (p.287), IM 2: "the call to the pointer
+    // located in the table lasts 7 µsec"; its 19 T-states round to 5, one more than the
+    // acknowledge alone gives: each of its M-cycles (acknowledge, two stack writes, two
+    // vector reads) takes whole microseconds. SHAKER BR/D prints 07 on the real CPC.
+    if (cpu->lastWasInterrupt) return cycles + (cpu->im == 2 ? 8 : 4);
     int opcode = cpu->lastOpcode;
     int extended = cpu->lastEdOpcode;
     if (opcode != -1) {
@@ -1376,7 +1383,14 @@ int GX4000::stepInstruction() {
     // with the two internal T-states of its 6-T M1 and takes the hit (#59), while
     // CP (IX+n) ends on a memory read (#C2) and SET n,(IX+n') on a memory write (#40),
     // and both are immune, as is NOP, whose only M-cycle is its fetch.
-    const bool immuneToLateEdge = cpu->lastBusAccessEnd >= z80Cycles;
+    // ...and the edge only catches the last cycle T if it sits early enough in the
+    // microsecond: the idle T-states the instruction leaves before the boundary, against
+    // the chip's own lateness (interruptMissMinIdleT, §14.4).
+    const int idleRealEnd = z80Cycles + cpu->alignmentWaits;
+    const int idleRounded = (idleRealEnd + 3) & ~3;
+    const int idleT = (cpu->lastWasInterrupt || cycles != idleRounded) ? 0 : idleRounded - idleRealEnd;
+    const bool immuneToLateEdge = cpu->lastBusAccessEnd >= z80Cycles
+        || (crtc->behaviour && idleT < crtc->behaviour->interruptMissMinIdleT());
     if (raiseMicrosecond > 0 && raiseMicrosecond == cycles / 4 && !immuneToLateEdge
         && crtc->behaviour && crtc->behaviour->hsyncEndMissesInterruptSample()) {
         interruptHeldOver = cpu->pendingInterrupt;
@@ -1467,6 +1481,7 @@ int GX4000::runFrame() {
         if (debuggerPaused) break;
     }
     if (ide->enabled) ide->poll(machineCycles);   // the disc's write-back once idle
+    for (Ch376* a : albireo) if (a->enabled) a->poll(machineCycles);
     return elapsed;
 }
 void GX4000::reset() {
@@ -1484,7 +1499,7 @@ void GX4000::reset() {
     memory->reset(); asic->reset(); gateArray->reset(); rasterCapture.clear(); rasterFrame.clear(); previousRasterFrame.clear();
     spritePatternSnapshot.clear(); spritePatternRevision = -1; crtc->reset();
     videoFrameRegisters = crtc->registers; videoCaptureRegisters = crtc->registers;
-    keyboard->reset(); ay->reset(); ppi->reset(); fdc->reset(); dac->reset(); tape->reset(); m4->reset(); v9990->reset(); opl4->reset(); playcity->reset(); serial->reset(); speech->reset(); symbifaceMouse->reset(); sf2Rtc->reset(); sf3->reset(); ide->reset(); hd20->reset(); multiface->reset(); cpu->reset();
+    keyboard->reset(); ay->reset(); ppi->reset(); fdc->reset(); dac->reset(); tape->reset(); m4->reset(); v9990->reset(); opl4->reset(); playcity->reset(); serial->reset(); speech->reset(); symbifaceMouse->reset(); sf2Rtc->reset(); sf3->reset(); ide->reset(); albireo[0]->reset(); albireo[1]->reset(); hd20->reset(); multiface->reset(); cpu->reset();
     cpu->sp = 0xbfff;
 }
 void GX4000::acknowledgeInterrupt() {

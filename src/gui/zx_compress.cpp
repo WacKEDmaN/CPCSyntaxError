@@ -419,8 +419,24 @@ bool zxCompress(const std::string& method, const std::vector<uint8_t>& data, std
     } else if (method == "zx7b") {
         std::vector<Optimal> optimal = optimize7(input.data(), input.size());
         out = compress7(optimal, input.data(), input.size());
+    } else if (method == "rlewb") {
+        // RLE-WB (format by Eric Boez, 2019, for FUSION-C; cpctelera_next 1.04a's
+        // tools/rlewb, binary mode "0 3"). Written here from the format, not from that
+        // program's source: 2 to 251 equal bytes -> &80 count byte; a lone &80 -> &80 &00;
+        // any other byte as it is; the end -> &80 &FF &80 &FF. The original reads one byte
+        // past the input's end from memory it never sets, so its last run can vary; here a
+        // run stops at the end of the data.
+        const uint8_t CODE = 0x80;
+        for (size_t r = 0; r < input.size();) {
+            size_t e = 1;
+            while (r + e < input.size() && input[r + e] == input[r] && e < 251) e++;
+            if (e >= 2) { out.push_back(CODE); out.push_back((uint8_t)e); out.push_back(input[r]); r += e; }
+            else if (input[r] == CODE) { out.push_back(CODE); out.push_back(0); r++; }
+            else { out.push_back(input[r]); r++; }
+        }
+        for (int k = 0; k < 2; k++) { out.push_back(CODE); out.push_back(0xFF); }
     } else {
-        why = "unknown compressor '" + method + "' (zx7b, zx1, zx1b, zx0 or zx0b)";
+        why = "unknown compressor '" + method + "' (zx7b, zx1, zx1b, zx0, zx0b or rlewb)";
         return false;
     }
     if (backwards) std::reverse(out.begin(), out.end());

@@ -35,7 +35,7 @@ void PlusAsic::reset() {
     rasterInterruptLine = 0; rasterSplitLine = 0; splitAddress = 0;
     softScrollControl = 0; horizontalScroll = 0; verticalScroll = 0;
     interruptVector = 0x01;
-    rasterInterruptDelay = 0; pendingRasterLine = -1; suppressPriDelayLine = -1;
+    rasterInterruptDelay = 0; pendingRasterLine = -1;
     rasterInterruptPending = false; shadowInterrupt = false; rasterAcknowledgeLatched = false;
     legacyDmaPauseTiming = false;
     irqStatus = 0; plus8kBug = 6;
@@ -103,6 +103,7 @@ void PlusAsic::writeAsicRam(int address, int value) { writeAsicRam(address, valu
 void PlusAsic::writeAsicRam(int address, int value, int previous) {
     value &= 0xff;
     if (onPaletteWrite && address >= 0x2400 && address < 0x2440) onPaletteWrite(onPaletteWriteContext, address, value);
+    if (onRegisterWrite && address >= 0x2800 && address < 0x2808) onRegisterWrite(address, value);
     if (address < 0x1000) {
         value &= 0x0f;
         if ((previous & 0x0f) != value) { spriteDataRevision += 1; spriteRevision += 1; }
@@ -199,18 +200,22 @@ void PlusAsic::setDmaStatus(int value) {
 void PlusAsic::onHsyncStart(AY38912* ay, int rasterLine, int hsyncWidth) {
     dmaAy = ay; dmaCycle = DMA_DEAD; dmaCycleDelay = 0;
     legacyDmaPauseTiming = rasterLine == -1 && hsyncWidth == -1;
-    pendingRasterLine = rasterLine;
-    bool legacyPriTiming = hsyncWidth == -1;
-    int width = legacyPriTiming ? 10 : std::max(1, std::min(16, hsyncWidth ? hsyncWidth : 16));
-    if (rasterLine != -1 && suppressPriDelayLine == rasterLine) {
-        suppressPriDelayLine = -1;
-        rasterInterruptDelay = 0;
-    } else if (priAtHsyncStart && rasterLine != -1 && rasterInterruptEnabled() && rasterLine == rasterInterruptLine) {
-        rasterInterruptDelay = 0; raiseRasterInterrupt();
-    } else {
-        rasterInterruptDelay = rasterLine == -1 ? 0 : (legacyPriTiming ? width : std::min(width, 7));
-    }
     triggerAsicInterrupt();
+}
+// The PRI is armed where the normal interrupt is: the "Arnold V" specification (2.4) has it
+// occur "instead" of the normal interrupt, and ACCC §27.6.1 has every interrupt start "1 µsec
+// after the end of the HSYNC regardless of the CRTC" (§27.6.5: 16 usec after C0vs=R2 with
+// R3=14 on CRTC 3/4). So the line compared is the one the HSYNC ENDS on, and the raise is a
+// microsecond later, with GateArray::onHsync's own countdown. An HSYNC that runs past R0
+// therefore matches the NEXT line. MEASURED on RE-WIRED (BND 26) on a real 6128
+// Plus, R2=51 R3=14 R0=63 with PRI=1: its per-line SSCR writes must land in the border
+// (C0>=R1=50) for the plasma to reach the right edge, and with the old raise (HSYNC start
+// + 7, or the line start when R2+R3 >= R0) they landed on C0=47 and cut it 3 characters short.
+void PlusAsic::onHsyncEnd(int rasterLine) {
+    if (rasterInterruptEnabled() && rasterLine == rasterInterruptLine) {
+        pendingRasterLine = rasterLine;
+        rasterInterruptDelay = 2;
+    }
 }
 void PlusAsic::onCharacter() {
     tickDmaCycle(dmaAy);

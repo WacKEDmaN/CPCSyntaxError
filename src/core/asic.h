@@ -36,7 +36,6 @@ public:
     int interruptVector = 0x01;
     int rasterInterruptDelay = 0;
     int pendingRasterLine = -1;       // null -> -1
-    int suppressPriDelayLine = -1;    // null -> -1
     bool rasterInterruptPending = false, shadowInterrupt = false, rasterAcknowledgeLatched = false;
     bool legacyDmaPauseTiming = false;
     int irqStatus = 0, plus8kBug = 6;
@@ -53,10 +52,10 @@ public:
     int dmaCycle = 0, dmaCycleDelay = 0;
     AY38912* dmaAy = nullptr;
     int dmaStatus = 0;
-    bool priAtHsyncStart = false;
 
     // Callbacks wired by the emulator (optional; empty == absent).
     std::function<void()> onSoftScrollChange;
+    std::function<void(int address, int value)> onRegisterWrite;   // &6800-&6807 (for CPCSE_TRACE_ASIC)
     std::function<void()> onInterruptReset;
     std::function<void(int vector)> onAsicInterrupt;
     std::function<bool()> hasPendingInterrupt;
@@ -86,6 +85,7 @@ public:
     void updateDmaStatusRam();
     void setDmaStatus(int value);
     void onHsyncStart(AY38912* ay, int rasterLine = -1, int hsyncWidth = -1);
+    void onHsyncEnd(int rasterLine);   // the GATE ARRAY's HSYNC end: arms the PRI (ACCC §27.6.1)
     void onCharacter();
     void checkRasterInterrupt(int rasterLine);
     bool fetchDma(int channelIndex);

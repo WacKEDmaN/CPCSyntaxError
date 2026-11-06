@@ -1,9 +1,9 @@
 #define PROGRAM_NAME      "RASM"
 #define PROGRAM_VERSION   "3.3"
-#define PROGRAM_SUBVERSION   ".0"
-#define PROGRAM_VERSION_FLOAT   "3.3"
-#define PROGRAM_DATE      "16/09/2026"
-#define PROGRAM_COPYRIGHT "© 2017 BERGE Edouard / roudoudou from Praline"
+#define PROGRAM_SUBVERSION   ".2"
+#define PROGRAM_VERSION_FLOAT   "3.32"
+#define PROGRAM_DATE      "01/11/2026"
+#define PROGRAM_COPYRIGHT "© 2017 BERGE Edouard / roudoudou"
 #ifndef SUPERFAST
 #define RELEASE_NAME      "Monolith"
 #else
@@ -59,7 +59,6 @@ struct s_parameter {
 	char *inline_asm;
 	int npath,mpath;
 	int noampersand;
-	int winape;          /* CPCSyntaxError: WinAPE's directives and their meanings */
 	int cprinfo,cprinfoexport;
 	char module_separator;
 	int enforce_symbol_case;
@@ -91,10 +90,6 @@ struct s_rasm_info {
 	// export snapshot or Cartridhe informations to emulator
 	unsigned char *emurom;
 	int lenrom;
-	/* CPCSyntaxError: the breakpoints the source sets (BREAKPOINT, BRK labels with -eb,
-	 * WinAPE's BRK and RUN address,breakpoint), as addresses */
-	int *breakpoint;
-	int nbbreakpoint;
 };
 
 #ifndef INSIDE_RASM

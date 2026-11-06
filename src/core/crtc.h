@@ -232,6 +232,15 @@ struct CrtcBehaviour {
     // prints exactly that split in its own expected values -- "CRTC 3+4:#58 / OTHERS:#59"
     // under the columns "HSYNC OFF on 0/16Mhz" and "1-2/16Mhz".
     virtual bool hsyncEndMissesInterruptSample() const { return true; }
+    // ...and how late the edge is decides which instructions it catches: the Z80A's last
+    // cycle T sits earlier in the microsecond the more idle T-states the instruction leaves
+    // before the boundary, so a later edge catches instructions with less idle time. §14.4's
+    // table (p.134) has CRTC 0 and 2 end the HSYNC 1/16-2/16 usec after the boundary and
+    // CRTC 1 2/16-3/16. MEASURED on SHAKER DI (real 6128s): DEC DE (2 idle T-states) takes
+    // the extra instruction on CRTC 0, 1 and 2 (DI/A #59, DI/B3); ADD HL,DE (1 idle T-state)
+    // takes it on CRTC 1 only (DI/B4: CRTC 0 and 2 read #0550 on entries #02,#05,#08...).
+    // CRTC 1 overrides it with 0 (see there).
+    virtual int interruptMissMinIdleT() const { return 2; }
     // ACCC §16.2.3 (p.165), the other end of the same phase shift. "The GATE ARRAY clocks
     // the CRTC via a clock signal CLK whose period is 5 x 0.0625 usec high and 11 x
     // 0.0625 usec low. When the CRTC signals a start or an end of HSYNC, THERE ARE DELAYS
@@ -531,8 +540,9 @@ struct CrtcBehaviour {
     // ACCC §16.4.3: if that condition lands inside the HSYNC (C0 = R2 .. R2+R3, one
     // µsec longer than the visible HSYNC) the MC6845 makes a GHOST VSYNC — it counts
     // the lines as if a VSYNC were running, and so blocks a new one, but never
-    // enables the VSYNC pin. Default: no chip-level ghosting.
-    virtual bool vsyncStartIsGhost(CRTC6845& crtc) const { return false; }
+    // enables the VSYNC pin. Default: no chip-level ghosting. `written`: the condition
+    // was raised by an R7 write, not by C4 arriving at a line start.
+    virtual bool vsyncStartIsGhost(CRTC6845&, bool /*written*/) const { return false; }
     // ACCC §16.5 DELAYED VSYNC. Every chip delays VSYNC by half a line on the even
     // frame of an interlace mode (§16.5.1-4, and §19.3.1). CRTC 0 and CRTC 3/4 have
     // a SECOND case the others do not: "a delay of one complete line in the
@@ -558,6 +568,9 @@ struct CrtcBehaviour {
     // ACCC 1.10 §13.2.1: with R0=0 CRTC 0 never reaches C0=1, so C9 management is
     // never re-authorised: C9 (and with it every counter) FREEZES...
     virtual bool blocksRasterAdvance(CRTC6845& crtc) const { return false; }
+    // The VSYNC line counter steps only on a line whose C0 moved (R0>0), while C4 and C9 go
+    // on counting the 1 usec lines of R0=0. CRTC 1 (see crtc_type_1.h).
+    virtual bool vsyncCounterHeldByR0Zero(CRTC6845& crtc) const { return false; }
     // ...and, as a direct consequence of C9 being managed only once, "updates to
     // registers R4, R5 and R9 are no longer considered as long as R0=0" (R8 still is).
     virtual bool ignoresRegisterWrite(CRTC6845& crtc, int reg, int value) const { return false; }
@@ -640,10 +653,16 @@ public:
     int hsyncCounter = 0;
     bool hsync = false, vsync = false, vblank = false;
     bool r7Match = false, r4Match = false, r9Match = false;
+    // The line that just ended, for §16.3's release at the row start: its C4, and whether
+    // the VSYNC ran through it (taken in updateVertical before the VSYNC end is counted).
+    int c4BeforeLineStep = 0;
+    bool vsyncThroughLastLine = true;
+    bool c4ChangedInVsync = false;          // a C4 step changed C4=R7 while this VSYNC ran (§16.3, p.168)
     bool additionalLinePending = false;   // CRTC0 R.V.L.L. extra C4=1 line (ACCC §13.2.7)
     bool vsyncAuthorized = true;         // ACCC §13.2.2: set at C0=2, cancelled at C0=0
     bool r0FreezeArmed = false;          // ACCC §13.2.6: R0=0 freeze has been entered
     bool r0FreezeHiccup = false;         //   ... with C9=R9, so C4 still gets one step
+    bool c0ReachedOneThisLine = true;    // ACCC §13.2.4: C0 reached 1 in this line (C9 management)
     bool verticalAdjustActive = false, rasterMatchForced = false, lpenStrobe = false, updateReady = true;
     bool verticalMatchForced = false;    // ACCC §13.4: MC6845 latches the C4 reset at C0=0
     bool vsyncGhost = false;             // ACCC §16.4.3: counting a VSYNC with the pin off

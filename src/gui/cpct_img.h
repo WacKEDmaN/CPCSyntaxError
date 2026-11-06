@@ -21,6 +21,7 @@
 //     hardware values when asked, _W/_H defines with -osz), or a .bin with .h and .h.s
 //     offsets; then cpct_img2tileset's renames of <base>_palette / <base>_tileset.
 #pragma once
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -32,6 +33,8 @@ struct ImgConvert {
     std::string label;               // the image as the .mk wrote it, no extension (the header guard)
     int mode = 0;
     std::vector<int> firmwarePalette = { 1, 24, 20, 6, 26, 0, 2, 8, 10, 12, 14, 16, 18, 22, 24, 16 };
+    std::vector<uint32_t> rgbPalette;    // img2cpc -rgbp (IMG2SP SET_PALETTE_PLUS): 0xRRGGBB, used instead when set
+    bool hardwareSprites = false;        // img2cpc -sh (cpctelera_next 1.04a): CPC+ 16x16 sprites, a pen a byte
     int tileW = 4, tileH = 4;        // pixels
     std::string baseName = "g_tile";
     bool absoluteBaseName = false;

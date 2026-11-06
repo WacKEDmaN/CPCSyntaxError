@@ -53,7 +53,8 @@ public:
     CpcVideo* video = nullptr;
 
     // configuration the UI edits
-    std::string romDir = "roms";
+    std::string romDir = "roms";          // absolute once set (setRomDir): an assembly on its thread changes the working folder
+    std::string romDirAsGiven = "roms";   // ...and as the user gave it, for cpcse.ini
     std::string mediaDir = "media";   // where cartridges (incl. the Plus system cart) live
     std::vector<ModelProfile> models;
     int currentModel = -1;
@@ -260,6 +261,13 @@ public:
     // and samples: folders on this computer ("" = none).
     std::string sf3UsbFolder, sf3SdFolder;
     std::string ls3EepromFile;       // LambdaSpeak 3's 128 KB EEPROM, kept between sessions ("" = not kept)
+    // Two ALBIREO boards (core/ch376.h): [0] at &FE80, [1] at &FE40. Each has an SD card (a
+    // folder) and a USB port: "none", "stick" (a folder) or "mouse" (the host's mouse).
+    struct AlbireoBoard { bool enabled = false; std::string sdFolder, usb = "none", usbFolder; };
+    AlbireoBoard albireo[2];
+    void applyAlbireo();
+    void setAlbireo(int board, const AlbireoBoard& settings);
+    float albireoMouseX = 0, albireoMouseY = 0;   // the USB mouse's fractions of a count
     void setIdeFolder(const std::string& folder);
     // The Dobbertin HD20's image file ("" = none: then a SYMBiFACE III's USB stick
     // HD20/HD20_01.IMG, as the real SF3 finds it).

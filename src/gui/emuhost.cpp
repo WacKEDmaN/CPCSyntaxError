@@ -30,6 +30,7 @@
 #include "core/hd20.h"
 #include "core/symbiface_ide.h"
 #include "core/multiface.h"
+#include "core/ch376.h"
 #include "core/rs232.h"
 #include "core/host_serial.h"
 #include "core/sf2_rtc.h"
@@ -169,7 +170,10 @@ std::string EmuHost::findRom(const std::string& keyword) const {
 }
 
 void EmuHost::setRomDir(const std::string& dir) {
-    romDir = dir;
+    romDirAsGiven = dir;
+    std::error_code ec;
+    const std::filesystem::path abs = std::filesystem::absolute(std::filesystem::u8path(dir), ec);
+    romDir = ec ? dir : abs.u8string();
     scanModels();
 }
 
@@ -381,6 +385,7 @@ void EmuHost::applySettings() {
     applyMultiface();
     applySerial();
     applySymbiface();
+    applyAlbireo();
     applyMouseInterface();
     applyLightgun();
     applyTapeOptions();
@@ -536,6 +541,24 @@ void EmuHost::applySymbiface() {
         emu->sf3->audio->setOutputSampleRate((double)sampleRate);
         emu->sf3->net->linked = m4Network;
         emu->sf3->audio->ffmpeg = MediaRecorder::findFfmpeg(ffmpegPath);   // AAC, Ogg... (sf3_audio.h)
+        // the ROM table's host side (sf3.h, functions 62 and 63)
+        emu->sf3->fittedRoms = [this]() {
+            std::vector<int> out;
+            if (emu && emu->memory)
+                for (size_t i = 0; i < emu->memory->upperRoms.size(); i++) if (!emu->memory->upperRoms[i].empty()) out.push_back((int)i);
+            return out;
+        };
+        emu->sf3->startBank = [this]() { return sf3BankInUse(); };
+        emu->sf3->setStartBank = [this](int bank) {
+            sf3RomBank = bank;                     // kept in cpcse.ini; its ROMs at the next reset
+            status = "SF3: the machine starts with ROM bank " + std::to_string(bank) + " (at the next reset)";
+        };
+        emu->sf3->fitRomNow = [this](int slot, const Bytes& rom) {
+            if (!emu || !emu->memory || slot < 0 || slot > 255) return;
+            emu->memory->setUpperRom(slot, rom);
+            if (std::find(sf3RomSlots.begin(), sf3RomSlots.end(), slot) == sf3RomSlots.end()) sf3RomSlots.push_back(slot);
+            status = "SF3: ROM " + std::to_string(slot) + " fitted (|SROM)";
+        };
     }
     if (emu->ide) {
         // Both Symbifaces carry the IDE/CF interface at &FD06-&FD0F; the X-MASS is that
@@ -696,6 +719,36 @@ void EmuHost::setSf3Folder(bool usb, const std::string& folder) {
     if (!usb && applySf3Roms()) reset();       // another card: its bank's ROMs, from a restart
 }
 
+void EmuHost::applyAlbireo() {
+    if (!emu) return;
+    namespace fs = std::filesystem;
+    auto ensure = [](const std::string& folder) {
+        std::error_code ec;
+        const fs::path p = fs::u8path(folder);
+        if (!folder.empty() && !fs::exists(p, ec)) fs::create_directories(p, ec);
+    };
+    for (int i = 0; i < 2; i++) {
+        Ch376* chip = emu->albireo[i];
+        if (!chip) continue;
+        const AlbireoBoard& b = albireo[i];
+        if (!b.enabled) { chip->setEnabled(false); continue; }
+        ensure(b.sdFolder);
+        chip->setSdFolder(b.sdFolder);
+        if (b.usb == "stick" && !b.usbFolder.empty()) { ensure(b.usbFolder); chip->setUsb(Ch376::Usb::Stick, b.usbFolder); }
+        else chip->setUsb(b.usb == "mouse" ? Ch376::Usb::Mouse : Ch376::Usb::None);
+        chip->setEnabled(true);
+    }
+}
+
+void EmuHost::setAlbireo(int board, const AlbireoBoard& settings) {
+    if (board < 0 || board > 1) return;
+    albireo[board] = settings;
+    applyAlbireo();
+    const char* where = board == 0 ? "&FE80" : "&FE40";
+    status = "Albireo " + std::to_string(board + 1) + " (" + where + "): " + (settings.enabled ? "SD " + (settings.sdFolder.empty() ? std::string("empty") : settings.sdFolder)
+             + ", USB " + settings.usb : std::string("off"));
+}
+
 void EmuHost::setIdeFolder(const std::string& folder) {
     ideFolder = folder;
     applySymbiface();
@@ -766,9 +819,18 @@ void EmuHost::mouseMove(float dx, float dy) {
         mouseFracY += dy * mouseSensitivity;
         const int ix = (int)mouseFracX, iy = (int)mouseFracY;
         mouseFracX -= ix; mouseFracY -= iy;
-        if (ix == 0 && iy == 0) return;
-        if (mouseInterface == "amx") emu->keyboard->amxMove(ix, iy);
-        else emu->mouseIf.move(ix, iy);
+        if (ix != 0 || iy != 0) {
+            if (mouseInterface == "amx") emu->keyboard->amxMove(ix, iy);
+            else emu->mouseIf.move(ix, iy);
+        }
+    }
+    // An Albireo with a USB mouse: whole counts, the fractions kept for the next move.
+    if (emu && ((albireo[0].enabled && albireo[0].usb == "mouse") || (albireo[1].enabled && albireo[1].usb == "mouse"))) {
+        albireoMouseX += dx * mouseSensitivity;
+        albireoMouseY += dy * mouseSensitivity;
+        const int ix = (int)albireoMouseX, iy = (int)albireoMouseY;
+        albireoMouseX -= ix; albireoMouseY -= iy;
+        if (ix || iy) for (Ch376* a : emu->albireo) if (a && a->enabled) a->mouseMove(ix, iy);
     }
 }
 void EmuHost::mouseButton(int index, bool pressed) {
@@ -780,12 +842,14 @@ void EmuHost::mouseButton(int index, bool pressed) {
         if (mouseInterface == "amx") emu->keyboard->amxButton(index, pressed);
         else emu->mouseIf.button(index, pressed);
     }
+    if (emu) for (Ch376* a : emu->albireo) if (a && a->enabled) a->mouseButton(index, pressed);
 }
 void EmuHost::mouseScroll(float delta) {
     if (liveInputBlocked()) return;
     if (!applyingInput) { InputEvent e; e.kind = InputEvent::MouseScroll; e.x = delta; timelineLog(e); }
     if (symbifaceModule == "sf2" && emu && emu->symbifaceMouse) emu->symbifaceMouse->scroll(delta);
     else if (symbifaceModule == "sf3" && emu && emu->sf3) emu->sf3->scroll(delta);
+    if (emu && delta != 0) for (Ch376* a : emu->albireo) if (a && a->enabled) a->mouseWheel(delta > 0 ? 1 : -1);
 }
 
 void EmuHost::applyExpansionRoms() {
@@ -1854,7 +1918,8 @@ std::string EmuHost::timelineFingerprint() const {
         + "|" + std::to_string(gateArrayPart) + "|" + (z80Cmos ? "c" : "n") + "|" + dacType + "|" + lightgunType + "|"
         + (v9990Enabled ? "v" : "") + (opl4Enabled ? "o" : "") + (playCityEnabled ? "p" : "") + (m4Enabled ? "m" : "")
         + (serialEnabled ? "s" : "") + (multifaceEnabled ? "f" : "") + (gx4000Ram128 ? "g" : "") + (plusExpansionClassic ? "e" : "")
-        + "|" + speechKind + "|" + symbifaceModule + "|" + mouseInterface + "|" + diskName[0] + "|" + diskName[1] + "|" + tapeName + "|" + cartName;
+        + "|" + speechKind + "|" + symbifaceModule + "|" + mouseInterface + "|" + (albireo[0].enabled ? "A" + albireo[0].usb : "") + (albireo[1].enabled ? "B" + albireo[1].usb : "")
+        + "|" + diskName[0] + "|" + diskName[1] + "|" + tapeName + "|" + cartName;
     for (const auto& r : expansionRoms) f += "|" + std::to_string(r.slot) + ":" + r.name;
     return f;
 }

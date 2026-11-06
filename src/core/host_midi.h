@@ -2,9 +2,12 @@
 //
 // LambdaSpeak 3's UART at 31250 baud is MIDI ("BAUD mode 6, which configures it for 31250
 // BAUDs as required for MIDI", its README). The bytes it sends are cut into MIDI messages
-// here (running status, System Exclusive, real-time bytes between) and sent to the host's
-// default MIDI out: the Windows MIDI mapper through winmm. On other systems there is no
-// output yet; error() says so.
+// here (running status, System Exclusive, real-time bytes between) and sent to the host:
+//   Windows  the MIDI mapper through winmm (the GS wavetable synth, or the device chosen)
+//   macOS    Apple's DLS software synthesizer (AudioToolbox), out through the default output
+//   Linux    an ALSA sequencer port "CPCSyntaxError", connected to the first synthesizer found
+//            (FluidSynth, TiMidity, a sound card's synth); libasound is loaded when the first
+//            byte comes, so the program runs without it. With none, error() says why.
 #pragma once
 #include "common.h"
 
