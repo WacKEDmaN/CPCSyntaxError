@@ -39,6 +39,7 @@ public:
     bool cts() const;
     bool dcd() const;
     bool ri() const;
+    bool dsr() const;                  // the far end's DTR (a COM port; a loopback plug: our DTR)
     void setRts(bool on);
     void setDtr(bool on);
     void setBaud(int baud, int dataBits, int stopHalves, int parity);   // a COM port's own speed

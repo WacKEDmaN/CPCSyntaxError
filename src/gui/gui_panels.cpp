@@ -780,6 +780,15 @@ void GuiShell::sectionExpansions(bool asMenu) {
             ImGui::Separator();
             choiceRow(true, albUsb[b], s.usb, pickUsb);
             if (ImGui::MenuItem(("USB stick folder...##albstick" + id).c_str())) pickStick();
+            if (b == 0) {
+                ImGui::Separator();
+                if (ImGui::MenuItem("Albireo 1.1: serial link (&FEB0)##albser", nullptr, s.serial)) { s.serial = !s.serial; host.setAlbireo(0, s); }
+                bool* sw[4] = { &s.s1, &s.s2, &s.s3, &s.s4 };
+                static const char* swName[4] = { "S1 CH376 interrupt##albs1", "S2 CH376 reset with the CPC##albs2",
+                                                 "S3 remote reset##albs3", "S4 remote interrupt##albs4" };
+                for (int k = 0; k < 4; k++)
+                    if (ImGui::MenuItem(swName[k], nullptr, *sw[k], s.serial)) { *sw[k] = !*sw[k]; host.setAlbireo(0, s); }
+            }
             ImGui::EndMenu();
             return;
         }
@@ -794,6 +803,64 @@ void GuiShell::sectionExpansions(bool asMenu) {
             ImGui::TextUnformatted("USB stick");
             if (after().smallButton("Folder...##stick")) pickStick();
             if (!s.usbFolder.empty()) ImGui::TextDisabled("  %s", s.usbFolder.c_str());
+        }
+        if (b == 0) {
+            // the Albireo 1.1: an SC16C650B UART at &FEB0 with a USB serial link to a PC, and
+            // the board's interrupts (core/albireo_serial.h)
+            if (ImGui::Checkbox("Serial link (Albireo 1.1)", &s.serial)) host.setAlbireo(0, s);
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("The SC16C650B UART at &FEB0-&FEB7 and its USB serial link to another computer, up to 1.5 Mbaud,\n"
+                                  "and the board's interrupts (INT or NMI). Albireo 2.0 has no UART.");
+            if (s.serial) {
+                static const Choice albKinds[] = { { "Nothing", "", "No far end: what the CPC sends is lost" },
+                                                   { "Listen on a port", "listen", "Another program connects to this computer's port" },
+                                                   { "Connect to host:port", "tcp", "A TCP connection out" },
+                                                   { "Serial port", "com", "One of this computer's serial ports (COM3, /dev/ttyUSB0)" },
+                                                   { "Loopback plug", "loopback", "What the CPC sends comes back; its RTS to CTS, DTR to DSR" } };
+                const size_t colon = s.serialLine.find(':');
+                const std::string kind = s.serialLine.substr(0, colon);
+                const std::string target = colon == std::string::npos ? "" : s.serialLine.substr(colon + 1);
+                const char* shown = albKinds[0].label;
+                for (const Choice& k : albKinds) if (kind == k.value) shown = k.label;
+                fitNextItemWidth(180, "Far end##albline");
+                if (ImGui::BeginCombo("Far end##albline", shown)) {
+                    for (const Choice& k : albKinds) {
+                        if (ImGui::Selectable(k.label, kind == k.value)) {
+                            const std::string v = k.value;
+                            s.serialLine = v == "listen" ? "listen:2324" : v == "tcp" ? "tcp:localhost:23" : v == "com" ? "com:COM1" : v;
+                            host.setAlbireo(0, s);
+                        }
+                        if (k.tip && ImGui::IsItemHovered()) ImGui::SetTooltip("%s", k.tip);
+                    }
+                    ImGui::EndCombo();
+                }
+                if (kind == "listen" || kind == "tcp" || kind == "com") {
+                    static char buf[128] = "";
+                    static std::string shownFor = "-";
+                    if (shownFor != target) { std::snprintf(buf, sizeof buf, "%s", target.c_str()); shownFor = target; }
+                    const char* label = kind == "listen" ? "Port##albt" : kind == "tcp" ? "Host:port##albt" : "Device##albt";
+                    fitNextItemWidth(180, label);
+                    if (ImGui::InputText(label, buf, sizeof buf, ImGuiInputTextFlags_EnterReturnsTrue)) {
+                        s.serialLine = kind + ":" + buf;
+                        shownFor = buf;
+                        host.setAlbireo(0, s);
+                    }
+                }
+                if (after().smallButton("Reconnect##albrc")) { host.connectAlbireoLink(); host.setAlbireo(0, s); }
+                ImGui::TextDisabled("  %s", host.albireoSerialStatus().c_str());
+                ImGui::TextUnformatted("DIP switches");
+                bool* sw[4] = { &s.s1, &s.s2, &s.s3, &s.s4 };
+                static const char* swName[4] = { "S1##albs1", "S2##albs2", "S3##albs3", "S4##albs4" };
+                static const char* swTip[4] = { "CH376 interrupt enable: the CH376's interrupt reaches the UART (MSR bit 3)",
+                                                "CH376 reset enable: the CH376 is reset with the CPC",
+                                                "Remote reset enable: the far end's DTR resets the CPC",
+                                                "Remote interrupt enable: the far end's DTR reaches the UART (MSR bit 1)" };
+                for (int k = 0; k < 4; k++) {
+                    if (k) ImGui::SameLine();
+                    if (ImGui::Checkbox(swName[k], sw[k])) host.setAlbireo(0, s);
+                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", swTip[k]);
+                }
+            }
         }
         ImGui::PopID();
     };

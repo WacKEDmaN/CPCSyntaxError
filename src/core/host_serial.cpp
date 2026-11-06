@@ -293,6 +293,18 @@ bool HostSerial::dcd() const {
     }
 }
 
+bool HostSerial::dsr() const {
+    if (kind_ == Kind::Loopback) return dtr;
+    if (kind_ != Kind::Com || !n->comOpen()) return false;
+#ifdef _WIN32
+    DWORD s = 0;
+    return GetCommModemStatus(n->com, &s) && (s & MS_DSR_ON);
+#else
+    int s = 0;
+    return ioctl(n->com, TIOCMGET, &s) == 0 && (s & TIOCM_DSR);
+#endif
+}
+
 bool HostSerial::ri() const {
     if (kind_ != Kind::Com || !n->comOpen()) return false;
 #ifdef _WIN32

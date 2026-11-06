@@ -282,7 +282,7 @@ int main(int argc, char** argv) {
     // uses, with no window. --shot out.bmp [--model id] [--sna f] [--crtc N] [--gate-array 40007|40008|40010]
     // [--frames N] [--beam] [--gfx9000] [--v9990-shot out.bmp] (the GFX9000's own monitor).
     {
-        std::string shot, modelId, snaPath, saveSnaPath, dumpRamPath, diskPath, cartPath, tapePath, typeStr, keysStr; int croGroup = -1, wantCrtc = -1, wantGa = 0, frames = 200, f1at = -1; bool f1first = false; int wantRam = -1, seq = 0; bool beam = false, diag = false, gfx9000 = false, opl4 = false, playcity = false; std::string v9990Shot, video9000Shot, m4Folder, ideFolder, mouseScript, mouseInterface, cbuildPath, cbuildCpct, cbuildSdcc, wavPath, speechKind, mp3Card, dacType; int cbuildLoc = -1; bool cbuildForce = false; std::string cbuildZ88dk, sf3Usb, sf3Sd, hd20Image; int sf3RomBank = -2; bool cbuildSccz80 = false; bool cbuildUseZ88dk = false; std::string albireoArg[2], albireoUsbArg[2]; bool sf2 = false, sf3 = false, xmass = false, multiface = false, diskWriteBack = false; int monitorHHold = std::getenv("CPCSE_MONITOR_HHOLD") ? std::atoi(std::getenv("CPCSE_MONITOR_HHOLD")) : 0; int monitorVHold = std::getenv("CPCSE_MONITOR_VHOLD") ? std::atoi(std::getenv("CPCSE_MONITOR_VHOLD")) : 0; std::vector<std::string> xroms; std::string serialLine, recordTape, tapeFast, recordPath, recordFormat = "mjpeg", recordSource = "shown", gfx9000Monitor; bool rasterOverlayOn = false; bool z80Cmos = false, gx4000Ram128 = false, plusExpansionClassic = true; std::string monitorSet; TubeKnobs monitorKnobs; std::array<int, 3> monitorIntensity = TubeKnobs().intensity;
+        std::string shot, modelId, snaPath, saveSnaPath, dumpRamPath, diskPath, cartPath, tapePath, typeStr, keysStr; int croGroup = -1, wantCrtc = -1, wantGa = 0, frames = 200, f1at = -1; bool f1first = false; int wantRam = -1, seq = 0; bool beam = false, diag = false, gfx9000 = false, opl4 = false, playcity = false; std::string v9990Shot, video9000Shot, m4Folder, ideFolder, mouseScript, mouseInterface, cbuildPath, cbuildCpct, cbuildSdcc, wavPath, speechKind, mp3Card, dacType; int cbuildLoc = -1; bool cbuildForce = false; std::string cbuildZ88dk, sf3Usb, sf3Sd, hd20Image; int sf3RomBank = -2; bool cbuildSccz80 = false; bool cbuildUseZ88dk = false; std::string albireoArg[2], albireoUsbArg[2], albireoSerialArg, albireoSwitchArg; bool sf2 = false, sf3 = false, xmass = false, multiface = false, diskWriteBack = false; int monitorHHold = std::getenv("CPCSE_MONITOR_HHOLD") ? std::atoi(std::getenv("CPCSE_MONITOR_HHOLD")) : 0; int monitorVHold = std::getenv("CPCSE_MONITOR_VHOLD") ? std::atoi(std::getenv("CPCSE_MONITOR_VHOLD")) : 0; std::vector<std::string> xroms; std::string serialLine, recordTape, tapeFast, recordPath, recordFormat = "mjpeg", recordSource = "shown", gfx9000Monitor; bool rasterOverlayOn = false; bool z80Cmos = false, gx4000Ram128 = false, plusExpansionClassic = true; std::string monitorSet; TubeKnobs monitorKnobs; std::array<int, 3> monitorIntensity = TubeKnobs().intensity;
         for (int i = 1; i < argc; i++) { std::string a = argv[i];
             if (a == "--shot" && i + 1 < argc) shot = argv[++i];
             else if (a == "--ram" && i + 1 < argc) wantRam = std::atoi(argv[++i]);
@@ -346,6 +346,8 @@ int main(int argc, char** argv) {
             else if (a == "--albireo-usb" && i + 1 < argc) albireoUsbArg[0] = argv[++i]; // its USB port: a folder (a stick), mouse or none
             else if (a == "--albireo2" && i + 1 < argc) albireoArg[1] = argv[++i];       // board 2 (&FE40), the same
             else if (a == "--albireo2-usb" && i + 1 < argc) albireoUsbArg[1] = argv[++i];
+            else if (a == "--albireo-serial" && i + 1 < argc) albireoSerialArg = argv[++i];  // board 1 as an Albireo 1.1: its serial link's far end (as --serial; "-" none)
+            else if (a == "--albireo-switches" && i + 1 < argc) albireoSwitchArg = argv[++i]; // its DIP switches S1-S4, four 0/1 digits (default 1100)
             else if (a == "--sf3") sf3 = true;                                // a Symbiface III instead (with --ide too)
             else if (a == "--disk-writeback") diskWriteBack = true;              // save the disc's writes into its .dsk (headless: off)
             else if (a == "--multiface") multiface = true;                    // a Multiface II (its ROM from roms/); n in --mouse is STOP
@@ -399,6 +401,17 @@ int main(int argc, char** argv) {
                 const std::string u = albireoUsbArg[b];
                 ab.usb = u.empty() || u == "none" ? "none" : u == "mouse" ? "mouse" : "stick";
                 ab.usbFolder = ab.usb == "stick" ? u : "";
+            }
+            if (!albireoSerialArg.empty()) {
+                EmuHost::AlbireoBoard& ab = host.albireo[0];
+                ab.enabled = true;
+                ab.serial = true;
+                ab.serialLine = albireoSerialArg == "-" ? "" : albireoSerialArg;
+            }
+            if (albireoSwitchArg.size() == 4) {
+                EmuHost::AlbireoBoard& ab = host.albireo[0];
+                ab.s1 = albireoSwitchArg[0] == '1'; ab.s2 = albireoSwitchArg[1] == '1';
+                ab.s3 = albireoSwitchArg[2] == '1'; ab.s4 = albireoSwitchArg[3] == '1';
             }
             if (!sf3Usb.empty()) host.sf3UsbFolder = sf3Usb;
             if (!sf3Sd.empty()) host.sf3SdFolder = sf3Sd;
@@ -888,6 +901,12 @@ int main(int argc, char** argv) {
         host.albireo[b].usb = gets((k + "usb").c_str(), b == 0 ? "stick" : "mouse");
         host.albireo[b].usbFolder = gets((k + "usbfolder").c_str(), b == 0 ? (homeDir() + "albireo-usb").c_str() : "");
     }
+    host.albireo[0].serial = geti("albireo1serial", 0) != 0;                // board 1 as an Albireo 1.1
+    host.albireo[0].serialLine = gets("albireo1line", "");
+    {
+        const std::string sw = gets("albireo1switches", "1100");             // S1-S4
+        if (sw.size() == 4) { host.albireo[0].s1 = sw[0] == '1'; host.albireo[0].s2 = sw[1] == '1'; host.albireo[0].s3 = sw[2] == '1'; host.albireo[0].s4 = sw[3] == '1'; }
+    }
     // The ROMs window: the firmware ROMs chosen in place of the model's, and the expansion
     // slots. A file gone since is left out (the status line says which).
     host.osRomPath = gets("rom_os", "");
@@ -1328,6 +1347,9 @@ int main(int argc, char** argv) {
                 f << k << "usb=" << host.albireo[b].usb << "\n";
                 f << k << "usbfolder=" << host.albireo[b].usbFolder << "\n";
             }
+            f << "albireo1serial=" << (host.albireo[0].serial ? 1 : 0) << "\n";
+            f << "albireo1line=" << host.albireo[0].serialLine << "\n";
+            f << "albireo1switches=" << (host.albireo[0].s1 ? '1' : '0') << (host.albireo[0].s2 ? '1' : '0') << (host.albireo[0].s3 ? '1' : '0') << (host.albireo[0].s4 ? '1' : '0') << "\n";
             f << "rom_os=" << host.osRomPath << "\n";
             f << "rom_basic=" << host.basicRomPath << "\n";
             f << "rom_amsdos=" << host.amsdosRomPath << "\n";

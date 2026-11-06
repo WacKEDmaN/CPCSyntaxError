@@ -160,6 +160,10 @@ Select the expansions in the **Expansions** menu or in the Settings window.
   and a **USB port**. The SD card is a folder on your PC, as one FAT16 disc. The USB port
   takes a USB stick (a folder) or a USB mouse (your PC's mouse, for SymbOS and FutureOS).
   UniDOS with its Albireo node finds the board, and SAVE and LOAD work on the card.
+  Board 1 can be an **Albireo 1.1** with its **serial link**: an SC16C650B UART at `&FEB0`
+  with a USB serial link to another computer (up to 1.5 Mbaud). The far end is the same as
+  on the RS232C card. The UART can interrupt the CPC on INT or NMI. The DIP switches S1 to
+  S4 are in the settings.
 - **SYMBiFACE III**, more:
   - **Its sound card** (the SE-ONE at `&FF20`): SymAmp plays MP3 files through it, with
     volume, balance, bass, treble and the spectrum. TMTLOGIC's SE-ONE player, samples, speech
@@ -439,6 +443,9 @@ cpcse.exe --shot out.bmp --model cpc6128 --frames 200 [--disk game.dsk] [--type 
 - `--albireo <folder>` fits an Albireo at `&FE80` with that folder as its SD card (`-` for
   none). `--albireo-usb` gives its USB port: a folder (a USB stick), `mouse` or `none`.
   `--albireo2` and `--albireo2-usb` do the same for a second board at `&FE40`.
+- `--albireo-serial <line>` makes board 1 an Albireo 1.1 with its serial link to that far
+  end (`tcp:host:port`, `listen:port`, `com:COM3`, `loopback`, or `-`).
+  `--albireo-switches` sets its DIP switches S1 to S4 (four digits 0 or 1, default `1100`).
 - `--tape-fast` sets the fast loading of the tape: a speed in baud, `instant`, or `off`. At
   the end, the emulator prints the decision for each block.
 - `--mouse` runs a small script after all the other steps. The commands are: `w` (wait
@@ -616,7 +623,7 @@ third_party/   Dear ImGui (docking branch), RASM, ymfm, the SP0256 core, minimp3
 | M4 board | Working. Files, DSK images and raw SD sectors use a folder on the PC. The ROM source of the M4 checks them. The WiFi uses the network of your PC. |
 | Multiface II | Working: STOP, the menu, save and reload. |
 | Symbiface II and III, X-MASS | Working: the mouse, the RTC and the IDE/CF interface. The ATA standard and SymbOS check them. |
-| Albireo | Working: the SD card, a USB stick and a USB mouse. The CH376 datasheets, the Albireo manual and UniDOS check them. Only the Albireo 2.0 (no UART, no interrupt line). |
+| Albireo | Working: the SD card, a USB stick, a USB mouse, and the Albireo 1.1 serial link with its interrupts. The CH376 and SC16C650B datasheets, the Albireo manual, its test program and UniDOS check them. |
 | SYMBiFACE III sound card, WiFi and functions | Working: SymAmp's MP3 driver, TMTLOGIC's programs (SEPLAYER, SAMPLER, SE-TALK, SE-SYNTH, EMR, WEB-DK) and ROM, and SF3Monitor. The ROM banks of the SD card work with SF3-RM.BAS. Not emulated: the file functions, DFU, MIDI files, the FM radio's sound. |
 | Mouse interfaces (AMX, Kempston, MultiPlay) | Working. Their CPCWiki pages check them. They are not yet tested with AMX Art, OCP Art Studio or Carrier Command. |
 | CRO ROM containers | Working. The two example files of the format start on the Plus. The CRO editor writes files byte for byte as Logon-System's CRO manager. |

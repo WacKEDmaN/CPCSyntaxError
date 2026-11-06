@@ -14,7 +14,7 @@ namespace cpcse {
 
 class GXMemory; class PlusAsic; class GateArray; class M4Board; class SymbifaceIde; class Hd20; class Multiface2; class V9990; class Opl4Card;
 class PlayCity; class AmstradSerial;
-class SpeechSynth; class Ch376;
+class SpeechSynth; class Ch376; class AlbireoSerial;
 class SymbifaceMouse; class Symbiface2Rtc; class Symbiface3; class CtmMonitor;
 struct MonitorModel;
 class CRTC6845; class KeyboardMatrix; class AY38912; class CpcDac; class CPCTapeDrive;
@@ -38,6 +38,8 @@ public:
     SymbifaceIde* ide = nullptr;
     // Two Albireo boards (ch376.h): [0] at &FE80, [1] at &FE40 (its JP2/JP3 cut).
     Ch376* albireo[2] = { nullptr, nullptr };
+    // The Albireo 1.1's serial link and interrupt logic on board 1 (albireo_serial.h).
+    AlbireoSerial* albireoSerial = nullptr;
     Hd20* hd20 = nullptr;                  // the Dobbertin HD20 (off until an image is opened)
     // The Kempston mouse or the MultiPlay (mouse_interface.h). A value, not a chip pointer:
     // the timeline's copy of the machine takes its counters with the rest.

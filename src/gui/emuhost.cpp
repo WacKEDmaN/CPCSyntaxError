@@ -31,6 +31,7 @@
 #include "core/symbiface_ide.h"
 #include "core/multiface.h"
 #include "core/ch376.h"
+#include "core/albireo_serial.h"
 #include "core/rs232.h"
 #include "core/host_serial.h"
 #include "core/sf2_rtc.h"
@@ -738,6 +739,43 @@ void EmuHost::applyAlbireo() {
         else chip->setUsb(b.usb == "mouse" ? Ch376::Usb::Mouse : Ch376::Usb::None);
         chip->setEnabled(true);
     }
+    // the Albireo 1.1's serial part, on board 1
+    if (AlbireoSerial* s = emu->albireoSerial) {
+        const AlbireoBoard& b = albireo[0];
+        const bool on = b.enabled && b.serial;
+        if (on && albireoLinkOpen != b.serialLine) connectAlbireoLink();
+        if (!on && albireoLink && albireoLinkOpen != "-") { albireoLink->close(); albireoLinkOpen = "-"; albireoLinkError.clear(); }
+        if (!albireoLink) albireoLink = std::make_shared<HostSerial>();
+        s->link = albireoLink;
+        s->s1 = b.s1; s->s2 = b.s2; s->s3 = b.s3; s->s4 = b.s4;
+        if (on && !s->enabled) s->reset();
+        s->enabled = on;
+    }
+}
+
+// The Albireo 1.1's far end, from albireo[0].serialLine (the same forms as --serial).
+bool EmuHost::connectAlbireoLink() {
+    if (!albireoLink) albireoLink = std::make_shared<HostSerial>();
+    const std::string& line = albireo[0].serialLine;
+    const size_t colon = line.find(':');
+    const std::string kindName = line.substr(0, colon), target = colon == std::string::npos ? "" : line.substr(colon + 1);
+    HostSerial::Kind kind = HostSerial::Kind::None;
+    if (kindName == "tcp") kind = HostSerial::Kind::Tcp;
+    else if (kindName == "listen") kind = HostSerial::Kind::Listen;
+    else if (kindName == "com") kind = HostSerial::Kind::Com;
+    else if (kindName == "loopback") kind = HostSerial::Kind::Loopback;
+    albireoLinkOpen = line;
+    std::string error;
+    albireoLinkError.clear();
+    if (!albireoLink->open(kind, target, error)) { albireoLinkError = error; status = "Albireo serial link: " + error; return false; }
+    return true;
+}
+
+std::string EmuHost::albireoSerialStatus() const {
+    if (!albireo[0].enabled || !albireo[0].serial) return "not fitted";
+    std::string s = albireoLink ? albireoLink->describe() : "nothing";
+    if (emu && emu->albireoSerial && emu->albireoSerial->baud() > 0) s += ", " + std::to_string(emu->albireoSerial->baud()) + " baud";
+    return s;
 }
 
 void EmuHost::setAlbireo(int board, const AlbireoBoard& settings) {
@@ -747,6 +785,8 @@ void EmuHost::setAlbireo(int board, const AlbireoBoard& settings) {
     const char* where = board == 0 ? "&FE80" : "&FE40";
     status = "Albireo " + std::to_string(board + 1) + " (" + where + "): " + (settings.enabled ? "SD " + (settings.sdFolder.empty() ? std::string("empty") : settings.sdFolder)
              + ", USB " + settings.usb : std::string("off"));
+    if (board == 0 && settings.enabled && settings.serial)
+        status = albireoLinkError.empty() ? status + ", serial link " + albireoSerialStatus() : "Albireo serial link: " + albireoLinkError;
 }
 
 void EmuHost::setIdeFolder(const std::string& folder) {

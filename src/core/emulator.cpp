@@ -24,6 +24,7 @@
 #include "sf3.h"
 #include "symbiface_ide.h"
 #include "ch376.h"
+#include "albireo_serial.h"
 #include "hd20.h"
 #include "multiface.h"
 #include "monitor_model.h"
@@ -55,6 +56,7 @@ GX4000::GX4000() {
     ide = new SymbifaceIde();
     albireo[0] = new Ch376(0xfe80);
     albireo[1] = new Ch376(0xfe40);
+    albireoSerial = new AlbireoSerial();
     hd20 = new Hd20();
     multiface = new Multiface2();
     memory->setUpperRomReadHandler([this](int address, int rom) { return m4 ? m4->readMemory(address, rom) : -1; });
@@ -182,6 +184,7 @@ GX4000::GX4000() {
         speech->advanceMicrosecond();
         sf3->advanceMicrosecond();
         if (serial->enabled) serial->advanceMicrosecond();
+        if (albireoSerial->enabled) albireoSerial->advanceMicrosecond(crtc->cursorOutput(), albireo[0]->enabled && albireo[0]->intPending);
         if (analyser.enabled) recordAnalyser();
     };
     o.onVsyncStart = [this]() {
@@ -347,7 +350,7 @@ GX4000::GX4000() {
 
 GX4000::~GX4000() {
     delete cpu; delete fdc; delete gamepad; delete ppi; delete tape; delete dac; delete ay; delete keyboard;
-    delete crtc; delete monitorRenderer; delete sf3; delete ide; delete albireo[0]; delete albireo[1]; delete hd20; delete multiface; delete sf2Rtc; delete symbifaceMouse; delete v9990; delete opl4; delete playcity; delete serial; delete speech;
+    delete crtc; delete monitorRenderer; delete sf3; delete ide; delete albireo[0]; delete albireo[1]; delete albireoSerial; delete hd20; delete multiface; delete sf2Rtc; delete symbifaceMouse; delete v9990; delete opl4; delete playcity; delete serial; delete speech;
     delete m4; delete gateArray; delete asic; delete memory;
 }
 
@@ -1008,6 +1011,7 @@ void GX4000::writePort(int port, int value) {
     if (sf3->handlesWritePort(port)) { sf3->writePort(port, value); return; }
     if (ide->handlesPort(port)) { ide->writePort(port, value); return; }
     for (Ch376* a : albireo) if (a->handlesPort(port)) { a->writePort(port, value, machineCycles + hardwareCyclesAdvanced); return; }
+    if (albireoSerial->handlesPort(port)) { albireoSerial->writePort(port, value); return; }
     if (hd20->handlesPort(port)) { hd20->writePort(port, value); return; }
     // M4: DATAPORT &FExx takes the command, ACKPORT &FCxx starts it (M4ROM.s)
     if (m4->enabled && high == 0xfe) { m4->dataPortWrite(value); return; }
@@ -1084,6 +1088,7 @@ int GX4000::readPortUntraced(int port) {
     if (sf3->handlesPort(port)) return sf3->readPort(port);
     if (ide->handlesPort(port)) return ide->readPort(port);
     for (Ch376* a : albireo) if (a->handlesPort(port)) return a->readPort(port, machineCycles + hardwareCyclesAdvanced);
+    if (albireoSerial->handlesPort(port)) return albireoSerial->readPort(port);
     if (hd20->handlesPort(port)) return hd20->readPort(port);
     if (mouseIf.handlesPort(port)) return mouseIf.readPort(port);
     if (m4->enabled && high == 0xfe) return m4->dataPortRead();
@@ -1427,6 +1432,13 @@ int GX4000::stepInstruction() {
         opl4->tick(machineCycles);
         if (opl4->intAsserted() && cpu->pendingInterrupt == -1 && interruptHeldOver == -1) cpu->requestInterrupt(0xff);
     }
+    // The Albireo 1.1: its UART's INT to /INT (MCR OUT1) and to /NMI (OUT2), a level on
+    // /INT and an edge on /NMI; the far end's DTR to the reset with S3 (albireo_serial.h).
+    if (albireoSerial->enabled) {
+        if (albireoSerial->takeReset()) { reset(); return cycles; }
+        if (albireoSerial->takeNmi()) cpu->requestNmi();
+        if (albireoSerial->cpuInt() && cpu->pendingInterrupt == -1 && interruptHeldOver == -1) cpu->requestInterrupt(0xff);
+    }
     // The PlayCity's CTC: channel 1's ZC/TO is wired to /NMI, and channels 0-3 put
     // their own IM2 vector on the bus (vector base | channel << 1).
     if (playcity->enabled) {
@@ -1499,7 +1511,7 @@ void GX4000::reset() {
     memory->reset(); asic->reset(); gateArray->reset(); rasterCapture.clear(); rasterFrame.clear(); previousRasterFrame.clear();
     spritePatternSnapshot.clear(); spritePatternRevision = -1; crtc->reset();
     videoFrameRegisters = crtc->registers; videoCaptureRegisters = crtc->registers;
-    keyboard->reset(); ay->reset(); ppi->reset(); fdc->reset(); dac->reset(); tape->reset(); m4->reset(); v9990->reset(); opl4->reset(); playcity->reset(); serial->reset(); speech->reset(); symbifaceMouse->reset(); sf2Rtc->reset(); sf3->reset(); ide->reset(); albireo[0]->reset(); albireo[1]->reset(); hd20->reset(); multiface->reset(); cpu->reset();
+    keyboard->reset(); ay->reset(); ppi->reset(); fdc->reset(); dac->reset(); tape->reset(); m4->reset(); v9990->reset(); opl4->reset(); playcity->reset(); serial->reset(); speech->reset(); symbifaceMouse->reset(); sf2Rtc->reset(); sf3->reset(); ide->reset(); if (!albireoSerial->enabled || albireoSerial->s2) albireo[0]->reset(); albireo[1]->reset(); albireoSerial->reset(); hd20->reset(); multiface->reset(); cpu->reset();
     cpu->sp = 0xbfff;
 }
 void GX4000::acknowledgeInterrupt() {

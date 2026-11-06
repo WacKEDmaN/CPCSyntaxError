@@ -19,7 +19,7 @@ enum : int {
     FILE_ERASE = 0x35, FILE_CLOSE = 0x36, DIR_INFO_READ = 0x37, DIR_INFO_SAVE = 0x38, BYTE_LOCATE = 0x39,
     BYTE_READ = 0x3a, BYTE_RD_GO = 0x3b, BYTE_WRITE = 0x3c, BYTE_WR_GO = 0x3d, DISK_CAPACITY = 0x3e,
     DISK_QUERY = 0x3f, DIR_CREATE = 0x40, CLR_STALL = 0x41, SET_ADDRESS = 0x45, GET_DESCR = 0x46,
-    SET_CONFIG = 0x49, SEC_LOCATE = 0x4a, SEC_READ = 0x4b, SEC_WRITE = 0x4c, AUTO_SETUP = 0x4d,
+    SET_CONFIG = 0x49, SEC_LOCATE = 0x4a, SEC_READ = 0x4b, SEC_WRITE = 0x4c, AUTO_SETUP = 0x4d, DISK_BOC_CMD = 0x50,
     ISSUE_TKN_X = 0x4e, DISK_INIT = 0x51, DISK_RESET = 0x52, DISK_SIZE = 0x53, DISK_READ = 0x54,
     DISK_RD_GO = 0x55, DISK_WRITE = 0x56, DISK_WR_GO = 0x57, DISK_INQUIRY = 0x58, DISK_READY = 0x59,
     DISK_R_SENSE = 0x5a, DISK_MAX_LUN = 0x5d,
@@ -258,6 +258,9 @@ void Ch376::data(int v) {
 static uint32_t le32(const Bytes& b, size_t at) {
     return (uint32_t)b[at] | (uint32_t)b[at + 1] << 8 | (uint32_t)b[at + 2] << 16 | (uint32_t)b[at + 3] << 24;
 }
+static uint32_t le32(const uint8_t* b, size_t at) {
+    return (uint32_t)b[at] | (uint32_t)b[at + 1] << 8 | (uint32_t)b[at + 2] << 16 | (uint32_t)b[at + 3] << 24;
+}
 
 void Ch376::execute() {
     if (traceCh376 && cmd != GET_STATUS && cmd != RD_USB_DATA0) {
@@ -432,6 +435,72 @@ void Ch376::execute() {
             const uint32_t last = m->card->totalSectors() - 1;
             const uint8_t d[8] = { (uint8_t)(last >> 24), (uint8_t)(last >> 16), (uint8_t)(last >> 8), (uint8_t)last, 0, 0, 2, 0 };
             setUsbData(d, 8);
+            complete(USB_INT_SUCCESS);
+            break;
+        }
+        case DISK_BOC_CMD: {
+            // Datasheet I §5.36: a BulkOnly command for a USB disk ("not support SD card"):
+            // the CBW was written with WR_HOST_DATA, data comes back through RD_USB_DATA0.
+            // The CBW (CH376INC.H BULK_ONLY_CBW, docs/hw_CH376INC.h): 00H signature, 04H tag,
+            // 08H the data length ("for input data 0 to 48, for output data 0 to 33": the
+            // 64-byte buffer less the CBW's 31 bytes takes the output data after it), 0CH
+            // flags (bit 7 = data in), 0DH LUN, 0EH the command block's length (1-16), 0FH
+            // the command block.
+            if (mode < 5) { complete(USB_INT_DISK_ERR); break; }
+            Medium* m = nullptr;
+            const uint8_t err = mountCheck(m);
+            if (err) { complete(err); break; }
+            const uint32_t len = le32(hostData, 8);
+            const bool dataIn = (hostData[12] & 0x80) != 0;
+            const int cbLen = hostData[14];
+            const uint8_t* cb = hostData + 15;
+            if (hostLen < 31 || le32(hostData, 0) != 0x43425355u || cbLen < 1 || cbLen > 16 ||
+                len > (dataIn ? 48u : 33u) || hostLen < 31 + (dataIn ? 0 : (int)len)) {
+                complete(USB_INT_DISK_ERR);
+                break;
+            }
+            // SCSI (SPC / SBC) on a 512-byte-sector disk
+            uint8_t reply[48] = {};
+            int n = 0;
+            bool ok = true;
+            const uint32_t total = m->card->totalSectors();
+            switch (cb[0]) {
+            case 0x00: case 0x1b: case 0x1e: break;                 // TEST UNIT READY, START STOP, PREVENT ALLOW
+            case 0x03: {                                            // REQUEST SENSE: fixed format, 18 bytes
+                const uint8_t s[18] = { 0x70, 0, bocSenseKey, 0, 0, 0, 0, 10, 0, 0, 0, 0, bocAsc, 0 };
+                std::memcpy(reply, s, 18); n = 18;
+                bocSenseKey = bocAsc = 0;
+                break;
+            }
+            case 0x12: {                                            // INQUIRY: the 36 bytes DISK_MOUNT gives
+                uint8_t q[36] = { 0x00, 0x80, 0x02, 0x02, 0x1f, 0, 0, 0 };
+                std::memcpy(q + 8, "CPCSE   ", 8);
+                std::memcpy(q + 16, "Albireo USB disk", 16);
+                std::memcpy(q + 32, "1.00", 4);
+                std::memcpy(reply, q, 36); n = 36;
+                break;
+            }
+            case 0x25: {                                            // READ CAPACITY (10): last LBA, block size
+                const uint32_t last = total - 1;
+                const uint8_t c[8] = { (uint8_t)(last >> 24), (uint8_t)(last >> 16), (uint8_t)(last >> 8), (uint8_t)last, 0, 0, 2, 0 };
+                std::memcpy(reply, c, 8); n = 8;
+                break;
+            }
+            case 0x1a: { const uint8_t h[4] = { 3, 0, 0, 0 }; std::memcpy(reply, h, 4); n = 4; break; }               // MODE SENSE (6): header, writable
+            case 0x5a: { const uint8_t h[8] = { 0, 6, 0, 0, 0, 0, 0, 0 }; std::memcpy(reply, h, 8); n = 8; break; }   // MODE SENSE (10)
+            case 0x28: case 0x2a: {                                 // READ (10), WRITE (10)
+                const uint32_t lba = (uint32_t)cb[2] << 24 | cb[3] << 16 | cb[4] << 8 | cb[5];
+                const uint32_t blocks = (uint32_t)(cb[7] << 8 | cb[8]);
+                if (lba + blocks > total) { ok = false; bocSenseKey = 5; bocAsc = 0x21; break; }   // LBA out of range
+                // a sector is 512 bytes, more than the 48 / 33 this command can carry: only
+                // a transfer of no blocks fits (DISK_READ / DISK_WRITE move sectors)
+                if (blocks * 512u != len) { ok = false; bocSenseKey = 5; bocAsc = 0x24; }
+                break;
+            }
+            default: ok = false; bocSenseKey = 5; bocAsc = 0x20; break;   // ILLEGAL REQUEST: invalid command
+            }
+            if (!ok) { complete(USB_INT_DISK_ERR); break; }
+            if (dataIn) setUsbData(reply, std::min<int>(n, (int)len));
             complete(USB_INT_SUCCESS);
             break;
         }

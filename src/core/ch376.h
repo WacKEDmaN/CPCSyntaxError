@@ -5,9 +5,10 @@
 // (command write, status read), fully decoded, no mirrors. Albireo 2.0 has no UART (the
 // 1.x serial chip at &FEB0-&FEB7 is not fitted) and two solder jumpers move the CH376 to
 // &FE40/&FE41, so two boards can share one CPC; SymbOS uses one for USB storage and the
-// other for a USB mouse. The wiki says it is "unclear" how 2.0 treats interrupts, so no
-// interrupt line is wired here: software polls the status register, as the manual's own
-// examples do.
+// other for a USB mouse. The wiki says it is "unclear" how 2.0 treats interrupts, so a 2.0
+// board has no interrupt line here: software polls the status register, as the manual's own
+// examples do. On an Albireo 1.1 (board 1 only) the CH376's INT# reaches the CPC through the
+// UART's DCD input and switch S1 (albireo_serial.h).
 //
 // The chip (CH376DS1.PDF "Datasheet (I)" and CH376DS2.PDF "Datasheet (II)", WCH):
 //   * Parallel port, §6.2: a write with A0=1 is a command, A0=0 data; a read with A0=1 is
@@ -100,6 +101,7 @@ private:
     int usbLen = 0;
     uint8_t hostData[64] = {};         // what WR_HOST_DATA / WR_REQ_DATA wrote
     int hostLen = 0;
+    uint8_t bocSenseKey = 0, bocAsc = 0;   // DISK_BOC_CMD: the last failed SCSI command, for REQUEST SENSE
     uint8_t dirInfo[32] = {};          // FAT_DIR_INFO, for DIR_INFO_READ / WR_OFS_DATA / DIR_INFO_SAVE
     std::string fileName;              // SET_FILE_NAME
     uint8_t retry = 0x8f;              // SET_RETRY (§1.4 of Datasheet II: 8FH after reset)

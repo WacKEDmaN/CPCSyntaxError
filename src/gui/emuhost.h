@@ -263,8 +263,20 @@ public:
     std::string ls3EepromFile;       // LambdaSpeak 3's 128 KB EEPROM, kept between sessions ("" = not kept)
     // Two ALBIREO boards (core/ch376.h): [0] at &FE80, [1] at &FE40. Each has an SD card (a
     // folder) and a USB port: "none", "stick" (a folder) or "mouse" (the host's mouse).
-    struct AlbireoBoard { bool enabled = false; std::string sdFolder, usb = "none", usbFolder; };
+    // Board 1 only: serial = an Albireo 1.1 (core/albireo_serial.h), its UART at &FEB0 and
+    // its interrupts; serialLine = its far end as --serial takes it (tcp:host:port,
+    // listen:port, com:COM3, loopback; "" nothing); s1-s4 its DIP switches.
+    struct AlbireoBoard {
+        bool enabled = false; std::string sdFolder, usb = "none", usbFolder;
+        bool serial = false; std::string serialLine;
+        bool s1 = true, s2 = true, s3 = false, s4 = false;
+    };
     AlbireoBoard albireo[2];
+    std::shared_ptr<HostSerial> albireoLink;           // kept across a reboot, as serialLink
+    std::string albireoLinkOpen = "-";                 // the line albireoLink was opened with
+    std::string albireoLinkError;                      // why it did not open ("" = it did)
+    bool connectAlbireoLink();
+    std::string albireoSerialStatus() const;
     void applyAlbireo();
     void setAlbireo(int board, const AlbireoBoard& settings);
     float albireoMouseX = 0, albireoMouseY = 0;   // the USB mouse's fractions of a count
