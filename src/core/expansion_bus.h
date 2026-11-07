@@ -15,6 +15,7 @@
 // debugger's, not the machine's).
 #pragma once
 #include <array>
+#include <cstddef>
 #include <cstdint>
 
 namespace cpcse {
@@ -108,13 +109,13 @@ struct ExpansionBusProbe {
     // a pin's state for this microsecond
     void set(int pinNumber, bool active) {
         const int i = pinNumber - 1;
-        const bool on = active || pulse[(size_t)i];
-        pulse[(size_t)i] = false;
-        if (on) activeUs[(size_t)i] += 1;
-        if (on && !level[(size_t)i]) edges[(size_t)i] += 1;
-        level[(size_t)i] = on;
+        const bool on = active || pulse[(std::size_t)i];
+        pulse[(std::size_t)i] = false;
+        if (on) activeUs[(std::size_t)i] += 1;
+        if (on && !level[(std::size_t)i]) edges[(std::size_t)i] += 1;
+        level[(std::size_t)i] = on;
     }
-    void strobe(int pinNumber) { pulse[(size_t)(pinNumber - 1)] = true; }
+    void strobe(int pinNumber) { pulse[(std::size_t)(pinNumber - 1)] = true; }
 };
 
 } // namespace cpcse
