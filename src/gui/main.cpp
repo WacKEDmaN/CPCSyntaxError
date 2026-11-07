@@ -417,6 +417,14 @@ int main(int argc, char** argv) {
             if (!sf3Sd.empty()) host.sf3SdFolder = sf3Sd;
             if (!hd20Image.empty()) host.hd20Image = hd20Image;
             if (sf3RomBank >= -1) host.sf3RomBank = sf3RomBank;
+            // --cart with no --model: a GX4000, as before a classic CPC could take a cartridge
+            // (with a classic --model the cartridge goes on that machine).
+            if (modelId.empty() && !cartPath.empty())
+                for (const char* id : { "gx4000", "cpc6128plus", "cpc464plus" }) {
+                    bool have = false;
+                    for (const auto& m : host.models) if (m.id == id && m.available) have = true;
+                    if (have) { modelId = id; break; }
+                }
             int mi = 0; for (int i = 0; i < (int)host.models.size(); i++) if (host.models[i].id == modelId) mi = i;
             if (!host.bootModel(mi, wantRam, wantCrtc)) { std::printf("[shot] %s\n", host.status.c_str()); return 2; }
             if (monitorIntensity != TubeKnobs().intensity) host.setMonitorIntensity(monitorIntensity);   // for the set now plugged in

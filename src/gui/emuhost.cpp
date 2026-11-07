@@ -357,6 +357,9 @@ bool EmuHost::bootModel(int index, int ram, int crtc) {
     emu->loadClassicFirmware(o);
     applyGateArrayPart();                 // loadClassicFirmware fitted the 40010
     emu->hasFdc = m.amsdos;
+    // BASIC (ROM 0) is the machine's own; AMSDOS (ROM 7) is too on a 664 and a 6128, but on
+    // a 464 it comes from the DDI-1 on the connector (expansion_bus.h: ROMDIS).
+    emu->builtInUpperRoms = m.id == "cpc464" ? 0x01 : 0x81;
     applyAudioRate();
     currentModel = index;                  // before the settings: the SF3 picks its bank by it
     applySettings();
@@ -1278,6 +1281,29 @@ bool EmuHost::loadCartridgeData(const Bytes& data, const std::string& path) {
         catch (const std::exception& ex) { status = std::string("Not a valid .CPR cartridge: ") + ex.what(); return false; }
     }
     if (cart.banks.empty()) { status = "Not a valid .CPR cartridge."; return false; }
+    // A CLASSIC CPC selected: the cartridge goes on THAT machine, as a board on its expansion
+    // port (an M4, a ROM board) presents one. It keeps its CRTC, Gate Array, RAM, ROMs and
+    // expansions; the machine is started afresh, then the cartridge is mapped as a Plus maps
+    // it (GX4000::loadCartridgeOnClassic). Most cartridges run; one that unlocks the Plus
+    // ASIC does not (Alcon runs, Sonic does not), as on a real classic CPC. The user asked
+    // for this: the loader used to switch any non-Plus selection to a GX4000.
+    if (currentModel >= 0 && currentModel < (int)models.size() && !models[(size_t)currentModel].plus) {
+        const auto labels = croGroupLabels;
+        const auto numbers = croGroupNumbers;
+        if (!bootModel(currentModel, ramKiB, crtcType)) return false;
+        croGroupLabels = labels;
+        croGroupNumbers = numbers;
+        emu->loadCartridgeOnClassic(cart);
+        cartPath = path;
+        cartName = shownName;
+        lastProgram = path.empty() ? std::string("cro") : std::filesystem::u8path(path).stem().u8string();
+        if (!path.empty()) { noteRecent(path); loadCheatsBeside(path); }
+        snapshotName.clear();
+        paused = false;
+        status = "Loaded " + cartName + croWhat + " into " + models[(size_t)currentModel].label
+               + " (a classic CPC: a cartridge that needs the Plus ASIC will not run)";
+        return true;
+    }
     // Respect the selected machine: a 464/6128 Plus keeps its computer identity
     // (keyboard, RAM, disc); otherwise the cart runs as the selected console, or
     // defaults to the GX4000 when a non-Plus / no model is selected.

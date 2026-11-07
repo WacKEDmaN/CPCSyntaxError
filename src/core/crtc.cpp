@@ -538,6 +538,7 @@ void CRTC6845::refreshTrojanLightgun() {
 // bus when the strobe arrived. So the register takes the chip's own counter; it is not
 // a position worked back out of R1, R2, R7 and R12/R13.
 void CRTC6845::strobeLightPen() {
+    lpenStrobes += 1;                       // for the expansion-port probe
     lightgunAddress = (maRow + 2) & 0x3fff;
     registers[16] = (uint8_t)(lightgunAddress >> 8 & 0x3f);
     registers[17] = (uint8_t)(lightgunAddress & 0xff);

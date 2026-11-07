@@ -10,8 +10,8 @@
 //    analyser, the renderer's callbacks): the live ones stay;
 //  - the pictures already made (rasterFrame): only rendering reads them, and a replay of a
 //    frame or two makes them again;
-//  - the cards that own host resources (M4, OPL4, SYMBiFACE IDE, serial, speech): they are
-//    not rewound;
+//  - the cards that own host resources (M4, OPL4, SYMBiFACE IDE, RS232C, speech, both
+//    Albireo boards and the Albireo UART, HD20): they are not rewound;
 //  - the disc in a drive (the controller shares it): what is written to it stays written.
 // From the same snapshot with the same inputs (input_event.h) the machine runs the same,
 // instruction for instruction: timeline-check proves it.

@@ -972,6 +972,11 @@ void CslPlayer::onSsm(int suffix, int pcAfter) {
     const int code = suffix << 8 | pendingLow;
     const int low = pendingLow;
     pendingLow = -1;
+    // CPCSE_TRACE_SSM: where in the program each code was written (its first ED byte), to
+    // read the program's own logic around it.
+    static const bool traceSsm = std::getenv("CPCSE_TRACE_SSM") != nullptr;
+    if (traceSsm) say("  [%8.3fs] SSM #%04X written at &%04X (CRTC frame %ld, C4=%d C9=%d)", seconds(), code,
+                      (start - 2) & 0xffff, (long)emu.crtc->frame, emu.crtc->vertical, emu.crtc->raster);
     if (ssmSinceWait.size() < 256) ssmSinceWait.push_back(code);   // CSL 1.5 wait_ssm
     if (low >= 0xFE && suffix != 0xFF) return;                  // #FE/#FF are only for #FFxx
     if (code == 0x0000) { ssm0000Seen = true; return; }

@@ -58,6 +58,7 @@ void Z80::busWrite(int address, int value, int cycles) {
     if (inInstruction) memory->accessTiming(address, busOffset + waitStates + cycles, true);
     int previous = memory->read(address) & 0xff;
     memory->write(address, value);
+    memoryWrites += 1;
     if (memory->trackAccess) memory->noteAccess(address, Z80Memory::ACCESS_WRITE);
     if (accessObserver) {
         AccessEvent ev; ev.type = "write"; ev.address = address; ev.value = value; ev.previous = previous;

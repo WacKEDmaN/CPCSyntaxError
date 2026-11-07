@@ -85,6 +85,7 @@ struct TapeBulk {
 // the live values stay across a restore.
 struct HostSide {
     LogicAnalyser analyser;
+    ExpansionBusProbe busProbe;
     std::vector<std::shared_ptr<RasterLine>> rasterFrame, previousRasterFrame, rasterPool;
     bool debuggerPaused = false;
     std::unordered_set<int>* breakpoints = nullptr;
@@ -103,6 +104,7 @@ struct HostSide {
         ioOverlay = m.ioOverlay;
         profiler = m.profiler;
         std::swap(analyser, m.analyser);
+        std::swap(busProbe, m.busProbe);
         rasterFrame.swap(m.rasterFrame); previousRasterFrame.swap(m.previousRasterFrame); rasterPool.swap(m.rasterPool);
         debuggerPaused = m.debuggerPaused; breakpoints = m.breakpoints; breakpointPredicate = m.breakpointPredicate;
         breakpointSkipOnce = m.breakpointSkipOnce; stepTarget = m.stepTarget; watchpointPending = m.watchpointPending;
@@ -116,6 +118,7 @@ struct HostSide {
         m.ioOverlay = ioOverlay;
         m.profiler = profiler;
         std::swap(analyser, m.analyser);
+        std::swap(busProbe, m.busProbe);
         rasterFrame.swap(m.rasterFrame); previousRasterFrame.swap(m.previousRasterFrame); rasterPool.swap(m.rasterPool);
         m.debuggerPaused = debuggerPaused; m.breakpoints = breakpoints; m.breakpointPredicate = breakpointPredicate;
         m.breakpointSkipOnce = breakpointSkipOnce; m.stepTarget = stepTarget; m.watchpointPending = watchpointPending;

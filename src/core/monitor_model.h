@@ -71,6 +71,20 @@ struct MonitorModel {
     // monochrome sets have Contrast (GT 64/65 parts lists: "Contrast Pot."; MM12: "bright
     // and contrast controls"). The CTM 640/644 and CM14 lists have a brightness control only.
     bool hasContrast;
+    // Where the line-phase discriminator's late side TURNS OVER, in Pixel-M2 after the line
+    // sync (0 = not seen inside the late window, MONITOR_PHASE_WINDOW). From there on a
+    // second sync that runs on past the half line no longer pulls this line's sweep: the
+    // part past the half line drives it the other way (CtmMonitor::decide, branch 'h').
+    // The sets differ here: the service manuals give the CM14 smaller retrace capacitors
+    // than the CTM 644 (C431 0.0082 uF + C432 0.0015 uF against 0.012 uF + 270 pF; "Service
+    // Manual Amstrad Plus" p.46-47, the 6128 manual p.24-25), so a shorter flyback, and the
+    // AFC's comparison waveform is made from the flyback. Where the turn falls is NOT
+    // derived: real photographs bracket it, the way MONITOR_AFC_LOCK16 is bracketed.
+    // CM14 (SHAKER on a 6128 Plus): a 4 usec second sync 29.0 characters late still pulls
+    // the band left at once (AT, AY: one band of 88 lines); 30.0 characters late (DH/B2,
+    // D3/A6, D3/B6) gives no jump and a drift RIGHT instead. CTM 644 (SHAKER DH/B2 on
+    // CRTC 2 and 4, the same pin): 30.0 characters still pulls left at once.
+    int lateTurnover16;
 };
 
 // The sets, by id. "ctm644" is the default and the reference calibration.

@@ -1,5 +1,6 @@
 // CPCSyntaxError -- the monitor sets. See the header for the two chapters this is built
-// from; there is nothing here that they do not state.
+// from; there is nothing here that they do not state, except lateTurnover16, which the
+// service manuals explain and real photographs bracket (the header says which).
 #include "monitor_model.h"
 #include "monitor_palette.h"
 
@@ -19,27 +20,32 @@ static const char* SEPARATOR_GREEN = "not named by ACCC 16.2.2";
 // figure rather than an invented one.
 static const int ANCHOR_USEC = 12;
 
+// The CM14's late turn-over (monitor_model.h, lateTurnover16): between the 29.0 characters
+// that SHAKER AT/AY still pull left and the 30.0 that DH/B2 drifts right. Bracketed, not
+// derived. The other sets: 0, no turn seen inside the late window.
+static const int CM14_LATE_TURNOVER16 = 472;      // 29.5 characters
+
 static const MonitorModel MODELS[] = {
     // The reference calibration: the sets that came with a CRTC 0, 1 or 2.
     { "ctm644", "CTM 644 (colour)", "colour", 0,
-      VERTICAL_COLOUR, SEPARATOR_COLOUR, ANCHOR_USEC, false },
+      VERTICAL_COLOUR, SEPARATOR_COLOUR, ANCHOR_USEC, false, 0 },
     { "ctm640", "CTM 640 (colour)", "colour", 0,
-      VERTICAL_COLOUR, SEPARATOR_COLOUR, ANCHOR_USEC, false },
+      VERTICAL_COLOUR, SEPARATOR_COLOUR, ANCHOR_USEC, false, 0 },
     // §15.1: the 464+/6128+ set, calibrated a microsecond over so that the ASIC's later
     // HSYNC lands the frame centred.
     { "cm14", "CM14 (464+/6128+ colour)", "colour", 1,
-      VERTICAL_COLOUR, SEPARATOR_COLOUR, ANCHOR_USEC, false },
+      VERTICAL_COLOUR, SEPARATOR_COLOUR, ANCHOR_USEC, false, CM14_LATE_TURNOVER16 },
     // §15.1: "The CRTC 4 does not come with a CM14, but it behaves like a CPC+ at the
     // HSYNC signal. AMSTRAD CALIBRATED THE CTM DELIVERED WITH THIS CPC so that the frame
     // is centered on screen." Same tube as a CTM 644, same microsecond as a CM14.
     { "ctm644-crtc4", "CTM 644 (CRTC 4 calibration)", "colour", 1,
-      VERTICAL_COLOUR, SEPARATOR_COLOUR, ANCHOR_USEC, false },
+      VERTICAL_COLOUR, SEPARATOR_COLOUR, ANCHOR_USEC, false, 0 },
     // §16.2.2's monochrome sets. A different vertical deflection part, and no colour
     // circuitry at all -- the DIN's R, G and B arrive at one gun.
     { "gt65", "GT 65 (green)", "green", 0,
-      VERTICAL_GREEN, SEPARATOR_GREEN, ANCHOR_USEC, true },
+      VERTICAL_GREEN, SEPARATOR_GREEN, ANCHOR_USEC, true, 0 },
     { "gt64", "GT 64 (green)", "green", 0,
-      VERTICAL_GREEN, SEPARATOR_GREEN, ANCHOR_USEC, true },
+      VERTICAL_GREEN, SEPARATOR_GREEN, ANCHOR_USEC, true, 0 },
     // Amstrad's Arnold (464 Plus / 6128 Plus) design spec: "The MM12 monochrome incorporates
     // a 12" paper white tube, similar to that used on the PCW9512. The input will be the
     // same as the earlier GTM65 versions" -- the LUM pin, linear 0.8V black to 1.75V peak
@@ -47,7 +53,7 @@ static const MonitorModel MODELS[] = {
     // have, and neither is a 15.1 calibration: it is left at a CTM's, which would put a
     // Plus a character left on it if Amstrad did not calibrate it like the CM14.
     { "mm12", "MM12 (paper white)", "mono", 0,
-      "not named", "not named", ANCHOR_USEC, true },
+      "not named", "not named", ANCHOR_USEC, true, 0 },
 };
 
 const std::vector<const MonitorModel*>& monitorModels() {

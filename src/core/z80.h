@@ -113,6 +113,8 @@ public:
     // a microsecond (alignBusToMicroseconds). The Z80A's own last T-state is its T-state
     // count plus these; ACCC §27.3.1's "real end" of an instruction is that moment.
     int alignmentWaits = 0;
+    // Counts for the expansion-port probe (core/expansion_bus.h): never read by the Z80 itself.
+    uint32_t memoryWrites = 0, nmiRequests = 0;
     int instructionStartPc = 0;
 
     // Per-instruction identity used by GX4000.cpcInstructionCycles(); -1 until set.
@@ -184,7 +186,7 @@ public:
     int pop();
 
     void requestInterrupt(int vector = 0xff) { pendingInterrupt = vector & 0xff; }
-    void requestNmi() { pendingNmi = true; }
+    void requestNmi() { pendingNmi = true; nmiRequests += 1; }
     // Every opcode fetch below &0080, before it is made (the Multiface II watches &0065
     // and &0066). Empty: none.
     std::function<void(int address)> onLowM1;

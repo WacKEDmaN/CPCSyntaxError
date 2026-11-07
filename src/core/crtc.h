@@ -910,6 +910,7 @@ public:
     // The LPEN pin's low-to-high edge: latches MA+2 into R16/R17 and raises the status
     // register's "light pen register full" bit.
     void strobeLightPen();
+    uint32_t lpenStrobes = 0;               // strobes so far (the expansion-port probe counts them)
     int effectiveHsyncWidth();
 
     // ACCC §19.2 (p.194): the SKEW DISP field's value 3 is the BORDER ON function, and

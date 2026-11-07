@@ -43,6 +43,7 @@ class BasicWindow;
 class DskEditorWindow;
 class CheatsWindow;
 class LogicAnalyserWindow;
+class ExpansionPortWindow;
 class DevServer;
 
 // What the main loop hands the shell each frame.
@@ -122,6 +123,7 @@ private:
     std::unique_ptr<DskEditorWindow> dskEditor;
     std::unique_ptr<CheatsWindow> cheats;
     std::unique_ptr<LogicAnalyserWindow> logicAnalyser;
+    std::unique_ptr<ExpansionPortWindow> expansionPort;
     std::unique_ptr<DevServer> dev;
     void sectionDevelopment(bool asMenu);   // Settings > External debugging (gui_panels.cpp)
     char devWatchPath[512] = {}, devWatchAddr[32] = {}, devWatchRun[32] = {}, devWatchCommand[128] = {};

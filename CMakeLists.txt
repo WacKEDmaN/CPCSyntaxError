@@ -221,6 +221,7 @@ add_executable(cpcse
   src/gui/gui_dsk_editor.cpp
   src/gui/gui_cheats.cpp
   src/gui/gui_logic.cpp
+  src/gui/gui_expansion.cpp
   src/gui/gui_profiler.cpp
   src/gui/gui_gfx_finder.cpp
   src/gui/gui_cro.cpp

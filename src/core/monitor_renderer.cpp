@@ -36,6 +36,7 @@ void CtmMonitor::reset() {
     lineSyncAt = -1; tipStartAt = 0;
     widthCorrection16 = 0; widthTargetPrevious16 = 0; coastDrift16 = 0;
     afcCharge = 0; lineError16 = 0; linePull16 = 0; lineFilterPrimed = false; trainLines = 0; trainOffset = 0; trainOffset16 = 0; trainDrive16 = 0; trainKicked = false;
+    overhangDrift16 = 0; overhangOffset = 0;
     lineSnap16 = 0;
     measuredPeriod = MONITOR_HSYNC_MID;
     sinceLastSync = 0;
@@ -189,12 +190,25 @@ void CtmMonitor::decide() {
         return;
     }
     trainLines = 0; trainOffset = 0; trainOffset16 = 0; trainDrive16 = 0; trainKicked = false;   // what is left is the line pull's to take back
+    // A late second sync that starts past the set's turn-over and runs on past the half line
+    // (MonitorModel::lateTurnover16): no pull on this line; the part past the half line
+    // drives the sweep the other way, MONITOR_OVERHANG_DIV, settling over
+    // MONITOR_OVERHANG_LINES (branch 'h' below).
+    int overhangTarget16 = 0;
+    const int turnover = model ? model->lateTurnover16 : 0;
     if (pendN >= 2) {
         nearest = pendErr[best];
         for (int i = 0; i < pendN; i += 1) {
             if (i == best) continue;
             const int apart = pendErr[i] - nearest;
             if (std::abs(apart) >= MONITOR_PHASE_WINDOW) continue;      // the next line's
+            const int width = pendWid[i] > 0 ? pendWid[i] : lastPulseWidth;
+            const int overhang = apart + width - MONITOR_HALF_LINE;
+            if (turnover > 0 && apart >= turnover && overhang > 0) {
+                overhangTarget16 += overhang * 16 / MONITOR_OVERHANG_DIV;
+                decisionWidth = pendWid[i];
+                continue;
+            }
             // The saturated pull for this pulse, tapered by where in the half line the
             // tip fell -- both measured, see the header.
             // ...and THIS pulse's width, not the line sync's. It used to take lastPulseWidth,
@@ -203,7 +217,6 @@ void CtmMonitor::decide() {
             // to an R3l=2 pulse a few Pixel-M2 wide, and pulled the band 13 px at the full
             // pulse's strength -- where AmSpiriT and the photograph show it lined up.
             if (std::abs(apart) < MONITOR_PHASE_DEADZONE) continue;     // same sync complex
-            const int width = pendWid[i] > 0 ? pendWid[i] : lastPulseWidth;
             decisionWidth = pendWid[i];                                  // diagnostics: the interloper's
             const int pull = apart > 0 ? monitorPhaseTaper(monitorPhasePullLate16(width), apart)
                                        : monitorPhaseEarlyPull16(width, -apart);
@@ -212,6 +225,27 @@ void CtmMonitor::decide() {
                 flatPull += apart > 0 ? pull : -pull;
         }
     }
+    // 'h': the overhang, on a line whose only other sync is one (MonitorModel::lateTurnover16).
+    // Measured on the CM14 (SHAKER on a 6128 Plus), second sync 30.0 characters late, Pixel-M2
+    // read off the real photographs with the panel's width as the ruler:
+    //     D3/A6  width 64, 32 past the half line: right ~15.7, flat after ~25 lines
+    //     D3/B6  width 48, 16 past:               right ~7.5
+    //     D3/C6  width 32, ends on it:            ~1;  D3/D6 width 16: 0
+    //     DH/B2  width 64, 32 past, 23 lines:     right 12.6 at the band's end
+    // Half the overhang (MONITOR_OVERHANG_DIV), reached as a first-order step of about 12 lines
+    // (MONITOR_OVERHANG_LINES). Neither is derived; both are read off these photographs.
+    if (overhangTarget16 != 0 && farPull == 0) {
+        decisionBranch = 'h';
+        bandLines = bandBefore + 1;
+        overhangDrift16 += (overhangTarget16 - overhangDrift16) / MONITOR_OVERHANG_LINES;
+        const int target = (overhangDrift16 + (overhangDrift16 >= 0 ? 8 : -8)) / 16;
+        hsyncCount += target - overhangOffset;  // right: the sweep runs earlier
+        overhangOffset = target;
+        decisionPull = -target;
+        lineError16 = 0; linePull16 = 0; lineFilterPrimed = false;
+        return;
+    }
+    overhangDrift16 = 0; overhangOffset = 0;    // what is left is the line pull's to take back
     if (farPull != 0) {
         decisionBranch = 'd';                   // discriminator: a second sync on the line
         // The discriminator's pull has TWO parts on the real set, and the photographs of

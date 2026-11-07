@@ -112,6 +112,9 @@ It runs on Windows, Linux and macOS. It has a cycle-level model of the chips of 
   a group of cartridge ROMs is a Plus cartridge, and a group of CPC ROMs starts a classic CPC
   with them fitted (Cartridge → CRO group selects the group). **Tools → CRO editor** makes and
   changes CRO files: groups, ROM files, a CPR imported as a group, and a list of problems.
+- **A cartridge on a classic CPC.** Load a CPR on a 464, 664 or 6128 and the machine stays as it
+  is, with its CRTC and its expansions (on a real CPC an M4 Board loads them the same way). Most
+  cartridges run. A cartridge that unlocks the Plus ASIC needs a Plus or a GX4000.
 
 ### Cheats
 
@@ -222,6 +225,11 @@ Select the expansions in the **Expansions** menu or in the Settings window.
     interrupt, the Gate Array mode, the CRTC counters C0, C4, C9, MA and R52, the Z80's PC and
     the three AY channels. Zoom, two markers that measure time, and a trigger that stops the
     CPC on a VSYNC, HSYNC or INT edge, a mode change, or a PC. It records only while open.
+  - **Expansion port**: the 50 pins of the expansion connector, each with a lamp that lights
+    while its signal is active (/INT, /NMI, ROMDIS, RAMDIS, LPEN, CURSOR, the address and data
+    of the last I/O cycle, and the others). Below them: the boards on the bus with the ports
+    they decode and their accesses each second, the ports that two boards both answer, a log
+    of the I/O cycles, and a stop on an access to a chosen board. It samples only while open.
   - **Profiler**: press Record, let the program run, then press Stop. It shows the time of
     each routine (entered by a CALL, an RST or an interrupt), its own and with what it calls,
     the busiest instructions, and a map of the 64K. The disassembly shows the time of each

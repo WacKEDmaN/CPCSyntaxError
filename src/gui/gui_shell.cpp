@@ -17,6 +17,7 @@
 #include "gui_dsk_editor.h"
 #include "gui_cheats.h"
 #include "gui_logic.h"
+#include "gui_expansion.h"
 #include "devserver.h"
 #include "version.h"
 
@@ -56,6 +57,7 @@ GuiShell::GuiShell(EmuHost& h) : host(h), debugger(h) {
         { "Chips", "win_chips", false, false },
         { "Memory", "win_memory", false, false },
         { "Logic analyser", "win_logic", false, false },
+        { "Expansion port", "win_expansion", false, false },
         { "Profiler", "win_profiler", false, false },
         { "Graphics finder", "win_gfx_finder", false, false },
         { "CRO editor", "win_cro", false, false },
@@ -86,6 +88,7 @@ GuiShell::GuiShell(EmuHost& h) : host(h), debugger(h) {
     dskEditor = std::make_unique<DskEditorWindow>(host, browser, saver);
     cheats = std::make_unique<CheatsWindow>(host, browser, saver);
     logicAnalyser = std::make_unique<LogicAnalyserWindow>(host, debugger);
+    expansionPort = std::make_unique<ExpansionPortWindow>(host);
     dev = std::make_unique<DevServer>(host, debugger);
     dev->onQuit = [this]() { quitRequested = true; };
 }
@@ -291,6 +294,12 @@ void GuiShell::draw(const ShellFrameInfo& info) {
     }
     // the analyser samples only while its window is open
     else if (host.emu && host.emu->analyser.enabled) host.emu->analyser.enabled = false;
+    if (panelOpen("Expansion port")) {
+        expansionPort->draw(&panelOpen("Expansion port"));
+        if (expansionPort->focused) toolFocusedNow = true;
+    }
+    // ...and so does the expansion port's probe
+    else if (host.emu && host.emu->busProbe.enabled) { host.emu->busProbe.enabled = false; host.emu->busProbe.breakOn = 0; }
     windowAbout();
     if (showImGuiDemo) ImGui::ShowDemoWindow(&showImGuiDemo);
 
@@ -324,7 +333,7 @@ void GuiShell::buildDefaultLayout(unsigned id) {
 void GuiShell::placeNewlyOpened(unsigned dockspaceId) {
     struct Group { std::vector<const char*> titles; ImGuiDir dir; float ratio; };
     static const Group groups[] = {
-        { { "Debugger", "Chips", "Memory", "GFX9000", "Logic analyser", "Profiler" }, ImGuiDir_Right, 0.42f },
+        { { "Debugger", "Chips", "Memory", "GFX9000", "Logic analyser", "Expansion port", "Profiler" }, ImGuiDir_Right, 0.42f },
         { { "Assembler", "C", "BASIC", "DSK editor", "CSL scripts", "Printer", "Cheats", "Graphics finder", "CRO editor", "CPC keyboard",
             "Video settings", "Audio settings", "Input settings", "Expansions", "External debugging" }, ImGuiDir_Down, 0.42f },
         // the media windows: tabs together, below the Machine window (a layout saved before
@@ -1125,7 +1134,7 @@ void GuiShell::menuDebug() {
     }
     if (ImGui::MenuItem("Remove all watchpoints", nullptr, false, !debugger.watchpoints.empty())) debugger.watchpoints.clear();
     ImGui::Separator();
-    for (const char* w : { "Debugger", "Chips", "Memory", "Logic analyser", "Profiler", "GFX9000", "Assembler", "C", "BASIC" })
+    for (const char* w : { "Debugger", "Chips", "Memory", "Logic analyser", "Expansion port", "Profiler", "GFX9000", "Assembler", "C", "BASIC" })
         ImGui::MenuItem(w, nullptr, &panelOpen(w));
     {
         bool overlay = host.rasterOverlay;
@@ -1163,7 +1172,7 @@ void GuiShell::menuWindow() {
         ImGui::EndMenu();
     }
     ImGui::Separator();
-    for (const char* w : { "Debugger", "Chips", "Memory", "Logic analyser", "Profiler", "GFX9000", "GFX9000 screen" }) ImGui::MenuItem(w, nullptr, &panelOpen(w));
+    for (const char* w : { "Debugger", "Chips", "Memory", "Logic analyser", "Expansion port", "Profiler", "GFX9000", "GFX9000 screen" }) ImGui::MenuItem(w, nullptr, &panelOpen(w));
     ImGui::Separator();
     for (const char* w : { "Assembler", "C", "BASIC", "DSK editor", "Cheats", "Graphics finder", "CRO editor", "CSL scripts", "Printer" }) ImGui::MenuItem(w, nullptr, &panelOpen(w));
     ImGui::Separator();
@@ -1437,7 +1446,8 @@ void GuiShell::windowMachine() {
                 ImGui::SetTooltip("A snapshot of the machine every second and every input since, so it can go back:\n"
                                   "Ctrl+Left a second back; in the debugger Back, Frame back, Run back, Last write.\n"
                                   "A reset, a change of the machine or its media, or an edit in the debugger starts it again.\n"
-                                  "The M4, OPL4, IDE, serial and speech cards are not rewound, nor what is written to a disc.");
+                                  "The M4, OPL4, IDE, RS232C, speech, Albireo and HD20 cards are not rewound,\n"
+                                  "nor what is written to a disc.");
             if (host.timelineEnabled) {
                 const EmuHost::TimelineInfo t = host.timelineInfo();
                 FlowRow row;

@@ -7,6 +7,7 @@
 #include "cpr_loader.h"
 #include "debug_symbols.h"
 #include "logic_analyser.h"
+#include "expansion_bus.h"
 #include "profiler.h"
 #include <any>
 
@@ -177,6 +178,7 @@ public:
     struct LoadCartridgeOptions { bool plusComputer = false; int ramKiB = -1; bool ram128 = false; int internalRamKiB = -1; bool classicExpansion = true; };
     void loadCartridge(const Cartridge& cartridge, LoadCartridgeOptions options);
     void loadCartridge(const Cartridge& cartridge);
+    void loadCartridgeOnClassic(const Cartridge& cartridge);   // a classic CPC keeps its chips
     struct LoadClassicOptions { Bytes lowerRom; Bytes basicRom; Bytes amsdosRom; int ramKiB = -1; bool ram128 = false; int crtcType = 0; std::string model = "CPC"; };
     void loadClassicFirmware(const LoadClassicOptions& options);
     void setDacType(const std::string& type = "none");
@@ -195,6 +197,17 @@ public:
     // it is enabled; a trigger it fires stops the machine as a breakpoint does.
     LogicAnalyser analyser;
     void recordAnalyser();
+    // The expansion connector (expansion_bus.h): its pins sampled a microsecond at a time
+    // and every I/O cycle counted by the devices that decode it, while the probe is enabled.
+    ExpansionBusProbe busProbe;
+    uint32_t busDecoders(int port, bool write);     // a bit per BusDevice
+    void sampleExpansionBus();
+    void noteBusIo(int port, int value, bool write);
+    // The upper ROM numbers the machine answers itself (bit n: ROM n). A board on the
+    // connector supplies every other one, and drives ROMDIS while the Z80 reads it. The host
+    // sets this with the model (a 464's AMSDOS comes from its DDI-1).
+    uint8_t builtInUpperRoms = 0x81;
+    uint32_t resetCount = 0;
     // The code profiler (profiler.h): told every step while set; null, nothing is done.
     CodeProfiler* profiler = nullptr;
     // The raster timing overlay (RasterLine::ioMarks): each OUT noted on the line being swept

@@ -142,6 +142,14 @@ inline constexpr int MONITOR_AFC_SLOW_GAIN = 2;
 // to act (Pixel-M2). Bracketed by two photographs: D3/A11 (pendPhase -100) drifts, AR/A1
 // (-317) does not; 8 characters is between them, not derived.
 inline constexpr int MONITOR_AFC_LOCK16 = 8 * 16;
+// The half line, Pixel-M2 after the line sync: past it a pulse is nearer the NEXT line's sync.
+inline constexpr int MONITOR_HALF_LINE = 32 * 16;
+// Branch 'h' (a set with MonitorModel::lateTurnover16): the sweep goes the OTHER way by the
+// part of the second sync past the half line, divided by this, reached as a first-order
+// step over this many lines. Read off the CM14 photographs of SHAKER D3/A6, B6, C6, D6 and
+// DH/B2 (CtmMonitor::decide); not derived.
+inline constexpr int MONITOR_OVERHANG_DIV = 2;
+inline constexpr int MONITOR_OVERHANG_LINES = 12;
 inline constexpr int MONITOR_PHASE_DEAD16 = 9;      // no response below this pulse width
 inline int monitorPhasePullLate16(int pulseWidth16) {
     const int effective = pulseWidth16 - MONITOR_PHASE_DEAD16;
@@ -428,6 +436,8 @@ public:
     int trainLines = 0;             // branch 't': lines of the current sync train
     int trainOffset = 0;            // branch 't': the kick still applied, Pixel-M2
     int trainOffset16 = 0;          // branch 't': the same, 1/16 Pixel-M2 (the sweep's state)
+    int overhangDrift16 = 0;        // branch 'h': the drift so far, 1/16 Pixel-M2
+    int overhangOffset = 0;         // branch 'h': the drift already applied, Pixel-M2
     int trainDrive16 = 0;           // branch 't': the discriminator's decaying drive, 1/16
     int bandLines = 0;              // branch 'd': lines of the current two-sync band
     bool trainKicked = false;       // branch 't': the kick of this train is applied

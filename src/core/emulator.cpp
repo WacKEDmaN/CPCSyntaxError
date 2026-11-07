@@ -196,6 +196,7 @@ GX4000::GX4000() {
         if (serial->enabled) serial->advanceMicrosecond();
         if (albireoSerial->enabled) albireoSerial->advanceMicrosecond(crtc->cursorOutput(), albireo[0]->enabled && albireo[0]->intPending);
         if (analyser.enabled) recordAnalyser();
+        if (busProbe.enabled) sampleExpansionBus();
     };
     o.onVsyncStart = [this]() {
         gateArray->onVsyncStart(crtc->hsync,
@@ -552,6 +553,122 @@ void GX4000::recordAnalyser() {
         s.ay[c] = (uint8_t)(tone && noise ? (volume & 0x10 ? ay->envelopeVolume : volume & 0x0f) : 0);
     }
     if (analyser.push(s)) debuggerPaused = true;    // the trigger: stopped, as at a breakpoint
+}
+
+// THE EXPANSION CONNECTOR (expansion_bus.h)
+//
+// Who decodes an I/O address. The machine's own chips by ACCC §5.1's partial decoding (the
+// same tests writePort and readPortUntraced make), then every board by its own decoder. Two
+// boards that decode the same address in the same direction both answer on a real bus: the
+// window shows that as a clash. The Multiface II also LISTENS to the Gate Array, CRTC and
+// PPI writes; that is not decoding, so it is not counted there.
+uint32_t GX4000::busDecoders(int port, bool write) {
+    uint32_t m = 0;
+    auto set = [&](BusDevice d) { m |= 1u << (int)d; };
+    port &= 0xffff;
+    const int high = port >> 8;
+    if (write && (port & 0xc000) == 0x4000) set(BusDevice::GateArray);
+    if ((port & 0x4000) == 0 && (write ? (port & 0x0300) <= 0x0100 : (port & 0x0300) >= 0x0200)) set(BusDevice::Crtc);
+    if (write && (port & 0x2000) == 0) set(BusDevice::RomSelect);
+    if ((port & 0x0800) == 0) set(BusDevice::Ppi);
+    if (hasFdc != false && write && (port & 0x0580) == 0x0000) set(BusDevice::FdcMotor);
+    if (hasFdc != false && (port & 0x0580) == 0x0100) set(BusDevice::Fdc);
+    if (write && (port & 0x1000) == 0) set(BusDevice::Printer);
+    if (m4->enabled && (high == 0xfe || (write && high == 0xfc))) set(BusDevice::M4);
+    if (multiface->enabled && write && (port == 0xfee8 || port == 0xfeea)) set(BusDevice::Multiface);
+    if (serial->handlesPort(port)) set(BusDevice::Rs232);
+    if (opl4->handlesPort(port)) set(BusDevice::Opl4);
+    if (playcity->handlesPort(port) || (write && port == 0xf8ff && playcity->enabled)) set(BusDevice::PlayCity);
+    if (speech->handlesPort(port)) set(BusDevice::Speech);
+    if (write ? symbifaceMouse->handlesWritePort(port) : symbifaceMouse->handlesPort(port)) set(BusDevice::Sf2Mouse);
+    if (write ? sf2Rtc->handlesWritePort(port) : sf2Rtc->handlesPort(port)) set(BusDevice::Sf2Rtc);
+    if (write ? sf3->handlesWritePort(port) : sf3->handlesPort(port)) set(BusDevice::Sf3);
+    if (ide->handlesPort(port)) set(BusDevice::Ide);
+    if (albireo[0]->handlesPort(port)) set(BusDevice::Albireo1);
+    if (albireo[1]->handlesPort(port)) set(BusDevice::Albireo2);
+    if (albireoSerial->handlesPort(port)) set(BusDevice::AlbireoUart);
+    if (hd20->handlesPort(port)) set(BusDevice::Hd20);
+    if (!write && mouseIf.handlesPort(port)) set(BusDevice::MouseInterface);
+    if (v9990->handlesPort(port)) set(BusDevice::Gfx9000);
+    if (dac->mode == "amdrum" && high == 0xff) set(BusDevice::AmdrumDac);
+    return m;
+}
+
+// One I/O cycle: the pins it drives, the devices it reaches, the log.
+void GX4000::noteBusIo(int port, int value, bool write) {
+    ExpansionBusProbe& p = busProbe;
+    const uint32_t dec = busDecoders(port, write);
+    const uint64_t us = (uint64_t)(machineCycles + hardwareCyclesAdvanced) / 4;
+    p.lastPort = port & 0xffff; p.lastValue = value & 0xff; p.lastWrite = write; p.lastDecoders = dec;
+    p.lastPc = cpu ? cpu->instructionStartPc & 0xffff : 0;
+    p.strobe(pin::IORQ);
+    p.strobe(write ? pin::WR : pin::RD);
+    for (int d = 0; d < BUS_DEVICE_COUNT; d++) {
+        if (!(dec >> d & 1)) continue;
+        ExpansionBusProbe::DeviceStats& s = p.devices[(size_t)d];
+        if (write) { s.writes += 1; s.totalWrites += 1; } else { s.reads += 1; s.totalReads += 1; }
+        s.lastPort = p.lastPort; s.lastValue = p.lastValue; s.lastWrite = write; s.lastAtUs = us;
+    }
+    // the boards' space is &F8xx-&FFxx (no CPC chip decodes there)
+    const bool boardSpace = (port & 0xffff) >= 0xf800;
+    if (!p.logExpansionOnly || boardSpace || (dec & BOARD_MASK)) {
+        ExpansionBusProbe::Access& a = p.log[(size_t)(p.logCount % ExpansionBusProbe::LOG_SIZE)];
+        a.atUs = us; a.decoders = dec; a.port = (uint16_t)p.lastPort; a.pc = (uint16_t)p.lastPc;
+        a.value = (uint8_t)p.lastValue; a.write = write;
+        p.logCount += 1;
+    }
+    if (p.breakOn & dec) debuggerPaused = true;
+}
+
+// The pins, once a microsecond (the end of a CRTC character, as the analyser samples).
+void GX4000::sampleExpansionBus() {
+    ExpansionBusProbe& p = busProbe;
+    p.samples += 1;
+    bool sound = false;
+    for (int c = 0; c < 3 && !sound; c++) {
+        const int mixer = ay->registers[7];
+        const bool tone = (mixer & (1 << c)) || ay->toneState[(size_t)c];
+        const bool noise = (mixer & (8 << c)) || ay->noiseState;
+        const int volume = ay->registers[(size_t)(8 + c)];
+        sound = tone && noise && (volume & 0x10 ? ay->envelopeVolume : volume & 0x0f) > 0;
+    }
+    p.set(pin::SOUND, sound);
+    p.set(pin::GND1, false); p.set(pin::GND2, false); p.set(pin::VCC, true); p.set(pin::CLOCK, true);
+    for (int b = 0; b < 16; b++) p.set(pin::A0 - b, p.lastPort >= 0 && (p.lastPort >> b & 1));
+    for (int b = 0; b < 8; b++) p.set(pin::D0 - b, p.lastPort >= 0 && (p.lastValue >> b & 1));
+    // The Z80 fetches every microsecond it runs (a HALT fetches NOPs): /MREQ, /M1, /RFSH, /RD.
+    p.set(pin::MREQ, true); p.set(pin::M1, true); p.set(pin::RFSH, true); p.set(pin::RD, true);
+    if (cpu->memoryWrites != p.seenMemoryWrites) { p.seenMemoryWrites = cpu->memoryWrites; p.strobe(pin::WR); }
+    p.set(pin::WR, false);
+    if (cpu->lastWasInterrupt) p.strobe(pin::IORQ);              // the acknowledge is an M1 + IORQ cycle
+    p.set(pin::IORQ, false);
+    p.set(pin::HALT, cpu->halted);
+    p.set(pin::INT, cpu->pendingInterrupt != -1);
+    if (cpu->nmiRequests != p.seenNmi) { p.seenNmi = cpu->nmiRequests; p.strobe(pin::NMI); }
+    p.set(pin::NMI, cpu->pendingNmi);
+    p.set(pin::BUSRQ, false); p.set(pin::BUSAK, false);
+    p.set(pin::READY, cpu->alignmentWaits > 0);
+    if (resetCount != p.seenReset) { p.seenReset = resetCount; p.strobe(pin::RESET); p.strobe(pin::BUSRESET); }
+    p.set(pin::RESET, false); p.set(pin::BUSRESET, false);
+    const int pc = cpu->instructionStartPc & 0xffff;
+    const bool lowRom = memory->lowerEnabled && pc < 0x4000, highRom = memory->upperEnabled && pc >= 0xc000;
+    p.set(pin::ROMEN, lowRom || highRom);
+    bool romdis = false;
+    if (memory->cartridgeOnClassic && plusHardware == false) romdis = lowRom || highRom;   // the board serves the cartridge
+    else if (highRom && plusHardware != false) romdis = !memory->useCartridgeUpper;     // a board answered, not a cartridge page
+    else if (highRom) {
+        const int slot = memory->upperRom & 0xff;
+        const bool builtIn = slot < 8 && (builtInUpperRoms >> slot & 1);
+        romdis = !builtIn && slot < (int)memory->upperRoms.size() && !memory->upperRoms[(size_t)slot].empty();
+    }
+    if (multiface->enabled && multiface->pagedIn && pc < 0x2000) romdis = true;          // its ROM over the lower ROM
+    p.set(pin::ROMDIS, romdis);
+    p.set(pin::RAMRD, true);                                     // the screen is read every microsecond
+    p.set(pin::RAMDIS, multiface->enabled && multiface->pagedIn); // its RAM at &2000-&3FFF while paged in
+    p.set(pin::CURSOR, crtc->cursorOutput());
+    if (crtc->lpenStrobes != p.seenLpen) { p.seenLpen = crtc->lpenStrobes; p.strobe(pin::LPEN); }
+    p.set(pin::LPEN, false);
+    p.set(pin::EXP, ppi->strictPlusBus);                         // port B bit 5 reads 0 (§ PPI: &5E on a Plus)
 }
 
 void GX4000::advanceClassicMonitorRun(int n) {
@@ -961,6 +1078,17 @@ void GX4000::loadCartridge(const Cartridge& cart, LoadCartridgeOptions options) 
     memory->loadCartridge(cart.banks); cartridge = std::make_shared<Cartridge>(cart); reset();
 }
 void GX4000::loadCartridge(const Cartridge& cart) { loadCartridge(cart, LoadCartridgeOptions{}); }
+// A cartridge on a CLASSIC CPC, as a board on its expansion port (the M4's |CTR, a ROM board
+// with a cartridge image) presents it: the machine stays as it is (its CRTC, Gate Array, RAM,
+// ROMs and expansions), and the cartridge is mapped as a Plus maps it, page 0 as the lower ROM
+// and &DFxx = &80+n selecting page n. There is no ASIC, so a game that unlocks it (Sonic)
+// fails as on the real CPC; one that does not (Alcon) runs.
+void GX4000::loadCartridgeOnClassic(const Cartridge& cart) {
+    memory->cartridgeOnClassic = true;
+    memory->loadCartridge(cart.banks);
+    cartridge = std::make_shared<Cartridge>(cart);
+    reset();
+}
 void GX4000::loadClassicFirmware(const LoadClassicOptions& options) {
     memory->clearSnapshotRoms(); snapshotDebugMetadata.reset();
     int selectedRam = options.ramKiB >= 0 ? options.ramKiB : (options.ram128 ? 128 : 64);
@@ -1005,6 +1133,7 @@ static long long traceIoFrom() {
 
 void GX4000::writePort(int port, int value) {
     if (ioOverlay) noteIo(port, value);
+    if (busProbe.enabled) noteBusIo(port, value, true);
     if (machineCycles >= traceIoFrom() && traceIoPort(port))
         std::fprintf(stderr, "IO OUT %04x <- %02x @%lld pc %04x\n", port & 0xffff, value & 0xff, machineCycles + hardwareCyclesAdvanced, cpu->instructionStartPc & 0xffff);
     int high = (unsigned)port >> 8 & 0xff;
@@ -1080,9 +1209,12 @@ int GX4000::readPort(int port) {
     if (machineCycles >= traceIoFrom() && traceIoPort(port)) {
         const int v = readPortUntraced(port);
         std::fprintf(stderr, "IO IN  %04x -> %02x @%lld pc %04x\n", port & 0xffff, v & 0xff, machineCycles + hardwareCyclesAdvanced, cpu->instructionStartPc & 0xffff);
+        if (busProbe.enabled) noteBusIo(port, v, false);
         return v;
     }
-    return readPortUntraced(port);
+    const int v = readPortUntraced(port);
+    if (busProbe.enabled) noteBusIo(port, v, false);
+    return v;
 }
 
 int GX4000::readPortUntraced(int port) {
@@ -1285,11 +1417,14 @@ int GX4000::stepInstruction() {
     if (m4->ctrBoot) {
         m4->ctrBoot = false;
         if ((plusComputer || !plusHardware) && !m4->cartFlash.empty()) {
-            memory->cartridgeOnClassic = !plusHardware;
             Cartridge flashed; flashed.format = "m4"; flashed.banks = m4->cartFlash; flashed.bankCount = (int)flashed.banks.size();
-            memory->loadCartridge(flashed.banks);
-            cartridge = std::make_shared<Cartridge>(flashed);
-            reset();
+            if (!plusHardware) loadCartridgeOnClassic(flashed);
+            else {
+                memory->cartridgeOnClassic = false;
+                memory->loadCartridge(flashed.banks);
+                cartridge = std::make_shared<Cartridge>(flashed);
+                reset();
+            }
         }
     }
     cpuIoAccessed = false;
@@ -1521,6 +1656,7 @@ int GX4000::runFrame() {
     return elapsed;
 }
 void GX4000::reset() {
+    resetCount += 1;                    // the expansion connector's /RESET (expansion_bus.h)
     breakpointSkipOnce = -1; watchpointPending.reset();
     timingInstructionActive = false; hardwareCyclesAdvanced = 0; classicFrameOvershoot = 0;
     interruptHeldOver = -1; interruptsHeldOver = 0;
