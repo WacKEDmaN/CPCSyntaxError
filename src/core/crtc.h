@@ -338,8 +338,13 @@ struct CrtcBehaviour {
     //   CRTC 3     (ASIC 40489)   mode 0 pixel 29, mode 1 pixel 58 -> 4    mode 2: 5
     //
     // So the classic GATE ARRAY and the 40226 change colour at the SECOND BYTE of the
-    // character, and the 40489 half a byte earlier. The mode-2 column is the one extra
-    // Pixel-M2 of the entry below, not a separate number.
+    // character, and the 40489 half a byte earlier. The mode-2 column is not a separate
+    // number: it is where the mode-2 stream is DRAWN (§9.2.1's one Pixel-M2 advance, which
+    // the 40489 does not have), so on screen the change sits at the same place in every mode
+    // ("applied to the same position regardless of the graphics mode on CRTCs 0, 1, 2, and
+    // 3"), and one Pixel-M2 earlier in mode 2 on the 40226 (inkChangeFollowsMode2Advance).
+    // The renderers compute it as inkPixel + mode2PixelAdvance - (40226 ? 1 : 0). SHAKER A9
+    // on CRTC 3 had the white (mode 2) band one pixel right of the others; lite lines them up.
     virtual int inkChangePixelInCharacter() const { return 8; }
     // ACCC §9.2.2 (p.49): "Updating the colour of an ink is applied to the same
     // position regardless of the graphics mode on CRTCs 0, 1, 2, and 3. On CRTC 4,
@@ -461,6 +466,11 @@ struct CrtcBehaviour {
     // own display signal passed through a skew-character delay. A chip that says so runs
     // the display events unskewed on hDisplayInternal and drives hDisplay from the delay.
     virtual bool skewIsDelayLine() const { return false; }
+    // ACCC §19.2.5 "DISINTEGRATION OF THE BORDER ON CRTC 0": a delay taken away is
+    // "considered immediately" (19.2.5.1/.2), a delay added "is considered for the following
+    // character" (19.2.5.4). The chapter is CRTC 0's alone. A chip returning false sees an
+    // R8 change from the next character in both directions.
+    virtual bool skewRemovedActsNow() const { return true; }
     // ACCC 1.10 §13.2.7 (R.V.L.L.): CRTC 0 needs a rupture of at least 2 µsec for the
     // C9 counter to behave; when a "Last Line" lands on such a short line, the chip
     // emits ONE EXTRA line with C4=1 / C9=0 and the R12/R13 address reload is skipped
@@ -653,6 +663,11 @@ public:
     int hsyncCounter = 0;
     bool hsync = false, vsync = false, vblank = false;
     bool r7Match = false, r4Match = false, r9Match = false;
+    // CPCSE_TRACE_R0X=<n>: an R0 write other than 63 opens a window of n traced events (R0/R7
+    // writes here, PPI port B reads in GX4000::readPortUntraced), to stderr.
+    long traceR0xWindow = 0;
+    long traceStatusLeft = 0;          // CPCSE_TRACE_STATUS (crtc.cpp read)
+    bool inAdditionalLines = false;    // the R5 lines are running (set as they start, cleared by newFrame)
     // The line that just ended, for §16.3's release at the row start: its C4, and whether
     // the VSYNC ran through it (taken in updateVertical before the VSYNC end is counted).
     int c4BeforeLineStep = 0;

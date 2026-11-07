@@ -31,3 +31,4 @@ imgui.ini
 *.swp
 Thumbs.db
 desktop.ini
+/machines/

@@ -114,6 +114,7 @@ public:
     // acknowledge has already done the clear at that moment. See stepInstruction.
     int lastInstructionSlackT = 0;
     bool r52AcknowledgedThisStep = false;
+    bool lastAckWasAsicDma = false;   // the last interrupt acknowledged was an ASIC DMA one (6 usec IM 2)
     bool interruptPhaseTrace = false;  // diagnostic: log the microsecond each INT arrives in
     std::shared_ptr<Cartridge> cartridge;
     std::shared_ptr<DebugMetadata> snapshotDebugMetadata;

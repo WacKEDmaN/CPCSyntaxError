@@ -466,15 +466,31 @@ void CpcVideo::plotBeamCharacter() {
     // Pixel-M2 later still — except on the 40226, the one chip where §9.2.2 says the
     // colour change travels with the mode-2 stream instead of staying put.
     int inkPixel = chip->inkChangePixelInCharacter();
-    int inkPixelMode2 = inkPixel + (chip->inkChangeFollowsMode2Advance() ? 0 : 1);
-    for (int i = 0; i < 16; i += 1) {
-        bool mode2 = pixelMode[i] == 2;
-        int back = pixelMode[i] == 2 ? gaMode2Advance() : 0;
-        uint32_t colour = out[i];
-        if (beamPensChanged && i < (mode2 ? inkPixelMode2 : inkPixel))
-            colour = beamPensPrevious[outPen[i]];
-        put(beamX + i - back, colour);
+    // §9.2.2: "applied to the same position regardless of the graphics mode on CRTCs 0, 1, 2,
+    // and 3". So a mode-2 Pixel-M2 takes the change one index later exactly where mode 2 is
+    // DRAWN one Pixel-M2 ahead (§9.2.1, gaMode2Advance), which the 40489 is not; "On CRTC 4,
+    // however, the color change 0.0625 usec (1 pixel mode 2) earlier in mode 2".
+    int inkPixelMode2 = inkPixel + gaMode2Advance() - (chip->inkChangeFollowsMode2Advance() ? 1 : 0);
+    // ...and the character those pixels belong to is the one the GATE ARRAY displays: the
+    // charts' "C0 Disp by GA" row is one less than "C0 from Vsync". An OUT landing in this
+    // CRTC character recolours the PREVIOUS character from the ink Pixel-M2 on, and this
+    // one whole (the legacy compositor does the same; SHAKER A9/B and DI/A on the real CPC).
+    if (beamPensChanged && beamPrevY == beamY) {
+        for (int i = 0; i < 16; i += 1) {
+            const bool mode2 = beamPrevMode[i] == 2;
+            if (i < (mode2 ? inkPixelMode2 : inkPixel)) continue;
+            const int x = i - (mode2 ? gaMode2Advance() : 0);
+            if ((x >= beamPrevBlack[0] && x < beamPrevBlack[1]) || (x >= beamPrevBlack[2] && x < beamPrevBlack[3])) continue;
+            put(beamPrevX + x, beamPens[beamPrevPen[i]]);
+        }
     }
+    for (int i = 0; i < 16; i += 1) {
+        int back = pixelMode[i] == 2 ? gaMode2Advance() : 0;
+        put(beamX + i - back, out[i]);
+        beamPrevPen[i] = outPen[i]; beamPrevMode[i] = pixelMode[i];
+    }
+    beamPrevX = beamX; beamPrevY = beamY;
+    beamPrevBlack[0] = hsyncFrom; beamPrevBlack[1] = hsyncTo; beamPrevBlack[2] = blankFrom; beamPrevBlack[3] = blankTo;
     uint32_t black = packedColor(0);
     for (int i = hsyncFrom; i < hsyncTo; i += 1) put(beamX + i, black);
     for (int i = blankFrom; i < blankTo; i += 1) put(beamX + i, black);
@@ -587,8 +603,14 @@ void CpcVideo::paintBorderScanline(int py, const RasterLine* state, const std::a
     int rasterCharacterZero = physical
         ? classicPhysicalLineOrigin(state, lineRegisters, frameRegisters).x
         : classicMonitorLineOrigin(lineRegisters, frameRegisters, state->crtcType).x;
+    // ACCC §9.2.2: "the time when the update takes place is the same regardless of the
+    // mode", and the BORDER is one of the 17 inks the same OUT writes. So a BORDER change
+    // takes over where an ink change does (the display path above): the chip's ink Pixel-M2
+    // of the character the GATE ARRAY displays, one before the CRTC character the segment
+    // was filed at.
+    const int borderInkPixel = crtc->behaviour->inkChangePixelInCharacter();
     for (const auto& segment : state->segments) {
-        int startX = std::max(0, std::min(width, rasterCharacterZero + segment.character * 16));
+        int startX = std::max(0, std::min(width, rasterCharacterZero + (segment.character - 1) * 16 + borderInkPixel));
         uint32_t colour = packedColor(penColor(ga().outputPen(false, 0), penFromSegment(segment)));
         if (py >= 0 && py < height) std::fill(pixels.begin() + py * width + startX, pixels.begin() + (py + 1) * width, colour);
         if (py + 1 >= 0 && py + 1 < height) std::fill(pixels.begin() + (py + 1) * width + startX, pixels.begin() + (py + 2) * width, colour);
@@ -888,15 +910,39 @@ void CpcVideo::render() {
             // handler at #8523 holds the BORDER pen at #4A for exactly one OUT (C),r8, and
             // the left edge of the bar that paints is this half microsecond.
             const int inkPixel = chipBehaviour->inkChangePixelInCharacter();
-            const int inkPixelMode2 =
-                inkPixel + (chipBehaviour->inkChangeFollowsMode2Advance() ? 0 : 1);
-            PenState previousState = pixelState;
+            // (mode 2: the same screen position as the other modes, as in the beam path above)
+            const int inkPixelMode2 = inkPixel + gaMode2Advance()
+                - (chipBehaviour->inkChangeFollowsMode2Advance() ? 1 : 0);
+            // ...and the character those pixels belong to is the one the GATE ARRAY is
+            // DISPLAYING, which the charts give a row of its own: "C0 Disp by GA" is one
+            // less than "C0 from Vsync" (05 under 06, 07 under 08). The OUT that lands in
+            // the CRTC's character n recolours the second byte of character n-1's data.
+            // A segment is filed at the CRTC character the write landed in, so its ink
+            // takes over one character before it; the mode split (§9.3.4, its own charts)
+            // stays on the segment's character. MEASURED on SHAKER A9/B (CRTC 3, the ink
+            // OUT starting on C0vs=6 exactly as p.51's chart) and DI/A (CRTC 1, the bar under
+            // the "0102..." ruler): the real CPC and AmSpiriT-lite put the change one
+            // character (16 Pixel-M2) left of ours, A9 at p.51's pixel 117.
+            auto inkInstant = [&](int segmentCharacter, int byteMode) {
+                return (segmentCharacter - 1 - displayStartCharacter) * 16
+                     + (byteMode == 2 ? inkPixelMode2 : inkPixel);
+            };
+            const PenState lineInk = penFromLine(state);
+            // The ink in force at Pixel-M2 `at` of this line (counted from column 0).
+            auto inkFor = [&](int at, int byteMode) -> PenState {
+                PenState ink = lineInk;
+                if (state)
+                    for (const auto& seg : state->segments) {
+                        if (inkInstant(seg.character, byteMode) > at) break;
+                        ink = penFromSegment(seg);
+                    }
+                return ink;
+            };
             for (int column = firstVisibleByte(extendActive); column < lineBytes; column += 1) {
                 int sourceColumn = displayStartByte + column;
                 int character = displayStartCharacter + ((unsigned)column >> 1);
                 while (state && segmentIndex + 1 < (int)state->segments.size() && state->segments[segmentIndex + 1].character <= character) {
                     segmentIndex += 1;
-                    previousState = pixelState;
                     pixelState = penFromSegment(state->segments[segmentIndex]);
                 }
                 if (state && !(state->displayEnabled[character] & 1 << (column & 1))) continue;
@@ -907,16 +953,14 @@ void CpcVideo::render() {
                     && character == pixelState.splitCharacter;
                 if (switchInSecondByte && (column & 1) == 0) mode = pixelState.modeBefore;
                 int byte = state ? state->videoBytes[sourceColumn] : memory->readVideo(lineBase + sourceColumn);
-                // §9.2.2, above: on the character a segment starts on, the pixels before
-                // the chip's ink instant are still drawn in the OLD ink. inkSplit is that
-                // instant measured from this byte's own first pixel, so it is <= 0 for a
-                // byte wholly in the new ink and >= 8 for one wholly in the old.
-                const int inkSplit = (previousState.present && pixelState.present
-                                      && character == pixelState.splitCharacter)
-                    ? (mode == 2 ? inkPixelMode2 : inkPixel) - (column & 1) * 8
-                    : 0;
-                auto inkAt = [&](int pixelInByte) -> const PenState& {
-                    return pixelInByte < inkSplit ? previousState : pixelState;
+                // §9.2.2, above: the ink of each Pixel-M2 is the one whose instant it has
+                // reached. A byte the instant falls inside is drawn split.
+                const PenState inkFirst = inkFor(column * 8, mode);
+                const PenState inkLast = inkFor(column * 8 + 7, mode);
+                const bool inkSplitsByte = inkFirst.palette != inkLast.palette
+                    || inkFirst.gaPalette != inkLast.gaPalette || inkFirst.locked != inkLast.locked;
+                auto inkAt = [&](int pixelInByte) -> PenState {
+                    return inkSplitsByte ? inkFor(column * 8 + pixelInByte, mode) : inkFirst;
                 };
                 // ACCC §9.3.4 (p.54): "Given that mode update occurs during the processing
                 // of the byte read in ram, the algorithm for determining the PEN by the GA
@@ -933,7 +977,7 @@ void CpcVideo::render() {
                 // A mode split and an ink split land on the same byte -- both belong to
                 // the character the segment starts on -- so they are decoded together:
                 // the pens come from the mode, the ink from §9.2.2's instant.
-                if (modeSplitHere || (inkSplit > 0 && inkSplit < 8)) {
+                if (modeSplitHere || inkSplitsByte) {
                     int pens[8];
                     if (modeSplitHere) {
                         int switchPixel = pixelState.modeSwitchPixel & 7;
@@ -964,9 +1008,8 @@ void CpcVideo::render() {
                     }
                     continue;
                 }
-                // One ink across the whole byte: the old one while the character is still
-                // before §9.2.2's instant, otherwise the segment's own.
-                const PenState& ink = inkSplit >= 8 ? previousState : pixelState;
+                // One ink across the whole byte.
+                const PenState& ink = inkFirst;
                 // ACCC §9.2.1 (p.48): mode 2 is drawn one Pixel-M2 ahead of the other
                 // modes on every part but the 40489 -- "the BORDER 'stops' 1 pixel earlier
                 // on a line in mode 2 and starts 1 pixel earlier when C0=R1". Anchored on

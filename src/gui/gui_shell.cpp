@@ -10,6 +10,7 @@
 #include <cstdio>
 #include <ctime>
 #include <filesystem>
+#include <SDL.h>              // SDL_OpenURL: the machine profiles folder
 
 #include "gui_assembler.h"
 #include "gui_basic.h"
@@ -897,6 +898,11 @@ void GuiShell::menuFile() {
         if (ImGui::MenuItem("Tape...")) browser.open("Insert tape", host.romDir, { ".cdt", ".tzx", ".tap", ".wav" }, [this](const std::string& p) { host.loadTapeFile(p); });
         if (ImGui::MenuItem("Cartridge (.cpr, .cro)...")) browser.open("Load cartridge", host.romDir, { ".cpr", ".cro", ".bin" }, [this](const std::string& p) { host.loadCartridgeFile(p); });
         if (ImGui::MenuItem("Snapshot (.sna)...")) browser.open("Load snapshot", host.romDir, { ".sna" }, [this](const std::string& p) { host.loadSnapshot(p); });
+        if (ImGui::MenuItem("Machine profile (.cpcmachine)..."))
+            browser.open("Load machine profile", host.machineDir, { ".cpcmachine" }, [this](const std::string& p) {
+                std::string why;
+                if (!host.loadMachineProfile(p, why)) host.status = why;
+            });
         ImGui::Separator();
         if (ImGui::MenuItem("Assembler source...")) { panelOpen("Assembler") = true; assembler->requestOpen(); }
         if (ImGui::MenuItem("C program...")) { panelOpen("C") = true; cWindow->requestOpen(); }
@@ -934,6 +940,8 @@ void GuiShell::menuMachine() {
     if (ImGui::BeginMenu("Z80")) { z80Items(true); ImGui::EndMenu(); }
     ImGui::Separator();
     if (ImGui::BeginMenu("ROMs")) { sectionRoms(true); ImGui::EndMenu(); }
+    ImGui::Separator();
+    if (ImGui::BeginMenu("Machine profiles")) { machineProfileItems(); ImGui::EndMenu(); }
     ImGui::Separator();
     if (ImGui::MenuItem("Reset", "Ctrl+R", false, host.booted())) host.reset();
     if (ImGui::MenuItem("Pause", "Ctrl+P", host.paused, host.booted())) { if (host.paused) debugger.run(); else debugger.pause(); }
@@ -974,6 +982,50 @@ void GuiShell::menuMachine() {
         ImGui::EndMenu();
     }
     ImGui::EndMenu();
+}
+
+// MACHINE PROFILES (EmuHost::saveMachineProfile / loadMachineProfile): the saved machines,
+// each a model with its RAM, chips, ROMs and expansions; clicking one rebuilds the machine.
+void GuiShell::machineProfileItems() {
+    const auto profiles = host.machineProfiles();
+    if (profiles.empty()) ImGui::TextDisabled("(no profiles saved yet)");
+    for (const auto& prof : profiles) {
+        if (ImGui::MenuItem(prof.first.c_str(), nullptr, prof.first == host.machineProfileName)) {
+            std::string why;
+            if (!host.loadMachineProfile(prof.second, why)) host.status = why;
+        }
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", prof.second.c_str());
+    }
+    ImGui::Separator();
+    const std::string suggested = (host.machineProfileName.empty() ? std::string("My machine") : host.machineProfileName) + ".cpcmachine";
+    if (ImGui::MenuItem("Save this machine as a profile...", nullptr, false, host.currentModel >= 0))
+        saver.open("Save machine profile", host.machineDir, suggested, [this](const std::string& p) {
+            std::string why;
+            if (!host.saveMachineProfile(p, false, why)) host.status = why;
+        });
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("The model, RAM, CRTC, Gate Array, Z80, keyboard, monitor, ROMs\n"
+                          "and every expansion with its settings and folders.");
+    if (ImGui::MenuItem("Save this machine with its media...", nullptr, false, host.currentModel >= 0))
+        saver.open("Save machine profile with media", host.machineDir, suggested, [this](const std::string& p) {
+            std::string why;
+            if (!host.saveMachineProfile(p, true, why)) host.status = why;
+        });
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("As above, and the discs in drives A and B, the tape and the cartridge.");
+    if (ImGui::MenuItem("Load a profile file..."))
+        browser.open("Load machine profile", host.machineDir, { ".cpcmachine" }, [this](const std::string& p) {
+            std::string why;
+            if (!host.loadMachineProfile(p, why)) host.status = why;
+        });
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("A profile is the whole machine: an expansion it does not name is removed,\n"
+                          "then the machine restarts. Discs stay in unless the profile has its own.");
+    if (ImGui::MenuItem("Open the profiles folder")) {
+        std::error_code ec;
+        std::filesystem::create_directories(host.machineDir, ec);
+        const std::string url = "file:///" + std::filesystem::absolute(host.machineDir, ec).generic_string();
+        SDL_OpenURL(url.c_str());
+    }
 }
 
 void GuiShell::menuMedia() {
@@ -1513,8 +1565,11 @@ void GuiShell::openAllSettings() {
 
 void GuiShell::windowAbout() {
     if (!showAbout) return;
-    ImGui::SetNextWindowSize(ImVec2(520, 0), ImGuiCond_FirstUseEver);
-    if (ImGui::Begin("About CPCSyntaxError", &showAbout, ImGuiWindowFlags_NoDocking)) {
+    // 640 wide, and as tall as its text on every frame (a height of 0 fits the content), so
+    // all of it shows at once with no scrolling, whatever size the layout file remembered.
+    ImGui::SetNextWindowSize(ImVec2(640, 0), ImGuiCond_Always);
+    if (ImGui::Begin("About CPCSyntaxError", &showAbout,
+                     ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoScrollbar)) {
         WrapText wrapText;                     // text wraps at the window's edge
         ImGui::TextColored(kAccent, "CPCSyntaxError %s", CPCSE_VERSION);
         ImGui::TextDisabled("Amstrad CPC / Plus / GX4000 emulator");
@@ -1522,6 +1577,9 @@ void GuiShell::windowAbout() {
         ImGui::TextUnformatted("Author and prompter: WacKEDmaN");
         ImGui::TextUnformatted("Code written with Claude (Anthropic)");
         ImGui::TextDisabled("github.com/WacKEDmaN/CPCSyntaxError");
+        ImGui::Separator();
+        ImGui::TextUnformatted("Advanced CRT filter + other tweaks: AndyHOvine");
+        ImGui::TextDisabled("https://github.com/AndyHOvine");
         ImGui::Separator();
         // ACCC §2.2 "Attribution Directive": the compendium the CRTC emulation is built
         // from asks for its mention "within the About / Credits window or documentation
@@ -1531,6 +1589,12 @@ void GuiShell::windowAbout() {
         ImGui::TextWrapped("Built-in assembler: RASM by Edouard BERGE (MIT), with the crunchers of "
                            "Yann Collet (LZ4), Einar Saukas (ZX7), Magnus Lind (Exomizer) and "
                            "Emmanuel Marty (LZSA, apultra, salvador).");
+        ImGui::Separator();
+        ImGui::TextWrapped("Thanks to Fran Gallego for cpctelera and Arnaud6128 for cpctelera_next");
+        ImGui::Separator();
+        ImGui::TextWrapped("Shout OUT(C),A to: The_Clueless_Engineer (Brett), XeNoMoRPH, roudoudou, "
+                           "Logon System, TITAN, Gryzor, eto, salvogendut, Computer Booter, T-Man!");
+        ImGui::Separator();
         ImGui::TextWrapped("User interface: Dear ImGui (MIT) on SDL2.");
     }
     ImGui::End();

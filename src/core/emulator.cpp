@@ -159,7 +159,17 @@ GX4000::GX4000() {
     o.onCharacter = [this]() {
         if (gateArrayHsyncPending > 0 && --gateArrayHsyncPending == 0) {
             gateArray->onHsync();                         // ACCC §27.6.5 (ASIC lag)
-            if (plusHardware) asic->onHsyncEnd(((crtc->vertical & 0x3f) << 3) | (crtc->raster & 7));
+            if (plusHardware) {
+                // CPCSE_TRACE_PRI=<n>: the first n HSYNC ends on a PRI line, with the line and C0 they see
+                static long priTrace = std::getenv("CPCSE_TRACE_PRI") ? std::atol(std::getenv("CPCSE_TRACE_PRI")) : 0;
+                const int line = ((crtc->vertical & 0x3f) << 3) | (crtc->raster & 7);
+                if (priTrace > 0 && asic->rasterInterruptEnabled() && (line == asic->rasterInterruptLine || line + 1 == asic->rasterInterruptLine)) {
+                    priTrace -= 1;
+                    std::printf("PRI f%d hsync end: line %d C0=%d C4=%d C9=%d PRI=%d R2=%d R3=%d\n", crtc->frame, line, crtc->horizontal,
+                                crtc->vertical, crtc->raster, asic->rasterInterruptLine, crtc->registers[2], crtc->registers[3] & 15);
+                }
+                asic->onHsyncEnd(line);
+            }
             crtc->gateArrayBlanking = gateArray->blanking();
         }
         gateArray->onCrtcVsyncPin(crtc->vsync);          // ACCC §16.2.3 / p.164 (CRTC 3/4)
@@ -1102,7 +1112,14 @@ int GX4000::readPortUntraced(int port) {
         writePort(port, plusMachineId);
     }
     if (hasFdc != false && (port & 0x0580) == 0x0100) value &= fdc->read(port);   // ACCC §5.1
-    if ((port & 0x0800) == 0) value &= ppi->read(port);
+    if ((port & 0x0800) == 0) {
+        value &= ppi->read(port);
+        if (crtc && crtc->traceR0xWindow > 0 && (port & 0x0300) == 0x0100) {   // PPI port B
+            crtc->traceR0xWindow -= 1;
+            std::fprintf(stderr, "R0X PPI.B -> %02X  C0=%d C4=%d C9=%d R0=%d vsync=%d\n", value & 0xff, crtc->horizontal,
+                         crtc->vertical, crtc->raster, crtc->registers[0], crtc->vsync ? 1 : 0);
+        }
+    }
     value &= dac->readPort(port);
     return value;
 }
@@ -1169,7 +1186,14 @@ int GX4000::cpcInstructionCycles(int z80Cycles, bool ioAccessed) {
     // located in the table lasts 7 µsec"; its 19 T-states round to 5, one more than the
     // acknowledge alone gives: each of its M-cycles (acknowledge, two stack writes, two
     // vector reads) takes whole microseconds. SHAKER BR/D prints 07 on the real CPC.
-    if (cpu->lastWasInterrupt) return cycles + (cpu->im == 2 ? 8 : 4);
+    //
+    // The ASIC's own DMA interrupts (the INT instruction of a sound list) are the exception
+    // on the Plus: their IM 2 call is 6 usec. MEASURED, no document gives it: SHAKER BR/D
+    // (a raster interrupt) reads 07 on the real 6128 Plus too (CRTC 3 and 4 photos), while
+    // Sonic the Hedgehog (2025), which drives its special stage from a DMA INT on every
+    // row, works on the real machine and breaks with 7 (its row splits land a usec late
+    // and the stage hangs). With 6 for DMA it runs as in v0.12.0.
+    if (cpu->lastWasInterrupt) return cycles + (cpu->im == 2 && !lastAckWasAsicDma ? 8 : 4);
     int opcode = cpu->lastOpcode;
     int extended = cpu->lastEdOpcode;
     if (opcode != -1) {
@@ -1536,6 +1560,7 @@ void GX4000::acknowledgeInterrupt() {
             budget -= 1;
         }
     }
+    lastAckWasAsicDma = false;
     if (plusHardware == false) {
         asic->clearGateArrayInterrupt();
         // stepInstruction has normally done this already, at the INTA's microsecond.
@@ -1543,6 +1568,7 @@ void GX4000::acknowledgeInterrupt() {
         return;
     }
     bool rasterOrGateArray = asic->rasterInterruptPending;
+    lastAckWasAsicDma = !rasterOrGateArray;       // the vector came from a DMA channel (cpcInstructionCycles)
     asic->acknowledgeInterrupt();
     if (rasterOrGateArray && !r52AcknowledgedThisStep) gateArray->acknowledgeInterrupt();
 }

@@ -449,7 +449,9 @@ int main(int argc, char** argv) {
                 std::string why;
                 if (!host.startRecording(recordPath, why)) { std::printf("[record] %s\n", why.c_str()); return 2; }
             }
-            if (!cartPath.empty()) { if (!host.loadCartridgeFile(cartPath) || diag) std::printf("[cart] %s\n", host.status.c_str()); if (wantCrtc >= 0 && host.emu && host.emu->crtc) host.emu->crtc->setType(wantCrtc); run(150); }
+            if (!cartPath.empty()) { if (!host.loadCartridgeFile(cartPath) || diag) std::printf("[cart] %s\n", host.status.c_str()); if (wantCrtc >= 0 && host.emu && host.emu->crtc) host.emu->crtc->setType(wantCrtc); run(150);
+                // a snapshot of a cartridge program: the cartridge restarted the machine, so the snapshot goes in after it
+                if (!snaPath.empty()) host.loadSnapshot(snaPath); }
             if (!diskPath.empty()) { host.loadDiskFile(diskPath, 0); run(150); }  // let BASIC settle
             if (!cbuildPath.empty()) {
                 // A C program built (c_build.h) and started as from BASIC (EmuHost::startProgram);
@@ -956,6 +958,7 @@ int main(int argc, char** argv) {
         host.recordSource = rs == "cpc" || rs == "gfx" || rs == "both" || rs == "screen" ? rs : "shown";
     }
     host.stateDir       = homeDir() + "states";     // the quick save slots
+    host.machineDir     = homeDir() + "machines";   // the machine profiles (.cpcmachine)
     host.ls3EepromFile  = homeDir() + "ls3eeprom.bin";   // LambdaSpeak 3's EEPROM
     host.recordDir      = homeDir() + "recordings";
     for (size_t i = EmuHost::RECENT_MAX; i-- > 0;) {
@@ -992,6 +995,16 @@ int main(int argc, char** argv) {
         for (int i = 0; pick < 0 && i < (int)host.models.size(); i++) if (host.models[i].available) pick = i;
         // a RAM size or CRTC from the settings that cannot be fitted: the model's own instead
         if (pick >= 0 && !host.bootModel(pick, savedRam, savedCrtc)) host.bootModel(pick);
+    }
+
+    // --machine <name or file>: a machine profile (emuhost.h) for this session, after the
+    // settings' machine has booted. A name is looked for in the profiles folder.
+    for (int i = 1; i + 1 < argc; i++) {
+        if (std::string(argv[i]) != "--machine") continue;
+        const std::string found = host.findMachineProfile(argv[i + 1]);
+        std::string why;
+        if (found.empty()) host.status = std::string("No machine profile ") + argv[i + 1];
+        else if (!host.loadMachineProfile(found, why)) host.status = why;
     }
 
     // External development (devserver.h): the servers the settings ask for, then the

@@ -31,7 +31,7 @@ void PlusAsic::reset() {
     videoRevision = videoRevision + 1;
     spriteDataRevision = spriteDataRevision + 1;
     spriteRevision = spriteRevision + 1;
-    locked = true; unlockPosition = 0;
+    locked = true; unlockPosition = 0; rmr2 = 0xa0;
     rasterInterruptLine = 0; rasterSplitLine = 0; splitAddress = 0;
     softScrollControl = 0; horizontalScroll = 0; verticalScroll = 0;
     interruptVector = 0x01;
@@ -64,10 +64,14 @@ int PlusAsic::spriteColorValue(int value) {
 // what it calls back for -- the parts that exist only on a CPC+.
 bool PlusAsic::plusCartridgePageWrite(int value) {
     if (locked || (value & 0xe0) != 0xa0) return false;
+    applyRmr2(value);
+    return true;
+}
+void PlusAsic::applyRmr2(int value) {
+    rmr2 = value & 0xff;
     int page = value & 7, region = value >> 3 & 3;
     if (region == 3) { memory->setLowerCartridge(page, 0); memory->setAsicRam(true); }
     else { memory->setAsicRam(false); memory->setLowerCartridge(page, region * 2); }
-    return true;
 }
 // The CPC+ keeps a 12-bit shadow of every ink the GATE ARRAY is given, so that an
 // unlocked ASIC can show the same colour at its own finer resolution.

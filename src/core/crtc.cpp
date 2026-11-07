@@ -98,6 +98,28 @@ void CRTC6845::write(int port, int value) {
 
 void CRTC6845::writeRegister(int reg, int value) {
     if (reg < 0 || reg >= 16) return;      // R16/R17 are the light pen's, read-only
+    // CPCSE_TRACE_R7VAL=<hex>: every write of that value to R7, with the counters it lands on
+    // (one value, so a test's own write stands out from a program's routine ones).
+    if (reg == 4 && (value & 0xff) == 37 && traceStatusLeft == 0) {
+        static const long want = std::getenv("CPCSE_TRACE_STATUS") ? std::atol(std::getenv("CPCSE_TRACE_STATUS")) : 0;
+        static bool done = false;
+        if (want > 0 && !done) { traceStatusLeft = want; done = true; }
+    }
+    if (reg == 0 || reg == 7) {
+        static const long r0x = std::getenv("CPCSE_TRACE_R0X") ? std::atol(std::getenv("CPCSE_TRACE_R0X")) : 0;
+        if (r0x > 0 && reg == 0 && (value & 0xff) != 63 && traceR0xWindow <= 0) traceR0xWindow = r0x;
+        if (traceR0xWindow > 0) {
+            traceR0xWindow -= 1;
+            std::fprintf(stderr, "R0X R%d <- %d  C0=%d C4=%d C9=%d R0=%d R7=%d vsync=%d\n", reg, value & 0xff, horizontal, vertical, raster,
+                         registers[0], registers[7], vsync ? 1 : 0);
+        }
+    }
+    if (reg == 7) {
+        static const int want = std::getenv("CPCSE_TRACE_R7VAL") ? (int)std::strtol(std::getenv("CPCSE_TRACE_R7VAL"), nullptr, 16) : -1;
+        if (want >= 0 && (value & 0xff) == want)
+            std::fprintf(stderr, "R7VAL %02X  C0=%d C4=%d C9=%d R0=%d R4=%d R9=%d vsync=%d r7Match=%d\n", value & 0xff, horizontal,
+                         vertical, raster, registers[0], registers[4], registers[9], vsync ? 1 : 0, r7Match ? 1 : 0);
+    }
 
     // CPCSE_TRACE_REG=<n> logs every write of register n with the counters it lands on,
     // to stderr, capped at CPCSE_TRACE_REG_MAX (default 400) so a per-line technique does
@@ -254,8 +276,10 @@ void CRTC6845::writeRegister(int reg, int value) {
         const int skewBefore = skewIncoming == 3 ? 0 : skewIncoming;
         int skewNow = behaviour->dispenSkew(*this) & 3;
         if (skewNow == 3) skewNow = 0;
-        if (skewNow < skewBefore)
-            hDisplay = skewNow == 0 ? hDisplayInternal : ((skewHistory >> 1) & 1) != 0;
+        // skewHistory bit 0 is this character's own signal (fed at its tick), bit n the
+        // signal n characters before it.
+        if (skewNow < skewBefore && behaviour->skewRemovedActsNow())
+            hDisplay = skewNow == 0 ? hDisplayInternal : ((skewHistory >> skewNow) & 1) != 0;
     }
     // ACCC §19.8.1: entering IVM defers the doubled-C9 comparison to the next C0=0.
     // ENTERING it: p.220 says "When R8 CHANGES to 3" and "on the line where R8 GOES to 3".
@@ -468,7 +492,16 @@ void CRTC6845::writeRegister(int reg, int value) {
 int CRTC6845::read(int port) {
     int operation = port >> 8 & 3;
     if (operation != 1 && operation != 2 && operation != 3) return 0xff;
-    return behaviour->read(*this, operation);
+    const int value = behaviour->read(*this, operation);
+    // CPCSE_TRACE_STATUS=<n>: once R4 has been written with 37 (SHAKER DU/B2's frame), the next
+    // n reads, with the register selected and the counters they land on (stderr).
+    if (traceStatusLeft > 0) {
+        traceStatusLeft -= 1;
+        std::fprintf(stderr, "STATUS sel=%d -> %02X  C0=%d C4=%d C9=%d R4=%d R5=%d R9=%d frame=%d adj=%d/%d pc=%04X\n", selected, value & 0xff,
+                     horizontal, vertical, raster, registers[4], registers[5], registers[9], frame,
+                     verticalAdjustActive ? 1 : 0, verticalAdjust, tracePc & 0xffff);
+    }
+    return value;
 }
 
 void CRTC6845::setLightgunType(const std::string& type_) {
@@ -962,9 +995,16 @@ void CRTC6845::latchRequestedStartAddress() {
     maRow = rowAddress;
 }
 void CRTC6845::newFrame() {
-    // ACCC §11.6.2 (p.90): the parity status an RFD turns on is locked "until the frame
-    // is finished" -- so the lock, and nothing else about the RFD, is released here.
+    inAdditionalLines = false;
+    // ACCC §11.6.2 (p.90): the parity status an RFD turns on lasts "until the frame is
+    // finished", and §11.6.3 triggers the RFD again "1 time for the frame" after waiting
+    // for "a new frame (C4=C9=0)". So the RFD ends with its frame: the new frame starts
+    // on the ordinary C4=0 reload and C9=R9 test until an RFD is triggered again.
+    // MEASURED on SHAKER D9/F (CRTC 1, "IVM ON/OFF BEFORE RFD", R4 override): with the
+    // state kept, every line of every later frame reloaded R12/R13 and the header rows
+    // above the rupture showed the repeated line; the real CRTC 1 shows them normally.
     rfdParityLocked = false;
+    rfdActive = false;
     adjustFromFrameStart = false; adjustBlocksRegisterReload = false;
     vertical = 0; raster = 0; verticalAdjust = 0; verticalAdjustActive = false;
     adjustStateEngaged = false;
@@ -1389,6 +1429,7 @@ bool CRTC6845::updateVerticalGeneral() {
                     }
                     raster = behaviour->additionalLinesCountFromZero() ? 0 : baseRaster();
                 }
+                inAdditionalLines = true;
             }
         } else {
             // ACCC §10.3.1: an R9 written onto C9 exactly at C0=R0 resets C9 but finds the
@@ -1725,7 +1766,7 @@ void CRTC6845::tickCharacter() {
         const bool feed = hDisplay
             && !(behaviour->replacesBorderR1WithR0() && horizontal == registers[0]);
         const bool pin = pinSkew == 0 ? hDisplay : ((skewHistory >> (pinSkew - 1)) & 1) != 0;
-        skewHistory = ((skewHistory << 1) | (feed ? 1 : 0)) & 3;
+        skewHistory = ((skewHistory << 1) | (feed ? 1 : 0)) & 7;   // bit 2 for a +2 re-tap in write()
         hDisplay = pin;
     }
     checkHsync();

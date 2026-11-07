@@ -165,6 +165,7 @@ private:
     // menus
     void menuFile();
     void menuMachine();
+    void machineProfileItems();      // Machine > Machine profiles
     void menuMedia();
     void menuSection(const char* title, void (GuiShell::*section)(bool));
     void menuTools();

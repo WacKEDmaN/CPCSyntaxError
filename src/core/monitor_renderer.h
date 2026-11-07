@@ -238,11 +238,22 @@ inline constexpr int MONITOR_PHASE_NO_TIP = 1 << 24;
 // (scratch/pll_sim.py): 90 % in 8 lines, no overshoot, +-32 leaves lines 2.2 apart.
 inline constexpr int MONITOR_LINE_FILTER_DIV = 2;
 inline constexpr int MONITOR_LINE_PULL_DIV = 5;
-// A sync TRAIN (decide(), branch 't'): this many tips or more in the window, and the kick's
-// decay per line. Read from SHAKER D4's photographs (see decide()).
+// A sync TRAIN (decide(), branch 't'): this many tips or more in the window. The train
+// drives the discriminator with DRIVE x the nearest late pulse's pull, decaying by DECAY a
+// line, and the sweep follows that drive by FOLLOW a line: the yoke current cannot jump in
+// one line. Read from the real CTM photographs of SHAKER D4/A on CRTC 0, 1, 2 and 3 (box
+// edges per scan line, in Pixel-M2, ruler = the 128 Pixel-M2 box spacing): the band's first
+// line 10-16 left, a peak of 18-21 on its 2nd-4th line, then down to 0 by 12-16 lines (CRTC 3:
+// 16 19.5 16 13 8.5 7 5 4 3 1.5 1 0). These give 16.5 19.3 17.3 13.9 10.7 8.0 5.9 4.3 3.1 2.3.
+// The old kick, 23 at once on the first line then x4/5 a line, was 3-7 too far on the top
+// line (the user's review of D4/A-B on every CRTC).
 inline constexpr int MONITOR_TRAIN_TIPS = 4;
-inline constexpr int MONITOR_TRAIN_DECAY_NUM = 4;
-inline constexpr int MONITOR_TRAIN_DECAY_DEN = 5;
+inline constexpr int MONITOR_TRAIN_DRIVE_NUM = 4;
+inline constexpr int MONITOR_TRAIN_DRIVE_DEN = 3;
+inline constexpr int MONITOR_TRAIN_DECAY_NUM = 18;
+inline constexpr int MONITOR_TRAIN_DECAY_DEN = 25;
+inline constexpr int MONITOR_TRAIN_FOLLOW_NUM = 11;
+inline constexpr int MONITOR_TRAIN_FOLLOW_DEN = 20;
 // Beyond this the detector is out of its linear range and the sweep re-locks on the line
 // (the old snap). Half the CTM's 12 usec flyback sawtooth (docs: CM14 TP9), 6 usec. D7/A5
 // swings 4 characters (64 Pixel-M2) every line and the photograph shows it averaged, not
@@ -416,6 +427,8 @@ public:
     bool lineFilterPrimed = false;  // branch 'l': the filter holds a real error
     int trainLines = 0;             // branch 't': lines of the current sync train
     int trainOffset = 0;            // branch 't': the kick still applied, Pixel-M2
+    int trainOffset16 = 0;          // branch 't': the same, 1/16 Pixel-M2 (the sweep's state)
+    int trainDrive16 = 0;           // branch 't': the discriminator's decaying drive, 1/16
     int bandLines = 0;              // branch 'd': lines of the current two-sync band
     bool trainKicked = false;       // branch 't': the kick of this train is applied
     // THE LAST DECISION, for diagnostics: which branch decide() took, the phase it acted on

@@ -71,6 +71,11 @@ It runs on Windows, Linux and macOS. It has a cycle-level model of the chips of 
 - The machines are the CPC 464, CPC 664, CPC 6128, 464 Plus, 6128 Plus and GX4000. RAM
   expansions go up to 4 MB. On a Plus, a classic RAM board on the expansion port behaves as on
   the real machine (**Machine → RAM**). Joysticks, game controllers and the analogue port of the Plus are available.
+- **Machine profiles** (**Machine → Machine profiles**) keep a whole machine in a `.cpcmachine`
+  file: the model, RAM, chips, keyboard, monitor, ROMs and every expansion with its settings,
+  and if you want, the discs, tape and cartridge. Click a profile to build that machine again.
+  An expansion that the profile does not name is removed. Profiles are kept in the `machines`
+  folder beside the program.
 
 ### Discs and tapes
 
@@ -403,6 +408,7 @@ joystick: switch it off to use them as the CPC's cursor keys, CONTROL and COPY.
 ## Command line
 
 `cpcse.exe --roms <folder>` starts the emulator with another ROM folder.
+`cpcse.exe --machine <name or file>` starts it with a machine profile.
 [External debugging](#external-debugging) shows the options `--gdb`, `--api`, `--load`,
 `--watch`, `--run`, `--reset`, `--command` and `--symbols`. It also takes the `-i`, `-o`, `-s`
 and `-O` options TRSE passes, so TRSE can run CPC programs in it

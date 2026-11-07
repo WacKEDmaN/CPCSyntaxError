@@ -425,6 +425,21 @@ public:
     void noteRecent(const std::string& path);
     void clearRecent() { recentFiles.clear(); }
 
+    // ---- MACHINE PROFILES ---------------------------------------------------------------
+    // A machine as it is built, kept in a .cpcmachine file (the same key=value lines as
+    // cpcse.ini, only the machine's): model, RAM, CRTC, Gate Array, Z80, keyboard region,
+    // monitor set, firmware and expansion ROMs, and every expansion with its settings and
+    // folders. withMedia adds the discs, tape and cartridge in the machine. A profile is the
+    // whole machine: loading it removes every expansion it does not name, then reboots.
+    std::string machineDir = "machines";       // where profiles are kept (set by main)
+    std::string machineProfileName;            // the profile loaded last ("" = none since)
+    bool saveMachineProfile(const std::string& path, bool withMedia, std::string& why);
+    bool loadMachineProfile(const std::string& path, std::string& why);
+    // The profile files in machineDir: { name, path }, by name. A name (no folder, no
+    // extension) is looked for there by findMachineProfile.
+    std::vector<std::pair<std::string, std::string>> machineProfiles() const;
+    std::string findMachineProfile(const std::string& nameOrPath) const;
+
     // ---- QUICK SAVE SLOTS ---------------------------------------------------------------
     // SLOT_COUNT slots for the program in use (the disc, tape, cartridge or snapshot loaded
     // last; else the model): each one a .sna file and a small picture in

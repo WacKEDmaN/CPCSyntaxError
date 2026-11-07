@@ -35,7 +35,7 @@ void CtmMonitor::reset() {
     lastPulseWidth = 4;
     lineSyncAt = -1; tipStartAt = 0;
     widthCorrection16 = 0; widthTargetPrevious16 = 0; coastDrift16 = 0;
-    afcCharge = 0; lineError16 = 0; linePull16 = 0; lineFilterPrimed = false; trainLines = 0; trainOffset = 0; trainKicked = false;
+    afcCharge = 0; lineError16 = 0; linePull16 = 0; lineFilterPrimed = false; trainLines = 0; trainOffset = 0; trainOffset16 = 0; trainDrive16 = 0; trainKicked = false;
     lineSnap16 = 0;
     measuredPeriod = MONITOR_HSYNC_MID;
     sinceLastSync = 0;
@@ -73,6 +73,7 @@ void CtmMonitor::decide() {
         CtmMonitor& m; const int& before;
         ~Record() { m.decisionMove = m.hsyncCount - before; m.decisionSeq += 1; }
     } record{*this, countBefore};
+    const char previousBranch = decisionBranch;      // the last line's decision ('c' below)
     decisionTips = pendN; decisionPhase = pendPhase; decisionBranch = '-';
     const int bandBefore = bandLines;
     bandLines = 0;                      // branch 'd' counts its band's lines; any other ends it
@@ -138,8 +139,9 @@ void CtmMonitor::decide() {
     // (CRTC 0-3) show a KICK at the band's start that dies away: the first lines about 20
     // Pixel-M2 left, then 11, 8, 8, 6, 2, 1, 0 by ~13 lines (profile read off the hooks the
     // photographs show on the boxes' left edges). The kick is the nearest late pulse's own
-    // measured pull (23 for a 4 usec pulse); it decays by MONITOR_TRAIN_DECAY a line.
-    // Both numbers are read from that photograph, not derived.
+    // measured pull (23 for a 4 usec pulse), scaled to the drive that decays by
+    // MONITOR_TRAIN_DECAY a line, and the sweep follows the drive by MONITOR_TRAIN_FOLLOW.
+    // The numbers are read from the photographs (monitor_renderer.h), not derived.
     // ...a train in that sense: syncs on BOTH sides of the line sync, close in. D4's come every
     // 8 characters, so one is always within the early side's flat. SHAKER DH/B2 on CRTC 1 has
     // four tips a line too, but none early near the line sync (a late one 6 characters out,
@@ -167,10 +169,18 @@ void CtmMonitor::decide() {
         // straight under it. DH/B2 on CRTC 1 opens its band with one three-sync line before
         // the train: counted, the kick lands a line earlier and the bar tops are not split.
         bandLines = bandBefore + 1;
-        int target;
-        if (!trainKicked && bandLines < 2) target = 0;
-        else if (!trainKicked) { target = kick; trainKicked = true; }
-        else target = trainOffset * MONITOR_TRAIN_DECAY_NUM / MONITOR_TRAIN_DECAY_DEN;
+        // The drive starts on that line and decays; the sweep follows it a fraction a line
+        // (MONITOR_TRAIN_* above), so the band's top line moves part of the way and the
+        // peak comes a line or two later, as on the photographs.
+        if (!trainKicked && bandLines >= 2) {
+            trainDrive16 = kick * 16 * MONITOR_TRAIN_DRIVE_NUM / MONITOR_TRAIN_DRIVE_DEN;
+            trainKicked = true;
+        } else if (trainKicked) {
+            trainDrive16 = trainDrive16 * MONITOR_TRAIN_DECAY_NUM / MONITOR_TRAIN_DECAY_DEN;
+        }
+        if (trainKicked)
+            trainOffset16 += (trainDrive16 - trainOffset16) * MONITOR_TRAIN_FOLLOW_NUM / MONITOR_TRAIN_FOLLOW_DEN;
+        const int target = (trainOffset16 + (trainOffset16 >= 0 ? 8 : -8)) / 16;
         hsyncCount -= target - trainOffset;     // late (positive) = the sweep runs later
         trainOffset = target;
         trainLines += 1;
@@ -178,7 +188,7 @@ void CtmMonitor::decide() {
         lineError16 = 0; linePull16 = 0; lineFilterPrimed = false;
         return;
     }
-    trainLines = 0; trainOffset = 0; trainKicked = false;   // what is left is the line pull's to take back
+    trainLines = 0; trainOffset = 0; trainOffset16 = 0; trainDrive16 = 0; trainKicked = false;   // what is left is the line pull's to take back
     if (pendN >= 2) {
         nearest = pendErr[best];
         for (int i = 0; i < pendN; i += 1) {
@@ -322,7 +332,17 @@ void CtmMonitor::decide() {
         lineError16 = 0; linePull16 = 0; lineFilterPrimed = false;
         const int wrapped = pendPhase < -(hsyncLimit >> 1) ? pendPhase + hsyncLimit : pendPhase;
         hsyncCount -= wrapped; lineSnap16 -= wrapped;
-    } else if (pendStable > -1024) { decisionBranch = 'c'; hsyncCount -= 5; lineError16 = 0; linePull16 = 0; lineFilterPrimed = false; }   // crawl
+    } else if (pendStable > -1024) {
+        // ...from the SECOND line out of lock. The crawl is the AFC filter (4.7 ms, about 73
+        // lines, MONITOR_AFC_LINES) following an error that stays; one line's reading does
+        // not move it. MEASURED on SHAKER DT/B1 (CRTC 3, "SHORTEST VSYNC EVER"): the line after
+        // the one with no sync read -735, ours crawled 5 Pixel-M2 on it and the line pull took
+        // 9 lines to bring the picture back (a bend under the marker); the next line read -5,
+        // i.e. the sweep was in phase all along, and the real CPC and AmSpiriT-lite are straight.
+        decisionBranch = 'c';
+        if (previousBranch == 'c') hsyncCount -= 5;
+        lineError16 = 0; linePull16 = 0; lineFilterPrimed = false;
+    }   // crawl
     else {                                      // no line sync at all: coast
         decisionBranch = 'n'; lineError16 = 0; linePull16 = 0; lineFilterPrimed = false;
         // ...at the set's OWN frequency, which is a little lower than the line rate the sync

@@ -31,6 +31,11 @@ public:
     // GateArray. What remains below is the CPC+ extension proper.
     int videoRevision = 0, spriteDataRevision = 0, spriteRevision = 0;
     bool locked = true; int unlockPosition = 0;
+    // RMR2, the last %101xxxxx value written to the GATE ARRAY port with the ASIC unlocked:
+    // the lower cartridge page and where it sits, or the ASIC registers at &4000 (the SNA
+    // CPC+ chunk keeps it at 0x8F5, "gate array A0 register value"). &A0 = page 0 at &0000.
+    int rmr2 = 0xa0;
+    void applyRmr2(int value);               // map as the write does (snapshot load)
     int rasterInterruptLine = 0, rasterSplitLine = 0, splitAddress = 0;
     int softScrollControl = 0, horizontalScroll = 0, verticalScroll = 0;
     int interruptVector = 0x01;

@@ -337,14 +337,18 @@ struct CrtcType0 : CrtcBehaviour {
     bool allowsVsyncStart(CRTC6845& crtc) const override { return crtc.vsyncAuthorized; }
     // §11.5.2, and ACCC §16.4.1.1 (p.169): an R7 written with the value of C4 starts the VSYNC
     // at once "except if this modification occurs when C0vs=0 or C0vs=1": a BLOCKED VSYNC.
-    // ...and the line's LAST microsecond, C0=R0, is already the next line's for R7: §16.4,
-    // "the update of R7 with C4 can take place up to the last µsecond preceding C4=R7... on
-    // line C4-1, C9=R9 and C0=R0". SHAKER B6/A ("OUTI ON R7 LAST CHANCE 4TH uSec ON C0=0")
-    // writes R7=32 on C0=R0 of C4=32's last line and reads the PPI 6 usec later: the real
-    // CRTC 0 prints #1E (no VSYNC) there, exactly as for the write one usec later on C0=0
-    // (§16.4.1.1's own examples are these two reads). Ours started the VSYNC: #1F WRONG!.
+    // ...and on a row's LAST line (C9=R9) its last microsecond, C0=R0, already compares R7
+    // with the NEXT row's C4: §16.4, "if R7 is modified with the value of C4 on line C4-1,
+    // C9=R9 and C0=R0, then the VSYNC will be active as soon as C4=R7" (that C4 being the
+    // next row's). So the current row's value written there is the new row's C0vs<2 case.
+    // Only on the last line: elsewhere C0=R0 is an ordinary C0vs>1 (§16.4.1.1).
+    //   SHAKER B6/A, "OUTI ON R7 LAST CHANCE 4TH uSec ON C0=0": R7=32 lands on C0=R0 of C4=32,
+    //   C9=R9 (traced); the real CRTC 0 prints #1E (no VSYNC), CRTC 1 and 2 #1F.
+    //   SHAKER AI/D: R7=C4 written on C0=R0 of C4=1, C9=0 (not the last line); the real
+    //   CRTC 0 and AmSpiriT-lite read VSYNC (5F). The old rule refused every C0=R0 and lost it.
     bool allowsVsyncOnR7Write(CRTC6845& crtc) const override {
-        return crtc.horizontal >= 2 && crtc.horizontal != (crtc.registers[0] & 0xff);
+        if (crtc.horizontal < 2) return false;
+        return !(crtc.horizontal == (crtc.registers[0] & 0xff) && crtc.rasterMatchesMaximum());   // this chip's own C9=R9 test
     }
     // ACCC §14.4.4: R3=0 written by an OUT(C),r8 in the HSYNC's first µsec stops it early;
     // "On a CRTC 0, the HSYNC starts on the 5th pixel-M2 and lasts 4 pixel-M2's" -- black

@@ -7,6 +7,7 @@
 // (CC BY-NC-ND). See docs/reference/ACCC1.11-EN.pdf §2.2.
 #pragma once
 #include "crtc.h"
+#include <cstdlib>
 
 namespace cpcse {
 
@@ -52,8 +53,25 @@ inline int asicStatus2(CRTC6845& c) {
     int c0 = c.horizontal, r0 = c.registers[0], c4 = c.vertical;
     bool c9r9 = c.raster == c.maximumRaster();       // C9=R9
     bool c0r0 = c0 == r0;                            // C0=R0
-    int s = 0x10;                                    // bit4: always 1; bit6: always 0
-    s |= statusBit(0, c4 == (c.registers[4] & 0x7f) && c9r9 && c0r0, 0);          // last char of screen
+    int s = 0;                                       // bit6: always 0
+    // Bit 4, "Always 1" in §21.3.4.2's table, is the comparator that ends the additional
+    // lines: on these chips "there is no specific C5 counter and C9 is used for comparison
+    // with R5" (§11.1), and the management "just set's C9 to 0 and compare's C9 with R5 to
+    // deactivate" it (§11.2.6). With R5=0 it always matches (the table's 1). With R5>0 it
+    // matches for one usec, on C0=R0 of the last additional line (C9+1=R5): §21.3.4, "several
+    // bits only change state for 1 usec". MEASURED: SHAKER DU/G27 (R4=37 R5=8, bit 4 at every
+    // line and C0) is red (0) on the real CRTC 3 and 4 and on AmSpiriT-lite, G22 (R5=0)
+    // yellow; DU/B2 waits for "last char of screen", then counts lines while bit 4 is 0 and
+    // finds R5=8 on the real CRTC 4 (ours, with the bit always 1, found 0 for R4-R7).
+    const int r5 = c.registers[5] & 0x1f;
+    if (r5 == 0 || (c.inAdditionalLines && c0 == r0 && ((c.raster + 1) & 0x1f) == r5)) s |= 0x10;
+    // Bit 0, "Last char of screen": the end of row R4, not inside the additional lines that
+    // may follow it. There C4 stays R4 (§11.2.6) and C9 counts from 0 again, so C4=R4, C9=R9
+    // and C0=R0 hold once more on the last additional line, but the real ASIC keeps the bit 1.
+    // MEASURED on SHAKER DU/D (real CRTC 3 and 4, "STATUS 2 BIT 0 : OK"): with R4=37 and R5=8
+    // it samples every usec of the frame and wants 0 on #4BFF only (end of row R4) and 1 on the
+    // 512 usec after it; ours read 0 again on #4DFF. DU/B2 counts R5 from the same 0.
+    s |= statusBit(0, c4 == (c.registers[4] & 0x7f) && c9r9 && c0r0 && !c.inAdditionalLines, 0);
     s |= statusBit(1, c4 == ((c.registers[6] - 1) & 0x7f) && c9r9 && c0r0, 0);    // last char displayed
     s |= statusBit(2, c4 == ((c.registers[7] - 1) & 0x7f) && c9r9 && c0r0, 0);    // last char before Vsync
     if ((c.frame >> 4) & 1) s |= 0x08;               // bit3: timer, toggles every 16 frames
@@ -106,6 +124,20 @@ struct CrtcType3 : CrtcBehaviour {
     // SHAKER A2/A1 (R0=3, "DISPTMG SKEW VERSUS BORDER"): the real CRTC 3 shows the skewed
     // zones exactly like the unskewed one; ours cut a `skew`-wide border into every rupture.
     bool skewBordersEveryLineStart() const override { return false; }
+    // §19.2: "These functions are only available on CRTC's 0, 3 and 4... generate a delay on
+    // the BORDER R1 management". That is one function on all three, so the same delay line as
+    // CRTC 0 (§19.2.3's "acknowledgment counter from C0"). The per-edge shift it replaces
+    // lost the line's border-off when R8 went back to 0 on C0=0 or 1 (the deferred
+    // "C0==skew" test then never matched): SHAKER A2/C, "OUT R8,#10/OUT R8,0 FROM C0=#39",
+    // was a whole BORDER line on CRTC 3/4 where the real CRTC 3 and AmSpiriT-lite show it.
+    // §19.2.4's R1>R0 rule stays this chip's own (replacesBorderR1WithR0 false).
+    bool skewIsDelayLine() const override { return true; }
+    // §19.2.5's "taken away immediately" is CRTC 0's. Here both R8 changes are seen from the
+    // next character. MEASURED on SHAKER A2/C (OUT R8,#10 then OUT R8,0 4 usec later, from
+    // C0=#37 to #3E): the real CRTC 3 and AmSpiriT-lite show C0=63 displayed on rows #38-#3B
+    // and the C0=0 BORDER on rows #39-#3C. Taking the removal at once gave 3 rows from #39;
+    // taking both at once gave 4 rows from #39; an R8 write moved to the 3rd usec, 4 from #3A.
+    bool skewRemovedActsNow() const override { return false; }
     bool initialVerticalDisplay(CRTC6845& crtc) const override { return crtc.registers[6] != 0; }
     // ACCC §12.5 (p.102): "If R4 is updated with a value less than C4, then there is
     // overflow of the C4 counter. (unlike what happens with C9/R9)" — C4 keeps

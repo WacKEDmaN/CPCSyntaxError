@@ -56,6 +56,8 @@
 #include <cstring>
 
 namespace cpcse {
+// A machine profile's file extension (loadByExtension, the profile functions at the end).
+static const char* const MACHINE_PROFILE_EXT_NAME = ".cpcmachine";
 
 static const int SCREEN_W = 768;
 static const int SCREEN_H = 544;
@@ -486,8 +488,22 @@ void EmuHost::applyM4Network() {
 
 void EmuHost::applyM4() {
     applyM4Network();
-    if (!m4Enabled || !emu || !emu->m4 || !emu->memory) return;
-    if (emu->plusHardware && !emu->plusComputer) return;   // the GX4000 has no expansion port
+    if (!emu || !emu->m4 || !emu->memory) return;
+    // Off (or on a GX4000, which has no expansion port): the board comes OUT. A reboot keeps
+    // the same machine, so returning here left a board fitted earlier answering its I/O and
+    // its ROM reads while the setting said it was not there (a machine profile without an M4
+    // loaded after one with it). Its ROM slot goes back to the expansion ROM fitted there, if
+    // any.
+    if (!m4Enabled || (emu->plusHardware && !emu->plusComputer)) {
+        if (emu->m4->enabled) {
+            emu->m4->setEnabled(false);
+            emu->m4->setCard("");
+            Bytes slotRom;
+            for (const auto& r : expansionRoms) if (r.slot == emu->m4->romSlot) slotRom = r.data;
+            emu->memory->setUpperRom(emu->m4->romSlot, slotRom);
+        }
+        return;
+    }
     std::string romPath = findRom("m4rom");
     if (romPath.empty()) romPath = findRom("m4");
     bool ok = false; Bytes rom = readFile(romPath, ok);
@@ -1164,6 +1180,7 @@ bool EmuHost::loadByExtension(const std::string& path) {
     if (ext == ".dsk" || ext == ".edsk" || ext == ".hfe" || ext == ".ipf") return loadDiskFile(path, 0);
     if (ext == ".cdt" || ext == ".tzx" || ext == ".tap" || ext == ".wav") return loadTapeFile(path);
     if (ext == ".sna") return loadSnapshot(path);
+    if (ext == MACHINE_PROFILE_EXT_NAME) { std::string why; if (!loadMachineProfile(path, why)) { status = why; return false; } return true; }
     status = "Unrecognised file type: " + ext;
     return false;
 }
@@ -2864,5 +2881,214 @@ void EmuHost::applyGateArrayPart() {
 int EmuHost::fittedGateArrayPart() const {
     if (!emu || !emu->gateArray || !emu->gateArray->model) return 40010;
     return std::atoi(emu->gateArray->model->name());
+}
+
+// ---- MACHINE PROFILES (emuhost.h) ----------------------------------------------------------
+// The keys are cpcse.ini's own, so a profile reads like the settings file and a key added to
+// the settings for a new expansion is added here the same way.
+
+bool EmuHost::saveMachineProfile(const std::string& path, bool withMedia, std::string& why) {
+    if (currentModel < 0 || currentModel >= (int)models.size()) { why = "No machine is running."; return false; }
+    std::ostringstream f;
+    const std::string name = std::filesystem::path(path).stem().string();
+    f << "# CPCSyntaxError machine profile\n";
+    f << "name=" << name << "\n";
+    // the machine
+    f << "model=" << models[(size_t)currentModel].id << "\n";
+    f << "ram=" << ramKiB << "\n";
+    f << "crtc=" << crtcType << "\n";
+    f << "gatearray=" << gateArrayPart << "\n";
+    f << "z80cmos=" << (z80Cmos ? 1 : 0) << "\n";
+    f << "gx4000ram128=" << (gx4000Ram128 ? 1 : 0) << "\n";
+    f << "plusexpansionclassic=" << (plusExpansionClassic ? 1 : 0) << "\n";
+    f << "region=" << keyboardRegion << "\n";
+    f << "joystick=" << (joystickEnabled ? 1 : 0) << "\n";
+    f << "monitorset=" << monitorSetId << "\n";
+    f << "monitor=" << monitorMode << "\n";
+    // its ROMs
+    f << "rom_os=" << osRomPath << "\n";
+    f << "rom_basic=" << basicRomPath << "\n";
+    f << "rom_amsdos=" << amsdosRomPath << "\n";
+    for (const auto& r : expansionRoms)
+        if (!r.path.empty()) f << "xrom_" << r.slot << "=" << r.path << "\n";
+    // its expansions
+    f << "m4=" << (m4Enabled ? 1 : 0) << "\n";
+    f << "m4folder=" << m4Folder << "\n";
+    f << "m4net=" << (m4Network ? 1 : 0) << "\n";
+    f << "m4netlan=" << (m4NetworkLan ? 1 : 0) << "\n";
+    f << "multiface=" << (multifaceEnabled ? 1 : 0) << "\n";
+    f << "serial=" << (serialEnabled ? 1 : 0) << "\n";
+    f << "serialkind=" << serialKind << "\n";
+    f << "serialtarget=" << serialTarget << "\n";
+    f << "seriallan=" << (serialLan ? 1 : 0) << "\n";
+    f << "symbiface=" << symbifaceModule << "\n";
+    f << "mouseinterface=" << mouseInterface << "\n";
+    f << "idefolder=" << ideFolder << "\n";
+    for (int b = 0; b < 2; b++) {
+        const std::string k = "albireo" + std::to_string(b + 1);
+        f << k << "=" << (albireo[b].enabled ? 1 : 0) << "\n";
+        f << k << "sd=" << albireo[b].sdFolder << "\n";
+        f << k << "usb=" << albireo[b].usb << "\n";
+        f << k << "usbfolder=" << albireo[b].usbFolder << "\n";
+    }
+    f << "albireo1serial=" << (albireo[0].serial ? 1 : 0) << "\n";
+    f << "albireo1line=" << albireo[0].serialLine << "\n";
+    f << "albireo1switches=" << (albireo[0].s1 ? '1' : '0') << (albireo[0].s2 ? '1' : '0')
+      << (albireo[0].s3 ? '1' : '0') << (albireo[0].s4 ? '1' : '0') << "\n";
+    f << "sf3usb=" << sf3UsbFolder << "\n";
+    f << "sf3sd=" << sf3SdFolder << "\n";
+    f << "hd20=" << hd20Image << "\n";
+    f << "sf3_rom_bank=" << sf3RomBank << "\n";
+    f << "lightgun=" << lightgunType << "\n";
+    f << "v9990=" << (v9990Enabled ? 1 : 0) << "\n";
+    f << "v9990monitor=" << gfx9000Monitor << "\n";
+    f << "opl4=" << (opl4Enabled ? 1 : 0) << "\n";
+    f << "opl4ram=" << opl4RamKiB << "\n";
+    f << "playcity=" << (playCityEnabled ? 1 : 0) << "\n";
+    f << "speech=" << speechKind << "\n";
+    f << "mp3card=" << mp3Card << "\n";
+    f << "dac=" << dacType << "\n";
+    if (withMedia) {
+        f << "disc_a=" << diskPath[0] << "\n";
+        f << "disc_b=" << diskPath[1] << "\n";
+        f << "tape=" << tapePath << "\n";
+        f << "cartridge=" << cartPath << "\n";
+    }
+    std::error_code ec;
+    const std::filesystem::path parent = std::filesystem::path(path).parent_path();
+    if (!parent.empty()) std::filesystem::create_directories(parent, ec);
+    std::ofstream out(path, std::ios::binary);
+    const std::string text = f.str();
+    if (!out || !out.write(text.data(), (std::streamsize)text.size())) { why = "Could not write " + path; return false; }
+    machineProfileName = name;
+    status = "Machine profile saved: " + name + (withMedia ? " (with its media)" : "");
+    return true;
+}
+
+bool EmuHost::loadMachineProfile(const std::string& path, std::string& why) {
+    std::ifstream in(path, std::ios::binary);
+    if (!in) { why = "Could not read " + path; return false; }
+    std::map<std::string, std::string> p;
+    for (std::string line; std::getline(in, line);) {
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        if (line.empty() || line[0] == '#') continue;
+        const size_t eq = line.find('=');
+        if (eq == std::string::npos) continue;
+        p[line.substr(0, eq)] = line.substr(eq + 1);
+    }
+    // A key the profile does not have takes the setting's default: the profile is the whole
+    // machine. A folder it does not name stays as it is (folders are this computer's).
+    auto has = [&](const char* k) { return p.count(k) != 0; };
+    auto str = [&](const char* k, const std::string& d) { auto it = p.find(k); return it != p.end() ? it->second : d; };
+    auto num = [&](const char* k, int d) { auto it = p.find(k); return it != p.end() ? std::atoi(it->second.c_str()) : d; };
+    auto flag = [&](const char* k, bool d) { return num(k, d ? 1 : 0) != 0; };
+    if (!has("model")) { why = path + " is not a machine profile (it names no model)."; return false; }
+    const std::string modelId = p["model"];
+    int pick = -1;
+    for (int i = 0; i < (int)models.size(); i++) if (models[i].id == modelId) pick = i;
+    if (pick < 0) { why = "The profile's model \"" + modelId + "\" is not one this emulator knows."; return false; }
+    if (!models[(size_t)pick].available) { why = models[(size_t)pick].label + " has no ROMs in " + romDir + "."; return false; }
+    const int ram = num("ram", -1), crtc = num("crtc", -1);
+
+    gateArrayPart = num("gatearray", 0);
+    z80Cmos = flag("z80cmos", false);
+    gx4000Ram128 = flag("gx4000ram128", false);
+    plusExpansionClassic = flag("plusexpansionclassic", true);
+    keyboardRegion = str("region", "uk");
+    joystickEnabled = flag("joystick", true);
+    m4Enabled = flag("m4", false);
+    m4Folder = str("m4folder", m4Folder);
+    m4Network = flag("m4net", true);
+    m4NetworkLan = flag("m4netlan", false);
+    multifaceEnabled = flag("multiface", false);
+    serialEnabled = flag("serial", false);
+    serialKind = str("serialkind", "listen");
+    serialTarget = str("serialtarget", "2323");
+    serialLan = flag("seriallan", false);
+    symbifaceModule = str("symbiface", "none");
+    mouseInterface = str("mouseinterface", "none");
+    ideFolder = str("idefolder", ideFolder);
+    for (int b = 0; b < 2; b++) {
+        const std::string k = "albireo" + std::to_string(b + 1);
+        albireo[b].enabled = flag(k.c_str(), false);
+        albireo[b].sdFolder = str((k + "sd").c_str(), albireo[b].sdFolder);
+        albireo[b].usb = str((k + "usb").c_str(), b == 0 ? "stick" : "mouse");
+        albireo[b].usbFolder = str((k + "usbfolder").c_str(), albireo[b].usbFolder);
+    }
+    albireo[0].serial = flag("albireo1serial", false);
+    albireo[0].serialLine = str("albireo1line", "");
+    {
+        const std::string sw = str("albireo1switches", "1100");
+        if (sw.size() == 4) { albireo[0].s1 = sw[0] == '1'; albireo[0].s2 = sw[1] == '1'; albireo[0].s3 = sw[2] == '1'; albireo[0].s4 = sw[3] == '1'; }
+    }
+    sf3UsbFolder = str("sf3usb", sf3UsbFolder);
+    sf3SdFolder = str("sf3sd", sf3SdFolder);
+    hd20Image = str("hd20", "");
+    sf3RomBank = num("sf3_rom_bank", -1);
+    lightgunType = str("lightgun", "none");
+    v9990Enabled = flag("v9990", false);
+    gfx9000Monitor = str("v9990monitor", "switch");
+    opl4Enabled = flag("opl4", false);
+    opl4RamKiB = num("opl4ram", 2048);
+    playCityEnabled = flag("playcity", false);
+    speechKind = str("speech", "none");
+    mp3Card = str("mp3card", mp3Card);
+    dacType = str("dac", "none");
+
+    // Another model first: bootModel clears the firmware paths when the model changes, so
+    // the profile's are set once the model is the one.
+    if (pick != currentModel && !bootModel(pick, ram, crtc)) { why = status; return false; }
+    osRomPath = str("rom_os", "");
+    basicRomPath = str("rom_basic", "");
+    amsdosRomPath = str("rom_amsdos", "");
+    std::string missing;
+    for (std::string* fw : { &osRomPath, &basicRomPath, &amsdosRomPath })
+        if (!fw->empty() && !std::filesystem::exists(*fw)) { missing += (missing.empty() ? "" : ", ") + *fw; fw->clear(); }
+    expansionRoms.clear();
+    for (const auto& kv : p) {
+        if (kv.first.rfind("xrom_", 0) != 0 || kv.second.empty()) continue;
+        const int slot = std::atoi(kv.first.c_str() + 5);
+        if (!fitExpansionRom(slot, kv.second)) missing += (missing.empty() ? "" : ", ") + kv.second;
+    }
+    if (albireo[0].enabled && albireo[0].serial) connectAlbireoLink();
+    if (!bootModel(pick, ram, crtc)) { why = status; return false; }   // applySettings fits the expansions
+    setSerial(serialEnabled);
+    setMonitorSet(str("monitorset", ""));
+    setMonitorMode(str("monitor", ""));
+    // the media it names, if it was saved with them ("" = that drive empty)
+    if (has("disc_a") || has("disc_b") || has("tape") || has("cartridge")) {
+        for (int d = 0; d < 2; d++) {
+            const std::string disc = str(d == 0 ? "disc_a" : "disc_b", "");
+            if (disc.empty()) ejectDisk(d);
+            else if (!loadDiskFile(disc, d)) missing += (missing.empty() ? "" : ", ") + disc;
+        }
+        const std::string tape = str("tape", "");
+        if (!tape.empty() && !loadTapeFile(tape)) missing += (missing.empty() ? "" : ", ") + tape;
+        const std::string cart = str("cartridge", "");
+        if (!cart.empty() && !loadCartridgeFile(cart)) missing += (missing.empty() ? "" : ", ") + cart;
+    }
+    machineProfileName = str("name", std::filesystem::path(path).stem().string());
+    status = "Machine profile loaded: " + machineProfileName + (missing.empty() ? "" : "  (not found: " + missing + ")");
+    return true;
+}
+
+std::vector<std::pair<std::string, std::string>> EmuHost::machineProfiles() const {
+    std::vector<std::pair<std::string, std::string>> out;
+    std::error_code ec;
+    for (std::filesystem::directory_iterator it(machineDir, ec), end; !ec && it != end; it.increment(ec)) {
+        if (!it->is_regular_file(ec)) continue;
+        std::string ext = it->path().extension().string();
+        for (char& c : ext) c = (char)std::tolower((unsigned char)c);
+        if (ext == MACHINE_PROFILE_EXT_NAME) out.push_back({ it->path().stem().string(), it->path().string() });
+    }
+    std::sort(out.begin(), out.end());
+    return out;
+}
+
+std::string EmuHost::findMachineProfile(const std::string& nameOrPath) const {
+    std::error_code ec;
+    if (std::filesystem::is_regular_file(nameOrPath, ec)) return nameOrPath;
+    for (const auto& prof : machineProfiles()) if (prof.first == nameOrPath) return prof.second;
+    return "";
 }
 } // namespace cpcse

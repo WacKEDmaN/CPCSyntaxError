@@ -386,8 +386,28 @@ struct CrtcType1 : CrtcBehaviour {
                 ? crtc.vertical == (crtc.registers[4] & 0x7f)
                 : rasterMatches(crtc);
             if (!stillLast) {
-                crtc.rfdActive = true;
-                crtc.lastLineEnlarged = false;
+                // §13.7.1.2's "additional subtlety": "If R9 is modified so that C9<>R9 at the
+                // end of the last line, then R12/R13 are considered, and 1 frame out of 2,
+                // there is a default when updating VMA' with VMA (e.g. line repetition).
+                // If R4 is modified (but C9==R9) so that C4<>R4 at the end of the last
+                // line, then R12/R13 are considered 1 frame out of 2. The second frame, C4
+                // is not reset to 0." The R9 form is the ordinary RFD (§11.6.1's two
+                // cases). The R4 form has no RFD at all on the frame whose parity passes
+                // the C9=R9 test (§11.6.1's case 2): VMA' and C4 simply carry on.
+                // MEASURED on SHAKER D9 "OVERRIDE BY R4" (CRTC 1): with "IVM ON/OFF AFTER
+                // RFD" (case 2 on every frame) the real CRTC 1 and AmSpiriT-lite show the
+                // next row of memory, "NO RUPTURE. THIS LINE ALONE"; ours showed R12/R13.
+                // The form is the state "at the end of the last line", so an R4 write that
+                // leaves C9=R9 does not close the case: an R9 write later on the same line
+                // still makes it the R9 form (SHAKER D9 "OVERRIDE BY R9+R4" writes R4, then
+                // R9, and the real CRTC 1 shows the ordinary RFD). lastLineEnlarged ends at
+                // the next C0=0.
+                const bool r4Form = reg == 4 && rasterMatches(crtc);
+                const bool case2Parity = (crtc.interlaceField & 1) != 0 || crtc.rfdIgnoresParity;
+                if (!(r4Form && case2Parity)) {
+                    crtc.rfdActive = true;
+                    crtc.lastLineEnlarged = false;
+                }
             }
         }
         // ACCC §11.2.4 (p.85): "If R9 and/or R4 are modified on the last line of the

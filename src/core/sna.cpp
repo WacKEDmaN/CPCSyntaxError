@@ -44,14 +44,18 @@ static Bytes sliceB(const Bytes& b, int a, int c) { a = std::max(0, a); c = std:
 static Bytes buildPlusChunk(GX4000* emulator) {
     Bytes p(0x8f8, 0);
     for (int i = 0; i < 0x800; i++) p[i] = (uint8_t)((emulator->memory->asicRam[i * 2] & 15) | ((emulator->memory->asicRam[i * 2 + 1] & 15) << 4));
-    { Bytes s = sliceB(emulator->memory->asicRam, 0x2000, 0x2080); for (int i = 0; i < (int)s.size(); i++) p[0x800 + i] = s[i]; }
+    // sprite attributes: X (2), Y (2), the magnification, three unused (CPCWiki SNA format). The
+    // ASIC RAM image mirrors X and Y at +4..+7; the magnification is the ASIC's own register.
+    for (int s = 0; s < 16; s++) {
+        for (int k = 0; k < 4; k++) p[0x800 + s * 8 + k] = emulator->memory->asicRam[0x2000 + s * 8 + k];
+        p[0x800 + s * 8 + 4] = (uint8_t)(emulator->asic->spriteMagnification[s] & 0x0f);
+    }
     for (int i = 0; i < 32; i++) {
         int colour = emulator->asic->palette[i] & 0x0fff;
         p[0x880 + i * 2] = (uint8_t)(colour & 0xff);
         p[0x881 + i * 2] = (uint8_t)((unsigned)colour >> 8 & 0x0f);
     }
     { Bytes s = sliceB(emulator->memory->asicRam, 0x2800, 0x2806); for (int i = 0; i < (int)s.size(); i++) p[0x8c0 + i] = s[i]; }
-    p[0x8c6] = (uint8_t)(emulator->gateArray->romConfig & 0xff);
     for (int i = 0; i < 3; i++) {
         DmaChannel& d = emulator->asic->dma[i]; int o = 0x8d0 + i * 4;
         put16(p, o, d.pointer); p[o + 2] = (uint8_t)(d.prescale & 0xff); p[o + 3] = 0;
@@ -62,7 +66,7 @@ static Bytes buildPlusChunk(GX4000* emulator) {
         put16(p, o, d.loopCount); put16(p, o + 2, d.loopStart); put16(p, o + 4, d.pause);
         p[o + 6] = (uint8_t)d.prescaleCurrent;
     }
-    p[0x8f5] = (uint8_t)(emulator->gateArray->romConfig & 0xff);
+    p[0x8f5] = (uint8_t)(emulator->asic->rmr2 & 0xff);    // RMR2 (the GA RMR is header byte 0x40)
     p[0x8f6] = (uint8_t)(emulator->asic->locked ? 0 : 1);
     p[0x8f7] = (uint8_t)(emulator->asic->unlockPosition & 0xff);
     Bytes chunk(8 + p.size());
@@ -266,7 +270,8 @@ Bytes createSna(GX4000* emulator, bool compressed) {
     h[0x41] = (uint8_t)(emulator->memory->ramConfig);
     h[0x42] = (uint8_t)(emulator->crtc->selected & 0x1f);
     for (int i = 0; i < 18; i++) h[0x43 + i] = emulator->crtc->registers[i];
-    h[0x55] = (uint8_t)emulator->memory->upperRom;
+    // the ROM select (&DFxx): on the Plus the cartridge page it chose for &C000
+    h[0x55] = (uint8_t)(emulator->plusHardware ? emulator->memory->plusSelectedRom : emulator->memory->upperRom);
     h[0x56] = (uint8_t)emulator->ppi->portA; h[0x57] = (uint8_t)emulator->ppi->portB;
     h[0x58] = (uint8_t)emulator->ppi->portC; h[0x59] = (uint8_t)(emulator->ppi->control | 0x80);
     h[0x5a] = (uint8_t)emulator->ay->selected;
@@ -386,7 +391,10 @@ void applySna(GX4000* emulator, const Snapshot& snapshot) {
     emulator->memory->setGateArrayConfig(h[0x40] & 0x1f);
     int ram4MbSegment = hasExt ? (legacyExt ? (h[0xbf] & 7) : (h[0xe4] & 7)) : 0;
     emulator->memory->setRamConfig(h[0x41] & 0x3f, hasExt ? ((0x7f - ram4MbSegment) << 8) : 0x7f00);
+    // The ROM select. On the Plus it pages the cartridge at &C000 (the &DFxx write), which a
+    // banking game (Sonic) needs back, or &C000 holds another page's code after a load.
     if (!emulator->plusHardware) emulator->memory->setUpperRomSelect(h[0x55]);
+    else emulator->memory->selectUpperCartridgeFromPort(h[0x55]);
     emulator->ppi->portA = h[0x56]; emulator->ppi->portB = h[0x57];
     emulator->ppi->portC = h[0x58]; emulator->ppi->setMode(h[0x59]);
     emulator->ay->selected = h[0x5a] & 15;
@@ -403,10 +411,18 @@ void applySna(GX4000* emulator, const Snapshot& snapshot) {
             emulator->asic->writeAsicRam(i * 2, value & 15);
             emulator->asic->writeAsicRam(i * 2 + 1, (unsigned)value >> 4 & 15);
         }
-        for (int i = 0; i < 0x80 && 0x800 + i < (int)plus.size(); i++) emulator->asic->writeAsicRam(0x2000 + i, plus[0x800 + i]);
+        // X, Y and the magnification of each sprite; +5..+7 are unused in the chunk, and a write
+        // there is a magnification write on the ASIC (it took the 0 and hid every sprite)
+        for (int i = 0; i < 0x80 && 0x800 + i < (int)plus.size(); i++)
+            if ((i & 7) <= 4) emulator->asic->writeAsicRam(0x2000 + i, plus[0x800 + i]);
         for (int i = 0; i < 32 && 0x881 + i * 2 < (int)plus.size(); i++) emulator->asic->setPlusPalette(i, plus[0x880 + i * 2] | (plus[0x881 + i * 2] & 15) << 8);
         emulator->asic->locked = plus[0x8f6] != 1;
-        for (int i = 0; i < 6 && 0x8c0 + i < (int)plus.size(); i++) emulator->asic->writeAsicRam(0x2800 + i, plus[0x8c0 + i]);
+        // the bytes too: the memory write path keeps them in the ASIC RAM image before it calls in,
+        // and a save reads them from there (they came back as zeros, PRI=255 as 0, after a load)
+        for (int i = 0; i < 6 && 0x8c0 + i < (int)plus.size(); i++) {
+            emulator->memory->asicRam[0x2800 + i] = plus[0x8c0 + i];
+            emulator->asic->writeAsicRam(0x2800 + i, plus[0x8c0 + i]);
+        }
         for (int i = 0; i < 3 && 0x8d2 + i * 4 < (int)plus.size(); i++) {
             int o = 0x8d0 + i * 4; DmaChannel& d = emulator->asic->dma[i];
             d.pointer = u16(plus, o); d.prescale = plus[o + 2] & 0xff; d.prescaleCurrent = 0;
@@ -430,10 +446,13 @@ void applySna(GX4000* emulator, const Snapshot& snapshot) {
             d.prescaleCurrent = plus[o + 6] & 0xff;
             d.instruction = 0; d.instructionFetched = false; d.irqRequest = false;
         }
-        int gaRegister = ((0x8f5 < (int)plus.size() ? plus[0x8f5] : 0) ? plus[0x8f5] : (hasExt ? plus[0x8c6] : 0)) & 0xff;
-        if (!gaRegister) gaRegister = h[0x40] & 0xff;
-        emulator->gateArray->romConfig = gaRegister;
-        emulator->gateArray->newMode = emulator->gateArray->mode = gaRegister & 3;
+        // 0x8F5 is RMR2 (CPCWiki: "gate array A0 register value", the last value written to
+        // that port): the ASIC registers at &4000 or a lower cartridge page. A game that writes
+        // its ASIC registers every line (Sonic's special stage) wrote them to plain RAM after a
+        // load without it. Snapshots of ours before this held the RMR there (&80-&9F): those
+        // keep the reset mapping. The RMR itself is header byte 0x40, as for every CPC.
+        const int rmr2 = 0x8f5 < (int)plus.size() ? plus[0x8f5] : 0;
+        if ((rmr2 & 0xe0) == 0xa0) emulator->asic->applyRmr2(rmr2);
         emulator->asic->locked = plus[0x8f6] == 0;
         emulator->asic->unlockPosition = 0x8f7 < (int)plus.size() ? plus[0x8f7] : emulator->asic->unlockPosition;
     }

@@ -174,6 +174,10 @@ public:
     uint32_t beamPens[17] = {0}, beamPensPrevious[17] = {0};
     int beamPenRevision = -1;
     bool beamPensValid = false, beamPensChanged = false;
+    // The character plotted last, for §9.2.2's GATE ARRAY lag: an ink change recolours the
+    // displayed character, which is the one before the CRTC's (see plotBeamCharacter).
+    int beamPrevPen[16] = {0}, beamPrevMode[16] = {0}, beamPrevX = 0, beamPrevY = -1;
+    int beamPrevBlack[4] = {0, 0, 0, 0};   // its HSYNC and blank black, which stays black
     // ACCC §16.6 LIMITLESS VSYNC (p.173-175): "it is the starting position of the
     // VSYNC during the line that allows to raise the electron gun more or less high
     // (the later the VSYNC starts in the line, the higher the beam goes up)... if the
