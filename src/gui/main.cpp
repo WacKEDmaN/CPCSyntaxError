@@ -205,12 +205,18 @@ void enableDarkTitleBar(SDL_Window* window) {
 // (a pipe, a file), which is left alone.
 static void attachParentConsole() {
 #ifdef _WIN32
-    const DWORD type = GetFileType(GetStdHandle(STD_OUTPUT_HANDLE));
-    if (type == FILE_TYPE_DISK || type == FILE_TYPE_PIPE) return;
+    // each stream on its own: "2> trace.txt" keeps the trace in its file while the
+    // ordinary output still reaches the console
+    auto redirected = [](DWORD which) {
+        const DWORD type = GetFileType(GetStdHandle(which));
+        return type == FILE_TYPE_DISK || type == FILE_TYPE_PIPE;
+    };
+    const bool outKept = redirected(STD_OUTPUT_HANDLE), errKept = redirected(STD_ERROR_HANDLE);
+    if (outKept && errKept) return;
     if (AttachConsole(ATTACH_PARENT_PROCESS)) {
-        std::freopen("CONOUT$", "w", stdout);
-        std::freopen("CONOUT$", "w", stderr);
-        std::printf("\n");               // the prompt has already been printed
+        if (!outKept) std::freopen("CONOUT$", "w", stdout);
+        if (!errKept) std::freopen("CONOUT$", "w", stderr);
+        if (!outKept) std::printf("\n");               // the prompt has already been printed
     }
 #endif
 }
@@ -526,6 +532,14 @@ int main(int argc, char** argv) {
                     if (code[0] == 'r' && code.size() > 1 && code.find_first_not_of("0123456789", 1) == std::string::npos) {
                         run(std::atoi(code.c_str() + 1));               // r<N>: run N frames (no key)
                     } else if (kb) {
+                        // "ArrowLeft!": pressed and left held (for --seq frames that follow)
+                        if (code.back() == '!') { kb->setKey(code.substr(0, code.size() - 1), true); if (e == std::string::npos) break; k = e + 1; continue; }
+                        // "ArrowRight*200": held for that many frames (a scroll that runs on)
+                        int holdFrames = 6;
+                        if (const size_t star = code.find('*'); star != std::string::npos) {
+                            holdFrames = std::max(1, std::atoi(code.c_str() + star + 1));
+                            code = code.substr(0, star);
+                        }
                         // "ShiftLeft+Digit2": the keys of a token held together (a " after F1)
                         std::vector<std::string> held;
                         for (size_t s = 0; s <= code.size(); ) {
@@ -535,7 +549,7 @@ int main(int argc, char** argv) {
                             s = plus + 1;
                         }
                         for (const std::string& h : held) kb->setKey(h, true);
-                        run(6);
+                        run(holdFrames);
                         for (const std::string& h : held) kb->setKey(h, false);
                         run(6);
                     }

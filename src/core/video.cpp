@@ -715,7 +715,14 @@ void CpcVideo::render() {
     if (physicalPos && monitor && monitor->vHold != 0 && monitor->endedFrameFreeRun)
         physicalOriginY = 280 - (monitor->lockedFieldLines() > 0 ? monitor->lockedFieldLines() : 0);
     int physicalSourceStart = physicalRasterFrame ? rasterLineForMonitorY(0, physicalOriginY, (int)rasterFrame.size()) : 0;
-    bool frameScroll = frameHorizontalScrollActive(rasterFrame, rasterFrame.empty() ? asic->horizontalScroll : 0);
+    // Whether the Plus soft scroll is in use: asked of the frame whose lines are DRAWN. On
+    // the monitor's frame most rows come from the previous capture (physicalFrameState), so
+    // asking only the newest one missed a scroll that had just gone back to 0: the frame
+    // before it, still scrolled, was drawn without its scroll. Ghosts'n Goblins GX scrolls
+    // left with 8, 12, 0, 4 and moved the address on the 12 -> 0 frame: that frame showed
+    // its picture 12 Pixel-M2 left, then jumped 16 right (one jolt every 8 frames).
+    bool frameScroll = frameHorizontalScrollActive(rasterFrame, rasterFrame.empty() ? asic->horizontalScroll : 0)
+                       || (physicalRasterFrame && physicalSourceStart > 0 && frameHorizontalScrollActive(previousRasterFrame, 0));
     // The interlaced field is swept half a scanline lower than the other one, which is
     // one row of this framebuffer (ACCC §19.3.1; see CpcVideo::monitorHalfLine). Both
     // passes have to take it or the border and the characters come apart by a row.
@@ -845,7 +852,9 @@ void CpcVideo::render() {
                 }
                 std::fprintf(stderr, "ROWPULL %d: pull=%d width=%d slow=%d\n", monitorY,
                              state->monitorDecisionPull, state->monitorDecisionWidth, state->monitorDecisionSlow);
-                std::fprintf(stderr, "ROWMODE %d: frame %d mode=%d segs=", monitorY, state->crtcFrame, state->mode);
+                std::fprintf(stderr, "ROWMODE %d: frame %d mode=%d hscroll=%d extend=%d frameScroll=%d displayStartByte=%d segs=",
+                             monitorY, state->crtcFrame, state->mode, state->horizontalScroll, state->extendBorder,
+                             frameScroll ? 1 : 0, displayStartByte);
                 for (const auto& seg : state->segments)
                     std::fprintf(stderr, "[c%d m%d<-%d@%d] ", seg.character, seg.mode,
                                  seg.modeBefore, seg.modeSwitchPixel);
@@ -879,9 +888,19 @@ void CpcVideo::render() {
         int segmentIndex = -1; PenState pixelState = penFromLine(state);
         bool extendActive = rasterExtendBorderActive(state, extendBorder);
         lineClipRight = extendActive ? std::optional<int>(lineOrigin->x + renderCharacters * 16) : std::nullopt;
+        // The Plus's border extension (ASIC &6804 bit 7) covers the FIRST CHARACTER THE CRTC
+        // DISPLAYS on the line, which hides the half character a horizontal scroll pulls in
+        // from the border fetch. A record that starts where the monitor's line starts (in the
+        // left border) has border characters before that one, so it is not the record's
+        // character 0: taking character 0 hid a border character and left the scrolled-in
+        // bytes of C0=R0 showing as a column at the left edge (Ghosts'n Goblins GX, scroll 8).
+        int firstShown = 0;
+        if (state)
+            for (int c = displayStartCharacter; c < (int)state->displayEnabled.size(); c++)
+                if (state->displayEnabled[c]) { firstShown = c - displayStartCharacter; break; }
         if (frameScroll) {
-            int firstPixel = extendActive ? 16 : 0;
-            for (int x = firstPixel; x < lineBytes * 8; x += 1) {
+            for (int x = 0; x < lineBytes * 8; x += 1) {
+                if (extendActive && ((unsigned)x >> 4) == (unsigned)firstShown) continue;
                 int character = displayStartCharacter + ((unsigned)x >> 4);
                 while (state && segmentIndex + 1 < (int)state->segments.size() && state->segments[segmentIndex + 1].character <= character) {
                     segmentIndex += 1; pixelState = penFromSegment(state->segments[segmentIndex]);
@@ -938,7 +957,8 @@ void CpcVideo::render() {
                     }
                 return ink;
             };
-            for (int column = firstVisibleByte(extendActive); column < lineBytes; column += 1) {
+            for (int column = 0; column < lineBytes; column += 1) {
+                if (extendActive && (column >> 1) == firstShown) continue;   // its two bytes: border
                 int sourceColumn = displayStartByte + column;
                 int character = displayStartCharacter + ((unsigned)column >> 1);
                 while (state && segmentIndex + 1 < (int)state->segments.size() && state->segments[segmentIndex + 1].character <= character) {
