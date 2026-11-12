@@ -7,14 +7,53 @@
 
 namespace cpcse {
 
-static std::string jsNumToStr(double val) {
-    if (val == (long long)val && std::fabs(val) < 1e15) return std::to_string((long long)val);
-    char buf[64];
-    for (int p = 1; p <= 17; p++) {
-        std::snprintf(buf, sizeof(buf), "%.*g", p, val);
-        if (std::strtod(buf, nullptr) == val) break;
+static void putReal(Bytes& out, double v);
+
+// A five-byte real as BASIC's own LIST prints it. Read off BASIC 1.1 in the machine:
+//   6.4  0.3  0.001  0.0001234  0.00001  3.14159  123456789  100000.5
+//   1234567890 -> 1.23456789E+09   1E10 -> 1E+10   2.5E-20 -> 2.5E-20   0.1234567891 -> 0.123456789
+// so: at most 9 significant digits, no trailing zeros, and E notation (sign, two digits) only
+// when the number does not fit in 9 digit places.
+// The mantissa has 32 bits, about 9.6 digits: printed as a PC double (17 digits) 0.3 came out
+// as 0.30000000004656613. The digits are the FEWEST that give the same five bytes back
+// (putReal), so "From the machine" then "To the machine" leaves the program as it was; a
+// value that needs a 10th digit for that gets it.
+static std::string realToText(const uint8_t bytes[5]) {
+    if (bytes[4] == 0) return "0";                       // exponent 0: the value 0
+    double f = ((double)(bytes[3] & 0x7F) * 16777216.0) + (bytes[2] << 16) + (bytes[1] << 8) + bytes[0];
+    f = 1.0 + (f / 2147483648.0);
+    const double val = std::ldexp(f, bytes[4] - 129);    // the magnitude
+    const bool negative = (bytes[3] & 0x80) != 0;
+    std::string digits;
+    int exponent = 0;                                    // val = d.ddd x 10^exponent
+    for (int p = 1; p <= 10; p++) {
+        char buf[64];
+        std::snprintf(buf, sizeof(buf), "%.*e", p - 1, val);
+        Bytes back;
+        putReal(back, std::strtod(buf, nullptr));
+        digits.clear();
+        const char* e = std::strchr(buf, 'e');
+        for (const char* c = buf; c < e; c++) if (*c >= '0' && *c <= '9') digits += *c;
+        exponent = std::atoi(e + 1);
+        if (back[0] == bytes[0] && back[1] == bytes[1] && back[2] == bytes[2]
+            && (back[3] & 0x7f) == (bytes[3] & 0x7f) && back[4] == bytes[4]) break;
     }
-    return buf;
+    while (digits.size() > 1 && digits.back() == '0') digits.pop_back();
+    const int count = (int)digits.size();
+    std::string out = negative ? "-" : "";
+    if (exponent >= 0 && exponent <= 8) {                // 1 to 9 digits before the point
+        for (int i = 0; i <= exponent; i++) out += i < count ? digits[(size_t)i] : '0';
+        if (count > exponent + 1) out += "." + digits.substr((size_t)exponent + 1);
+    } else if (exponent < 0 && -exponent - 1 + count <= (count > 9 ? 10 : 9)) {   // 0.000ddd, 9 places at most (10 for a 10th digit)
+        out += "0." + std::string((size_t)(-exponent - 1), '0') + digits;
+    } else {
+        out += digits.substr(0, 1);
+        if (count > 1) out += "." + digits.substr(1);
+        char e[8];
+        std::snprintf(e, sizeof(e), "E%c%02d", exponent < 0 ? '-' : '+', std::abs(exponent));
+        out += e;
+    }
+    return out;
 }
 
 BasicDecoder::BasicDecoder() {
@@ -80,18 +119,9 @@ std::string BasicDecoder::decodeLine(const std::function<int(int)>& read, int st
             case 0x1D: { int ptr = fetchWord(); int lsb = read((ptr + 3) & 0xffff); int msb = read((ptr + 4) & 0xffff); result += std::to_string((msb << 8) | lsb); break; }
             case 0x1E: result += std::to_string(fetchWord()); break;
             case 0x1F: {
-                int b0 = fetch(), b1 = fetch(), b2 = fetch(), b3 = fetch(), b4 = fetch();
-                double f = ((double)(b3 & 0x7F) * 16777216.0) + (b2 << 16) + (b1 << 8) + b0;
-                f = 1.0 + (f / 2147483648.0);
-                if (b3 & 0x80) f = -f;
-                int exp = b4 - 129;
-                double val = f * std::pow(2.0, exp);
-                std::string e = jsNumToStr(val);
-                if (e.find("e-") != std::string::npos) {
-                    char buf[64]; std::snprintf(buf, sizeof(buf), "%.9f", val); e = buf;
-                    while (!e.empty() && e.back() == '0') e.pop_back();
-                }
-                result += e; break;
+                uint8_t real[5];
+                for (uint8_t& b : real) b = (uint8_t)fetch();
+                result += realToText(real); break;
             }
             case 0x22: {
                 result += "\"";
