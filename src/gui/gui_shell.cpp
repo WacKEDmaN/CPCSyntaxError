@@ -1524,6 +1524,7 @@ void GuiShell::windowMedia() {
             if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
                 ImGui::SetTooltip("Out of the slot: the machine boots without it (a Plus on its system cartridge)");
             ImGui::EndDisabled();
+            picoGxPanel();
         }
         ImGui::End();
     }

@@ -206,8 +206,10 @@ void MachineSnapshot::restore(GX4000& m) const {
         // the debugger's hooks on the memory stay as they are now
         auto watchHook = m.memory->watchHook;
         const bool watchArmed = m.memory->watchArmed, trackAccess = m.memory->trackAccess;
+        PicoGX* picoGx = m.memory->picoGx;   // the host's cartridge device, as the media
         *m.memory = *p.memory;
         m.memory->watchHook = watchHook; m.memory->watchArmed = watchArmed; m.memory->trackAccess = trackAccess;
+        m.memory->picoGx = picoGx;
         roms.give(*m.memory);
     }
     { TapeBulk bulk; bulk.take(*m.tape); *m.tape = *p.tape; bulk.give(*m.tape); }

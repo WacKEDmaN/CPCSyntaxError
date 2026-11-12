@@ -19,7 +19,10 @@
 #include "devnet.h"
 #include "emuhost.h"
 #include "gui_debugger.h"
+#include "mcp_protocol.h"
 #include "minijson.h"
+#include "png_encode.h"
+#include "version.h"
 #include "core/debug_symbols.h"
 #include "core/emulator.h"
 #include "core/gate_array.h"
@@ -41,6 +44,7 @@ std::string lower(std::string s) {
 }
 
 std::string hex2(int v) { char b[4]; std::snprintf(b, sizeof(b), "%02x", v & 0xff); return b; }
+std::string hex4(int v) { char b[8]; std::snprintf(b, sizeof(b), "%04X", v & 0xffff); return b; }
 std::string hexLE16(int v) { return hex2(v) + hex2(v >> 8); }
 
 int hexDigit(char c) {
@@ -361,6 +365,23 @@ struct DevServer::Impl {
     net::Socket apiListener = net::NO_SOCKET;
     int apiPortNow = 0;
     std::vector<ApiClient> apiClients;
+
+    // ---------------------------------------------------------------- MCP
+    // mcp_protocol.h over HTTP ("Streamable HTTP" transport, JSON answers only, no SSE
+    // stream, no sessions). One request at a time per connection; a tool that waits
+    // (run_frames, wait_for_stop, step_over ...) holds its connection until it answers.
+    struct McpClient {
+        net::Socket sock = net::NO_SOCKET;
+        std::string in;
+        bool closing = false;
+        bool held = false;         // a tools/call waits for the machine
+        json::Value rpcId;
+        std::string tool;
+        ApiClient api;             // the API's deferred answer goes here (its socket is unused)
+    };
+    net::Socket mcpListener = net::NO_SOCKET;
+    int mcpPortNow = 0;
+    std::vector<McpClient> mcpClients;
 
     // ---------------------------------------------------------------- typing
     // no code: a pause; ch: a typed character (cpcTypeKey), else the key `code` itself
@@ -1058,6 +1079,7 @@ struct DevServer::Impl {
         r.set("typing", typing());
         if (watching) { r.set("watching", watchRequest.path); r.set("reloads", reloadCount); }
         r.set("gdb", gdb.listener != net::NO_SOCKET ? (gdb.client != net::NO_SOCKET ? "connected" : "listening") : "off");
+        r.set("mcp", mcpListener != net::NO_SOCKET ? "listening" : "off");
         return r;
     }
 
@@ -1392,6 +1414,292 @@ struct DevServer::Impl {
         throw std::runtime_error("unknown command '" + cmd + "' (try help)");
     }
 
+    // A deferred request (apiHandle's defer) whose moment may have come: true with the
+    // answer in res when it has (done, timed out, or the machine stopped first).
+    bool waitAnswer(const Waiting& w, Clock::time_point now, json::Value& res) {
+        bool done = false;
+        const bool timedOut = now >= w.deadline;
+        if (w.kind == "stop") done = paused();
+        else if (w.kind == "frames") done = host.framesRun >= w.untilFrame;
+        else if (w.kind == "typed") done = !typing();
+        // Frames and keys need the machine running: a breakpoint ends the wait.
+        const bool stopped = !done && w.kind != "stop" && paused();
+        if (!done && !timedOut && !stopped) return false;
+        res = json::Value::object();
+        if (w.hasId) res.set("id", w.id);
+        res.set("ok", done);
+        if (stopped) res.set("error", "the machine stopped first" + (host.breakReason.empty() ? std::string() : ": " + host.breakReason));
+        else if (!done) res.set("error", "timed out waiting for " + w.kind);
+        GX4000* e = machine(host);
+        if (e) res.set("pc", e->cpu->pc & 0xffff);
+        if (done && w.kind == "stop" && !host.breakReason.empty()) res.set("reason", host.breakReason);
+        if (w.kind == "frames") res.set("frames", (long long)host.framesRun);
+        return true;
+    }
+
+    // ================================================================ MCP over HTTP
+    static std::string httpResponse(int code, const char* reason, const std::string& body,
+                                    const char* type = "application/json") {
+        std::string h = "HTTP/1.1 " + std::to_string(code) + " " + reason + "\r\n";
+        if (!body.empty()) h += std::string("Content-Type: ") + type + "\r\n";
+        h += "Content-Length: " + std::to_string(body.size()) + "\r\n";
+        if (code == 405) h += "Allow: POST\r\n";
+        h += "Cache-Control: no-store\r\nConnection: keep-alive\r\n\r\n";
+        return h + body;
+    }
+
+    static json::Value rpcError(const json::Value& id, int code, const std::string& message) {
+        json::Value r = json::Value::object();
+        r.set("jsonrpc", "2.0");
+        r.set("id", id);
+        json::Value e = json::Value::object();
+        e.set("code", code);
+        e.set("message", message);
+        r.set("error", e);
+        return r;
+    }
+    static json::Value rpcResult(const json::Value& id, json::Value result) {
+        json::Value r = json::Value::object();
+        r.set("jsonrpc", "2.0");
+        r.set("id", id);
+        r.set("result", std::move(result));
+        return r;
+    }
+
+    // The screen as MCP image content (and a file too when a path is given).
+    json::Value mcpScreenshot(const json::Value& args) {
+        GX4000* e = machine(host);
+        if (!e) throw std::runtime_error("no machine is running");
+        host.render();
+        const int w = host.video->width, h = host.video->height;
+        std::vector<uint8_t> rgb((size_t)w * h * 3);
+        for (size_t k = 0; k < (size_t)w * h; k++) {
+            const uint32_t px = host.video->pixels[k];   // 0xAABBGGRR
+            rgb[k * 3] = (uint8_t)px; rgb[k * 3 + 1] = (uint8_t)(px >> 8); rgb[k * 3 + 2] = (uint8_t)(px >> 16);
+        }
+        const std::vector<uint8_t> png = encodePng(rgb.data(), w, h);
+        std::string note = std::to_string(w) + "x" + std::to_string(h) + " pixels, PC &" + hex4(e->cpu->pc & 0xffff)
+                           + (paused() ? ", paused" : ", running");
+        const std::string path = args.str("path");
+        if (!path.empty()) {
+            std::ofstream f(path, std::ios::binary);
+            if (!f || !f.write((const char*)png.data(), (std::streamsize)png.size()))
+                throw std::runtime_error("could not write " + path);
+            note += ", saved as " + std::filesystem::absolute(path).string();
+        }
+        json::Value content = json::Value::array();
+        json::Value img = json::Value::object();
+        img.set("type", "image");
+        img.set("data", base64(png));
+        img.set("mimeType", "image/png");
+        content.push(img);
+        json::Value text = json::Value::object();
+        text.set("type", "text");
+        text.set("text", note);
+        content.push(text);
+        json::Value r = json::Value::object();
+        r.set("content", content);
+        return r;
+    }
+
+    // One JSON-RPC message. True with the reply in `reply` (a notification has none and
+    // leaves it Null); false when a tools/call waits for the machine (the client is held).
+    bool mcpMessage(McpClient& c, const json::Value& msg, bool alone, json::Value& reply) {
+        reply = json::Value();
+        if (!msg.isObject() || msg.str("jsonrpc") != "2.0") { reply = rpcError(json::Value(), -32600, "not a JSON-RPC 2.0 message"); return true; }
+        const json::Value* idp = msg.find("id");
+        const std::string method = msg.str("method");
+        if (method.empty()) return true;            // a response from the client: nothing to do
+        if (!idp) return true;                      // a notification (initialized, cancelled ...)
+        const json::Value id = *idp;
+        static const json::Value noParams = json::Value::object();
+        const json::Value* pp = msg.find("params");
+        const json::Value& params = pp && pp->isObject() ? *pp : noParams;
+        if (method == "initialize") {
+            json::Value r = json::Value::object();
+            r.set("protocolVersion", mcp::negotiateVersion(params.str("protocolVersion")));
+            json::Value caps = json::Value::object();
+            json::Value toolsCap = json::Value::object();
+            toolsCap.set("listChanged", false);
+            caps.set("tools", toolsCap);
+            r.set("capabilities", caps);
+            json::Value info = json::Value::object();
+            info.set("name", "CPCSyntaxError");
+            info.set("version", CPCSE_VERSION);
+            r.set("serverInfo", info);
+            r.set("instructions", mcp::instructions());
+            reply = rpcResult(id, r);
+            self.lastEvent = "MCP: a client connected";
+            if (const json::Value* ci = params.find("clientInfo")) self.lastEvent = "MCP: " + ci->str("name", "a client") + " connected";
+            return true;
+        }
+        if (method == "ping") { reply = rpcResult(id, json::Value::object()); return true; }
+        if (method == "tools/list") {
+            json::Value r = json::Value::object();
+            r.set("tools", mcp::toolList());
+            reply = rpcResult(id, r);
+            return true;
+        }
+        if (method != "tools/call") { reply = rpcError(id, -32601, "method not found: " + method); return true; }
+
+        const std::string name = params.str("name");
+        const json::Value* ap = params.find("arguments");
+        const json::Value& args = ap && ap->isObject() ? *ap : noParams;
+        try {
+            if (name == "screenshot") { reply = rpcResult(id, mcpScreenshot(args)); return true; }
+            json::Value req;
+            std::string shortForm, err;
+            if (!mcp::toApiRequest(name, args, req, shortForm, err)) { reply = rpcError(id, -32602, err); return true; }
+            if (!shortForm.empty()) req = devCommandFromWords(devSplitWords(shortForm));
+            json::Value res = json::Value::object();
+            res.set("ok", true);
+            const size_t waitsBefore = c.api.waiting.size();
+            bool now;
+            try { now = apiHandle(c.api, req, res); }
+            catch (const std::exception& ex) { res.set("ok", false); res.set("error", ex.what()); now = true; }
+            if (!now) {
+                if (!alone) {   // a batch cannot hold one of its members: answer it now
+                    c.api.waiting.resize(waitsBefore);
+                    res.set("ok", false);
+                    res.set("error", "a waiting tool cannot be part of a batch");
+                } else {
+                    c.held = true; c.rpcId = id; c.tool = name;
+                    return false;
+                }
+            }
+            reply = rpcResult(id, mcp::toolResult(name, res));
+        } catch (const std::exception& ex) {
+            json::Value r = json::Value::object();
+            r.set("ok", false);
+            r.set("error", ex.what());
+            reply = rpcResult(id, mcp::toolResult(name, r));
+        }
+        return true;
+    }
+
+    // Host and Origin checks against DNS rebinding and web pages (MCP: "Servers MUST
+    // validate the Origin header"). Only this computer's own names are accepted.
+    bool mcpTrusted(const std::map<std::string, std::string>& headers) const {
+        auto local = [](std::string v, bool scheme) {
+            if (scheme) {
+                if (v.rfind("http://", 0) == 0) v.erase(0, 7);
+                else if (v.rfind("https://", 0) == 0) v.erase(0, 8);
+                else return false;
+                v = v.substr(0, v.find('/'));
+            }
+            std::string name;
+            if (!v.empty() && v[0] == '[') {
+                const size_t r = v.find(']');
+                if (r == std::string::npos) return false;
+                name = v.substr(0, r + 1);
+            } else name = v.substr(0, v.find(':'));
+            for (char& ch : name) ch = (char)std::tolower((unsigned char)ch);
+            return name == "127.0.0.1" || name == "localhost" || name == "[::1]";
+        };
+        auto h = headers.find("host");
+        if (h == headers.end() || !local(h->second, false)) return false;
+        auto o = headers.find("origin");
+        return o == headers.end() || local(o->second, true);
+    }
+
+    // One complete HTTP request off the front of c.in; false when more bytes are needed.
+    bool mcpRequest(McpClient& c, std::string& out) {
+        const size_t end = c.in.find("\r\n\r\n");
+        if (end == std::string::npos) {
+            if (c.in.size() > 16384) { out = httpResponse(431, "Request Header Fields Too Large", ""); c.closing = true; return true; }
+            return false;
+        }
+        std::istringstream head(c.in.substr(0, end));
+        std::string line, method, target;
+        std::getline(head, line);
+        std::istringstream first(line);
+        first >> method >> target;
+        std::map<std::string, std::string> headers;
+        while (std::getline(head, line)) {
+            if (!line.empty() && line.back() == '\r') line.pop_back();
+            const size_t colon = line.find(':');
+            if (colon == std::string::npos) continue;
+            std::string k = line.substr(0, colon), v = line.substr(colon + 1);
+            for (char& ch : k) ch = (char)std::tolower((unsigned char)ch);
+            v.erase(0, std::min(v.find_first_not_of(" \t"), v.size()));
+            headers[k] = v;
+        }
+        size_t length = 0;
+        if (auto cl = headers.find("content-length"); cl != headers.end()) {
+            const std::string& t = cl->second;
+            if (t.empty() || t.size() > 8 || t.find_first_not_of("0123456789") != std::string::npos) {
+                out = httpResponse(400, "Bad Request", ""); c.closing = true; return true;
+            }
+            length = (size_t)std::stoul(t);
+        }
+        if (headers.count("transfer-encoding")) { out = httpResponse(411, "Length Required", ""); c.closing = true; return true; }
+        if (length > (1u << 22)) { out = httpResponse(413, "Payload Too Large", ""); c.closing = true; return true; }
+        if (c.in.size() < end + 4 + length) return false;
+        const std::string body = c.in.substr(end + 4, length);
+        c.in.erase(0, end + 4 + length);
+
+        if (!mcpTrusted(headers)) { out = httpResponse(403, "Forbidden", ""); c.closing = true; self.lastEvent = "MCP: refused a request from another origin"; return true; }
+        const std::string path = target.substr(0, target.find('?'));
+        if (path != "/mcp" && path != "/mcp/" && path != "/") { out = httpResponse(404, "Not Found", ""); return true; }
+        if (method != "POST") { out = httpResponse(405, "Method Not Allowed", ""); return true; }
+
+        json::Value msg;
+        try { msg = json::parse(body); }
+        catch (const std::exception& ex) { out = httpResponse(400, "Bad Request", rpcError(json::Value(), -32700, ex.what()).dump()); return true; }
+        if (msg.type == json::Value::Array) {
+            json::Value replies = json::Value::array();
+            for (const auto& m : msg.items) {
+                json::Value r;
+                mcpMessage(c, m, false, r);
+                if (r.type != json::Value::Null) replies.push(r);
+            }
+            out = replies.items.empty() ? httpResponse(202, "Accepted", "") : httpResponse(200, "OK", replies.dump());
+            return true;
+        }
+        json::Value reply;
+        if (!mcpMessage(c, msg, true, reply)) return true;   // held: answered by pollMcp
+        out = reply.type == json::Value::Null ? httpResponse(202, "Accepted", "") : httpResponse(200, "OK", reply.dump());
+        return true;
+    }
+
+    void pollMcp() {
+        if (mcpListener == net::NO_SOCKET) return;
+        for (;;) {
+            net::Socket s = net::acceptClient(mcpListener);
+            if (s == net::NO_SOCKET) break;
+            McpClient c;
+            c.sock = s;
+            mcpClients.push_back(c);
+        }
+        const Clock::time_point now = Clock::now();
+        for (auto& c : mcpClients) {
+            char buf[4096];
+            for (;;) {
+                int n = net::receiveSome(c.sock, buf, sizeof(buf));
+                if (n < 0) { c.closing = true; break; }
+                if (n == 0) break;
+                c.in.append(buf, (size_t)n);
+                if (c.in.size() > (1u << 23)) { c.closing = true; break; }
+            }
+            if (c.held && !c.api.waiting.empty()) {
+                json::Value res;
+                if (waitAnswer(c.api.waiting.front(), now, res)) {
+                    c.api.waiting.clear();
+                    c.held = false;
+                    const std::string out = httpResponse(200, "OK", rpcResult(c.rpcId, mcp::toolResult(c.tool, res)).dump());
+                    if (!net::sendAll(c.sock, out)) c.closing = true;
+                }
+            }
+            while (!c.closing && !c.held) {
+                std::string out;
+                if (!mcpRequest(c, out)) break;
+                if (!out.empty() && !net::sendAll(c.sock, out)) c.closing = true;
+            }
+        }
+        for (size_t ci = mcpClients.size(); ci-- > 0;)
+            if (mcpClients[ci].closing) { net::closeSocket(mcpClients[ci].sock); mcpClients.erase(mcpClients.begin() + (long)ci); }
+    }
+
     void apiReply(ApiClient& c, const json::Value& res) {
         if (c.sock == net::NO_SOCKET) return;
         if (!net::sendAll(c.sock, res.dump() + "\n")) c.closing = true;
@@ -1465,23 +1773,8 @@ struct DevServer::Impl {
             ApiClient& cc = apiClients[ci];
             const Clock::time_point now = Clock::now();
             for (size_t k = 0; k < cc.waiting.size();) {
-                Waiting& w = cc.waiting[k];
-                bool done = false, timedOut = now >= w.deadline;
-                if (w.kind == "stop") done = paused();
-                else if (w.kind == "frames") done = host.framesRun >= w.untilFrame;
-                else if (w.kind == "typed") done = !typing();
-                // Frames and keys need the machine running: a breakpoint ends the wait.
-                const bool stopped = !done && w.kind != "stop" && paused();
-                if (!done && !timedOut && !stopped) { k++; continue; }
-                json::Value res = json::Value::object();
-                if (w.hasId) res.set("id", w.id);
-                res.set("ok", done);
-                if (stopped) res.set("error", "the machine stopped first" + (host.breakReason.empty() ? std::string() : ": " + host.breakReason));
-                else if (!done) res.set("error", "timed out waiting for " + w.kind);
-                GX4000* e = machine(host);
-                if (e) res.set("pc", e->cpu->pc & 0xffff);
-                if (done && w.kind == "stop" && !host.breakReason.empty()) res.set("reason", host.breakReason);
-                if (w.kind == "frames") res.set("frames", (long long)host.framesRun);
+                json::Value res;
+                if (!waitAnswer(cc.waiting[k], now, res)) { k++; continue; }
                 cc.waiting.erase(cc.waiting.begin() + (long)k);
                 apiReply(cc, res);
             }
@@ -1497,11 +1790,34 @@ DevServer::DevServer(EmuHost& host, Debugger& debugger) : impl(std::make_unique<
 DevServer::~DevServer() {
     stopGdb();
     stopApi();
+    stopMcp();
 }
+
+bool DevServer::startMcp(int port) {
+    stopMcp();
+    mcpError.clear();
+    impl->mcpListener = net::listenLocal(port, mcpError);
+    if (impl->mcpListener == net::NO_SOCKET) return false;
+    impl->mcpPortNow = net::localPort(impl->mcpListener);
+    lastEvent = "MCP server listening on http://127.0.0.1:" + std::to_string(impl->mcpPortNow) + "/mcp";
+    return true;
+}
+
+void DevServer::stopMcp() {
+    for (auto& c : impl->mcpClients) net::closeSocket(c.sock);
+    impl->mcpClients.clear();
+    if (impl->mcpListener != net::NO_SOCKET) net::closeSocket(impl->mcpListener);
+    impl->mcpListener = net::NO_SOCKET;
+}
+
+bool DevServer::mcpListening() const { return impl->mcpListener != net::NO_SOCKET; }
+int DevServer::mcpClients() const { return (int)impl->mcpClients.size(); }
+int DevServer::mcpPort() const { return impl->mcpPortNow; }
 
 void DevServer::poll() {
     impl->pollGdb();
     impl->pollApi();
+    impl->pollMcp();
     impl->tickLoads();
     impl->tickKeys();
     // Breakpoints and watchpoints set just now reach the core before the frames run: the
@@ -1599,16 +1915,20 @@ void DevServer::loadSettings(const std::map<std::string, std::string>& ini) {
     gdbPortSetting = std::clamp(num("gdb_port", 12000), 1, 65535);
     apiAtStart = num("api_server", 0) != 0;
     apiPortSetting = std::clamp(num("api_port", 6128), 1, 65535);
+    mcpAtStart = num("mcp_server", 0) != 0;
+    mcpPortSetting = std::clamp(num("mcp_port", 6129), 1, 65535);
 }
 
 void DevServer::saveSettings(std::ostream& out) const {
     out << "gdb_server=" << (gdbAtStart ? 1 : 0) << "\n" << "gdb_port=" << gdbPortSetting << "\n"
-        << "api_server=" << (apiAtStart ? 1 : 0) << "\n" << "api_port=" << apiPortSetting << "\n";
+        << "api_server=" << (apiAtStart ? 1 : 0) << "\n" << "api_port=" << apiPortSetting << "\n"
+        << "mcp_server=" << (mcpAtStart ? 1 : 0) << "\n" << "mcp_port=" << mcpPortSetting << "\n";
 }
 
 void DevServer::startFromSettings() {
     if (gdbAtStart && !gdbListening()) startGdb(gdbPortSetting);
     if (apiAtStart && !apiListening()) startApi(apiPortSetting);
+    if (mcpAtStart && !mcpListening()) startMcp(mcpPortSetting);
 }
 
 // ==================================================================== command line
@@ -1681,6 +2001,10 @@ bool applyDevArguments(DevServer& dev, int argc, char** argv, std::string& error
             const int p = port(dev.apiPortSetting);
             if (p < 0) { error = "--api: '" + a.substr(6) + "' is not a port (1-65535)"; return false; }
             if (!dev.startApi(p)) { error = "--api: " + dev.apiError; return false; }
+        } else if (a == "--mcp" || a.rfind("--mcp=", 0) == 0) {
+            const int p = port(dev.mcpPortSetting);
+            if (p < 0) { error = "--mcp: '" + a.substr(6) + "' is not a port (1-65535)"; return false; }
+            if (!dev.startMcp(p)) { error = "--mcp: " + dev.mcpError; return false; }
         } else if (a == "--load") {
             if (!value("--load", v)) return false;
             split(v, load, loadAt);

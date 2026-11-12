@@ -366,7 +366,20 @@ struct CrtcType2 : CrtcBehaviour {
     // C9 moved a row 63 characters on whenever R1=0 survived into the line after C9=R9:
     // SHAKER AO/G (R1=0 on C0=&3E/&3F) lost its checker row on CRTC 2.
     void reloadNextRowAddressBeforeLineStart(CRTC6845& crtc) const override {
-        if (crtc.lastFrameLine || endsAdjustment(crtc)) reloadNextRowAddress(crtc);
+        if (frameEndsHere(crtc) || endsAdjustment(crtc)) reloadNextRowAddress(crtc);
+    }
+    // The frame's own last line (C4=R4/C9=R9) loads VMA' with R12/R13 only when the frame
+    // ends there. When R5 lines follow, they are the frame's last lines, not this one:
+    // ACCC §10.3.1.2 / §11.2.2 (p.82): "When the additional management becomes active, it
+    // cancels the Last Line state", and §11.3 (p.86) gives the state back at the end of the
+    // R5 count (endsAdjustment). Here the R5 count is read live (§11.4.1: "R5 management is
+    // considered on each C0 position"), as the line end that opens the adjustment reads it.
+    // MEASURED on SHAKER AP/J (CRTC 2, "R6=0/FF FROM C0=2 IN V.ADJ ZONE (R5=16) ...
+    // PREVIOUS R6=R4+3"): the real CRTC 2 (and AmSpiriT 2.0, lite, CPCEC) show the 16
+    // adjustment lines as blank RAM after the last row; ours showed the frame's first two
+    // text rows there again (VMA' had taken R12/R13 one block early).
+    static bool frameEndsHere(CRTC6845& crtc) {
+        return crtc.lastFrameLine && (crtc.registers[5] & 0x1f) == 0;
     }
     bool takesOffsetWriteOnR1Character() const override { return true; }   // ACCC §20.3.3
     void reloadNextRowAddress(CRTC6845& crtc) const override {
@@ -381,7 +394,7 @@ struct CrtcType2 : CrtcBehaviour {
         // positions this state). This implies that changing R9 before equality C0=R1
         // does not prevent this assignment." So the R12/R13 branch is NOT gated on the
         // raster match — only the ordinary VMA'=VMA step is.
-        if (crtc.lastFrameLine || endsAdjustment(crtc)) {
+        if (frameEndsHere(crtc) || endsAdjustment(crtc)) {
             // ACCC §17.4.3 (p.185): "There is indeed a bug when updating VMA' with
             // R12/R13 at position C0=0. To update VMA' with R12/R13, the CRTC in
             // principle carries out two logical operations: VMA'=VMA' AND (R12 x 256 +

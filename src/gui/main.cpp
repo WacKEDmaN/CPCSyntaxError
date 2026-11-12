@@ -288,7 +288,7 @@ int main(int argc, char** argv) {
     // uses, with no window. --shot out.bmp [--model id] [--sna f] [--crtc N] [--gate-array 40007|40008|40010]
     // [--frames N] [--beam] [--gfx9000] [--v9990-shot out.bmp] (the GFX9000's own monitor).
     {
-        std::string shot, modelId, snaPath, saveSnaPath, dumpRamPath, diskPath, cartPath, tapePath, typeStr, keysStr; int croGroup = -1, wantCrtc = -1, wantGa = 0, frames = 200, f1at = -1; bool f1first = false; int wantRam = -1, seq = 0; bool beam = false, diag = false, gfx9000 = false, opl4 = false, playcity = false; std::string v9990Shot, video9000Shot, m4Folder, ideFolder, mouseScript, mouseInterface, cbuildPath, cbuildCpct, cbuildSdcc, wavPath, speechKind, mp3Card, dacType; int cbuildLoc = -1; bool cbuildForce = false; std::string cbuildZ88dk, sf3Usb, sf3Sd, hd20Image; int sf3RomBank = -2; bool cbuildSccz80 = false; bool cbuildUseZ88dk = false; std::string albireoArg[2], albireoUsbArg[2], albireoSerialArg, albireoSwitchArg; bool sf2 = false, sf3 = false, xmass = false, multiface = false, diskWriteBack = false; int monitorHHold = std::getenv("CPCSE_MONITOR_HHOLD") ? std::atoi(std::getenv("CPCSE_MONITOR_HHOLD")) : 0; int monitorVHold = std::getenv("CPCSE_MONITOR_VHOLD") ? std::atoi(std::getenv("CPCSE_MONITOR_VHOLD")) : 0; std::vector<std::string> xroms; std::string serialLine, recordTape, tapeFast, recordPath, recordFormat = "mjpeg", recordSource = "shown", gfx9000Monitor; bool rasterOverlayOn = false; bool z80Cmos = false, gx4000Ram128 = false, plusExpansionClassic = true; std::string monitorSet; TubeKnobs monitorKnobs; std::array<int, 3> monitorIntensity = TubeKnobs().intensity;
+        std::string picoGxSd, picoGxFile; std::string shot, modelId, snaPath, saveSnaPath, dumpRamPath, diskPath, cartPath, tapePath, typeStr, keysStr; int croGroup = -1, wantCrtc = -1, wantGa = 0, frames = 200, f1at = -1; bool f1first = false; int wantRam = -1, seq = 0; bool beam = false, diag = false, gfx9000 = false, opl4 = false, playcity = false; std::string v9990Shot, video9000Shot, m4Folder, ideFolder, mouseScript, mouseInterface, cbuildPath, cbuildCpct, cbuildSdcc, wavPath, speechKind, mp3Card, dacType; int cbuildLoc = -1; bool cbuildForce = false; std::string cbuildZ88dk, sf3Usb, sf3Sd, hd20Image; int sf3RomBank = -2; bool cbuildSccz80 = false; bool cbuildUseZ88dk = false; std::string albireoArg[2], albireoUsbArg[2], albireoSerialArg, albireoSwitchArg; bool sf2 = false, sf3 = false, xmass = false, multiface = false, diskWriteBack = false; int monitorHHold = std::getenv("CPCSE_MONITOR_HHOLD") ? std::atoi(std::getenv("CPCSE_MONITOR_HHOLD")) : 0; int monitorVHold = std::getenv("CPCSE_MONITOR_VHOLD") ? std::atoi(std::getenv("CPCSE_MONITOR_VHOLD")) : 0; std::vector<std::string> xroms; std::string serialLine, recordTape, tapeFast, recordPath, recordFormat = "mjpeg", recordSource = "shown", gfx9000Monitor; bool rasterOverlayOn = false; bool z80Cmos = false, gx4000Ram128 = false, plusExpansionClassic = true; std::string monitorSet; TubeKnobs monitorKnobs; std::array<int, 3> monitorIntensity = TubeKnobs().intensity;
         for (int i = 1; i < argc; i++) { std::string a = argv[i];
             if (a == "--shot" && i + 1 < argc) shot = argv[++i];
             else if (a == "--ram" && i + 1 < argc) wantRam = std::atoi(argv[++i]);
@@ -298,6 +298,8 @@ int main(int argc, char** argv) {
             else if (a == "--dumpram" && i + 1 < argc) dumpRamPath = argv[++i];  // raw RAM, no header
             else if (a == "--disk" && i + 1 < argc) diskPath = argv[++i];
             else if (a == "--cart" && i + 1 < argc) cartPath = argv[++i];
+            else if (a == "--picogx" && i + 1 < argc) picoGxSd = argv[++i];          // the PicoGX's SD card folder
+            else if (a == "--picogx-launch" && i + 1 < argc) picoGxFile = argv[++i]; // ...and the file it launches
             else if (a == "--cro-group" && i + 1 < argc) croGroup = std::atoi(argv[++i]);   // the CRO group (GNUM) --cart takes
             else if (a == "--cbuild" && i + 1 < argc) cbuildPath = argv[++i];        // build this C file's project with SDCC, then run it
             else if (a == "--cpctelera" && i + 1 < argc) cbuildCpct = argv[++i];     // ...with CPCtelera's library from this folder
@@ -425,7 +427,7 @@ int main(int argc, char** argv) {
             if (sf3RomBank >= -1) host.sf3RomBank = sf3RomBank;
             // --cart with no --model: a GX4000, as before a classic CPC could take a cartridge
             // (with a classic --model the cartridge goes on that machine).
-            if (modelId.empty() && !cartPath.empty())
+            if (modelId.empty() && (!cartPath.empty() || !picoGxFile.empty()))
                 for (const char* id : { "gx4000", "cpc6128plus", "cpc464plus" }) {
                     bool have = false;
                     for (const auto& m : host.models) if (m.id == id && m.available) have = true;
@@ -462,6 +464,11 @@ int main(int argc, char** argv) {
                 host.recordSource = recordSource;
                 std::string why;
                 if (!host.startRecording(recordPath, why)) { std::printf("[record] %s\n", why.c_str()); return 2; }
+            }
+            if (!picoGxFile.empty()) {   // the PicoGX: its card, then the file it launches
+                host.picoGxSd = picoGxSd;
+                if (!host.launchPicoGx(picoGxFile) || diag) std::printf("[picogx] %s\n", host.status.c_str());
+                run(150);
             }
             if (!cartPath.empty()) { if (!host.loadCartridgeFile(cartPath) || diag) std::printf("[cart] %s\n", host.status.c_str()); if (wantCrtc >= 0 && host.emu && host.emu->crtc) host.emu->crtc->setType(wantCrtc); run(150);
                 // a snapshot of a cartridge program: the cartridge restarted the machine, so the snapshot goes in after it
@@ -907,6 +914,8 @@ int main(int argc, char** argv) {
     // the GFX9000's screen: as the CPC's until it has settings of its own
     if (!host.gfxLook.load(ini, "gfx9000.")) host.gfxLook = host.cpcLook;
     host.m4Folder       = gets("m4folder", "");
+    host.picoGxSd       = gets("picogx_sd", "");
+    host.picoGxLast     = gets("picogx_last", "");
     host.m4Enabled      = geti("m4", 0) != 0;             // applied by applySettings during boot
     host.m4Network      = geti("m4net", 1) != 0;
     host.m4NetworkLan   = geti("m4netlan", 0) != 0;
@@ -1365,6 +1374,8 @@ int main(int argc, char** argv) {
             host.gfxLook.save(f, "gfx9000.");
             f << "m4=" << (host.m4Enabled ? 1 : 0) << "\n";
             f << "m4folder=" << host.m4Folder << "\n";
+            f << "picogx_sd=" << host.picoGxSd << "\n";
+            f << "picogx_last=" << host.picoGxLast << "\n";
             f << "m4net=" << (host.m4Network ? 1 : 0) << "\n";
             f << "m4netlan=" << (host.m4NetworkLan ? 1 : 0) << "\n";
             f << "multiface=" << (host.multifaceEnabled ? 1 : 0) << "\n";

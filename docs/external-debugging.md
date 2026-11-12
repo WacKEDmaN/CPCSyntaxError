@@ -6,9 +6,10 @@ CPCSyntaxError can be driven from outside while it runs, so you can work in VS C
 |---|---|---|
 | **GDB server** | Source-level debugging in VS Code with [DeZog](https://github.com/maziac/DeZog), or any gdb client | 12000 |
 | **Command API** | Loading code, typing, memory, registers, breakpoints and screenshots from scripts, build tasks and `cpcse-ctl` | 6128 |
+| **MCP server** | AI agents (Claude Code, Claude Desktop, Cursor, VS Code) use the command API as tools, and see the screen | 6129 |
 | **File watching** | Reloading your build's output every time it changes, and starting it again | — |
 
-All three are off until you turn them on. The servers listen on `127.0.0.1` only, so a program on your computer can reach them but nothing on the network can.
+All of them are off until you turn them on. The servers listen on `127.0.0.1` only, so a program on your computer can reach them but nothing on the network can.
 
 ## Turning them on
 
@@ -30,6 +31,7 @@ cpcse --symbols build/game.sym --load build/game.bin --run main
 |---|---|
 | `--gdb[=port]` | Start the GDB server. |
 | `--api[=port]` | Start the command API. |
+| `--mcp[=port]` | Start the MCP server for AI agents. |
 | `--load file[@addr]` | Load once the firmware has started (2 seconds in). A `.bin` goes at `addr`, or at the address in its AMSDOS header. `.sna`, `.dsk`, `.cpr` and tapes (`.cdt`, `.tzx`, `.wav`) load as they do from the Media menu. |
 | `--watch file[@addr]` | Load it the same way, and again every time the file changes. If the file doesn't exist yet, it loads when your build first writes it. |
 | `--run entry` or `--run addr` | After a `.bin` loads, start it. `entry` is the header's entry address. If the file has no header, or you gave `@addr`, `entry` means where it was loaded. Otherwise the program starts at `addr`. Without `--run`, the bytes go into memory and the PC is left alone. |
@@ -184,6 +186,47 @@ Options go before the command:
 ```
 
 Or skip the load step: start the emulator with `cpcse --watch build/game.bin@0x4000 --run entry`, and every build is reloaded and restarted on its own.
+
+## AI agents (MCP)
+
+The MCP server speaks the [Model Context Protocol](https://modelcontextprotocol.io) with the **Streamable HTTP** transport at `http://127.0.0.1:6129/mcp`. An agent connected to it can load and run programs, type, read and write memory and registers, set breakpoints, step, wait for a stop and look at the screen.
+
+1. Turn it on: *Settings → External debugging → MCP server → Listen*, or start the emulator with `--mcp`.
+2. Add it to your agent:
+
+| Agent | How |
+|---|---|
+| Claude Code | `claude mcp add --transport http cpcse http://127.0.0.1:6129/mcp` (the settings window has a button that copies this command) |
+| Claude Desktop, Cursor, VS Code and others | Add an HTTP ("streamable-http") MCP server with the URL `http://127.0.0.1:6129/mcp`. |
+
+A client's JSON configuration file usually looks like this:
+
+```json
+{ "mcpServers": { "cpcse": { "type": "http", "url": "http://127.0.0.1:6129/mcp" } } }
+```
+
+The tools:
+
+| Tool | What it does |
+|---|---|
+| `emulator_status` | The model, running or paused (and why), the PC, the frames run |
+| `pause`, `resume` | Stop the machine; let it run (from an address if you give one) |
+| `step`, `step_over`, `step_out`, `run_to` | Step, and run to a place; the last three wait for the stop |
+| `reset` | Reset the machine |
+| `get_registers`, `set_registers` | The Z80 registers |
+| `read_memory`, `write_memory` | Memory as the Z80 sees it, with a hex dump |
+| `load_file` | A `.bin`, `.sna`, `.dsk`, `.cpr`, `.cro` or tape from this computer |
+| `load_symbols` | Labels from a symbol file |
+| `type_text`, `press_key` | The CPC keyboard (`\n` is Enter) |
+| `screenshot` | The screen as a PNG image (and a file if you give a path) |
+| `breakpoint`, `watchpoint` | Add, remove, clear and list |
+| `disassemble` | Z80 code from an address or from the PC |
+| `wait_for_stop`, `run_frames` | Wait for a stop, or let the machine run some frames (50 = 1 second) |
+| `api_command` | Any command-API request in its short form |
+
+Addresses take the same forms as everywhere else: `&4000`, `#4000`, `0x4000`, `16384` or a label.
+
+The server answers only requests addressed to `127.0.0.1` or `localhost`. It refuses a request that comes from a web page (an `Origin` header of another site) or that names another host, so a web page cannot use it.
 
 ## Auto-reload
 

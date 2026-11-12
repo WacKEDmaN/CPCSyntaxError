@@ -7,6 +7,8 @@
 
 namespace cpcse {
 
+class PicoGX;
+
 inline constexpr int SLOT_SIZE = 0x2000;
 inline constexpr int ROM_SIZE = 0x4000;
 
@@ -67,6 +69,13 @@ public:
     // from overlayLow, reads and writes of &2000-&3FFF to overlayRam. null = none.
     const uint8_t* overlayLow = nullptr;
     uint8_t* overlayRam = nullptr;
+    // What a board's RAMDIS does to the internal RAM (service manuals, CPU circuit diagrams):
+    // on the 6128 it goes to the banking PAL (IC118 pin 4, which makes CAS0/CAS1), so the
+    // internal RAM is off for reads AND writes. On the 464 and the 664 there is no PAL: RAMDIS
+    // only reaches the OR gate (IC112) that enables the read latch IC114, while /CAS and /WE
+    // go from the Gate Array straight to the 4164s. There a write the board takes ALSO lands
+    // in the internal RAM, at the Z80's own address. false: a 464 or 664 (set by the host).
+    bool ramdisBlocksInternalWrites = true;
 
     explicit GXMemory(int ramKiB = 128);
 
@@ -115,6 +124,12 @@ public:
     int read(int address) override;
     void write(int address, int value) override;
     int readMapped(int address);           // read() without the debugger's watch hook
+    // A PicoGX in the cartridge slot (picogx.h): every CPU read the cartridge answers goes
+    // past it, with the page it was on (A14-A18). The host owns it; readMapped (the
+    // debugger's views) does not reach it. lastReadCartPage is the page readMapped took a
+    // byte from, -1 when the byte came from elsewhere (set on the cartridge paths only).
+    PicoGX* picoGx = nullptr;
+    int lastReadCartPage = -1;
     // Debugger watchpoints. While armed, every read()/write() is reported to the hook;
     // the front end arms it only while the machine runs, so its own views stay silent.
     std::function<void(int address, int value, bool write)> watchHook;

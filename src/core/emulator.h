@@ -171,6 +171,8 @@ public:
     void captureRasterState();
     void captureRasterCharacter();
     unsigned classicHsyncPipe = 0;   // ACCC §9.3.1's per-chip HSYNC display delay
+    bool classicBlankLast = false;   // ACCC §16.2.1: the previous character was blanked
+    int classicBlankCarry = 0;       // ...and the Pixel-M2 its opening carries over
 
     // internalRamKiB: the machine's own RAM (64 on a 464 Plus or GX4000, 128 on a 6128 Plus or
     // a GX4000 with the 128K mod); classicExpansion: RAM beyond it is a board on the

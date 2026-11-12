@@ -16,6 +16,8 @@
 #include <cstdint>
 #include "core/common.h"
 #include "core/cheats.h"
+#include "core/cpr_loader.h"
+#include "core/picogx.h"
 #include "crt_filter.h"
 #include "core/timeline.h"
 #include "joypads.h"
@@ -319,6 +321,21 @@ public:
     bool booted() const { return currentModel >= 0 || !cartName.empty(); }
 
     bool loadCartridgeFile(const std::string& path);
+    // A parsed cartridge into the slot, on the machine selected (the tail of loading a file).
+    bool installCartridge(const Cartridge& cart, const std::string& path, const std::string& shownName,
+                          const std::string& croWhat);
+
+    // PicoGX (core/picogx.h), the SD-card cartridge: picoGxSd is its card (a folder on this
+    // computer). launchPicoGx takes a .cpr, .bin, .cro or .dsk relative to it, as the
+    // cartridge's menu would, and puts the PicoGX in the slot with it.
+    std::unique_ptr<PicoGX> picoGx;
+    std::string picoGxSd;
+    std::string picoGxLast;                // the last file launched, relative to the card
+    bool picoGxLaunching = false;          // launchPicoGx is putting it in (boots keep it)
+    bool launchPicoGx(const std::string& relative);
+    bool picoGxActive() const;             // the PicoGX is in the slot
+    // A value from the card's PicoGX.cfg ("" when it has none): AutoFlash in [Special].
+    std::string picoGxConfig(const std::string& section, const std::string& key) const;
     bool loadDiskFile(const std::string& path, int unit);
     void ejectDisk(int unit);
     // The DSK editor's disc into drive A (0) or B (1), shared: what the CPC writes, the

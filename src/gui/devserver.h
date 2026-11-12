@@ -15,6 +15,11 @@
 //     tools/ctl (cpcse-ctl) is its command-line client; docs/external-debugging.md lists
 //     every command.
 //
+//   MCP server (default port 6129)
+//     The Model Context Protocol over HTTP (http://127.0.0.1:6129/mcp), so an AI agent
+//     (Claude Code, Claude Desktop, Cursor, VS Code) can use the command API as tools,
+//     screenshots included as images. mcp_protocol.h has the tool list.
+//
 //   Watching a file
 //     A build's output reloaded whenever it changes: a .bin poked back in and started, a
 //     .sna or a cartridge reloaded, a .dsk re-inserted (and a command typed to run it).
@@ -80,6 +85,14 @@ public:
     int apiPort() const;
     std::string apiError;
 
+    // The MCP server (mcp_protocol.h): http://127.0.0.1:<port>/mcp for AI agents.
+    bool startMcp(int port);
+    void stopMcp();
+    bool mcpListening() const;
+    int mcpClients() const;
+    int mcpPort() const;
+    std::string mcpError;
+
     void loadWhenReady(const LoadRequest& request);
     // Reloads the request's file whenever it changes on disc (an empty path stops).
     void watch(const LoadRequest& request);
@@ -99,8 +112,8 @@ public:
 
     // Settings (cpcse.ini): whether each server starts with the emulator, and its port.
     // The command line's --gdb/--api start them for one session without changing these.
-    bool gdbAtStart = false, apiAtStart = false;
-    int gdbPortSetting = 12000, apiPortSetting = 6128;
+    bool gdbAtStart = false, apiAtStart = false, mcpAtStart = false;
+    int gdbPortSetting = 12000, apiPortSetting = 6128, mcpPortSetting = 6129;
     void loadSettings(const std::map<std::string, std::string>& ini);
     void saveSettings(std::ostream& out) const;
     void startFromSettings();

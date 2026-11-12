@@ -1869,6 +1869,9 @@ void GuiShell::sectionDevelopment(bool asMenu) {
         if (ImGui::MenuItem(label, nullptr, &gdbOn)) { d.gdbAtStart = gdbOn; if (gdbOn) d.startGdb(d.gdbPortSetting); else d.stopGdb(); }
         std::snprintf(label, sizeof(label), "Command API (port %d)", d.apiPortSetting);
         if (ImGui::MenuItem(label, nullptr, &apiOn)) { d.apiAtStart = apiOn; if (apiOn) d.startApi(d.apiPortSetting); else d.stopApi(); }
+        bool mcpOn = d.mcpListening();
+        std::snprintf(label, sizeof(label), "MCP server for AI agents (port %d)", d.mcpPortSetting);
+        if (ImGui::MenuItem(label, nullptr, &mcpOn)) { d.mcpAtStart = mcpOn; if (mcpOn) d.startMcp(d.mcpPortSetting); else d.stopMcp(); }
         if (d.watched() && ImGui::MenuItem("Stop watching the file")) d.watch(LoadRequest{});
         if (ImGui::MenuItem("Settings...")) { panelOpen("External debugging") = true; focusWindowNextFrame = "External debugging"; }
         return;
@@ -1902,6 +1905,20 @@ void GuiShell::sectionDevelopment(bool asMenu) {
     server("api", d.apiListening(), d.apiAtStart, d.apiPortSetting, &DevServer::startApi, &DevServer::stopApi, d.apiError);
     if (d.apiListening()) ImGui::TextDisabled("127.0.0.1:%d, %d client%s", d.apiPort(), d.apiClients(), d.apiClients() == 1 ? "" : "s");
     else ImGui::TextDisabled("JSON lines; cpcse-ctl help lists the commands");
+
+    sectionHeading("MCP server (AI agents)");
+    server("mcp", d.mcpListening(), d.mcpAtStart, d.mcpPortSetting, &DevServer::startMcp, &DevServer::stopMcp, d.mcpError);
+    {
+        const int port = d.mcpListening() ? d.mcpPort() : d.mcpPortSetting;
+        char url[64];
+        std::snprintf(url, sizeof(url), "http://127.0.0.1:%d/mcp", port);
+        if (d.mcpListening()) ImGui::TextDisabled("%s, %d connection%s", url, d.mcpClients(), d.mcpClients() == 1 ? "" : "s");
+        else ImGui::TextDisabled("Streamable HTTP at %s", url);
+        if (ImGui::SmallButton("Copy the Claude Code command")) {
+            const std::string cmd = std::string("claude mcp add --transport http cpcse ") + url;
+            ImGui::SetClipboardText(cmd.c_str());
+        }
+    }
 
     sectionHeading("Reload a file when it changes");
     const LoadRequest* w = d.watched();

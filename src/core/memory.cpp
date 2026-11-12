@@ -1,5 +1,6 @@
 // CPCSyntaxError — CPC memory mapper.
 #include "memory.h"
+#include "picogx.h"
 #include <stdexcept>
 
 namespace cpcse {
@@ -204,6 +205,13 @@ MemoryIdentity GXMemory::debugIdentity(int address) {
 }
 
 int GXMemory::read(int address) {
+    if (picoGx) {
+        lastReadCartPage = -1;
+        int value = readMapped(address);
+        if (lastReadCartPage >= 0) value = picoGx->onRead(lastReadCartPage, address & 0x3fff, value) & 0xff;
+        if (watchArmed) watchHook(address & 0xffff, value & 0xff, false);
+        return value;
+    }
     if (!watchArmed) return readMapped(address);
     int value = readMapped(address);
     watchHook(address & 0xffff, value & 0xff, false);
@@ -214,7 +222,7 @@ int GXMemory::readMapped(int address) {
     address &= 0xffff;
     if (overlayLow && address < 0x4000) return address < 0x2000 ? overlayLow[address] : overlayRam[address - 0x2000];
     if (lowerEnabled && lowerSlotFor(address)) {
-        int value = cartridgeByte(lowerPage, address); if (value != -1) return value;
+        int value = cartridgeByte(lowerPage, address); if (value != -1) { lastReadCartPage = lowerPage; return value; }
         const Bytes& lower = !snapshotLowerRom.empty() ? snapshotLowerRom : lowerRom;
         if (lowerLocation == 0 && !lower.empty()) return lower[address];
     }
@@ -232,7 +240,7 @@ int GXMemory::readMapped(int address) {
         // ROMs the host fits are here on a Plus: its BASIC and AMSDOS are cartridge pages.
         if (useCartridgeUpper && hooked != -2 && plusSelectedRom < 0x80 && !upperRoms[(size_t)plusSelectedRom].empty())
             return upperRoms[(size_t)plusSelectedRom][address & 0x3fff];
-        if (useCartridgeUpper) { int value = cartridgeByte(upperCartridgePage, address); if (value != -1) return value; }
+        if (useCartridgeUpper) { int value = cartridgeByte(upperCartridgePage, address); if (value != -1) { lastReadCartPage = upperCartridgePage; return value; } }
         // -2: a board owns this slot but its ROM is switched off (|M4ROMOFF), so nothing answers
         // there and the internal ROM does, as for an empty slot (not the copy kept for views).
         const bool vacated = hooked == -2;
@@ -255,7 +263,14 @@ int GXMemory::readMapped(int address) {
 void GXMemory::write(int address, int value) {
     address &= 0xffff; value &= 0xff;
     if (watchArmed) watchHook(address, value, true);
-    if (overlayRam && address >= 0x2000 && address < 0x4000) { overlayRam[address - 0x2000] = (uint8_t)value; return; }
+    if (overlayRam && address >= 0x2000 && address < 0x4000) {
+        overlayRam[address - 0x2000] = (uint8_t)value;
+        // the card's RAMDIS stops only the read on a 464 or 664 (memory.h): the internal RAM
+        // under it takes the write as well, at the Z80's address
+        if (ramdisBlocksInternalWrites) return;
+        if ((size_t)address < ram.size()) ram[(size_t)address] = (uint8_t)value;
+        return;
+    }
     int slot = (unsigned)address >> 13; uint32_t offset = writeMap[slot];
     if (offset == 0xffffffff) {
         int asicAddress = (address - asicRamLocation * SLOT_SIZE) & 0x3fff;

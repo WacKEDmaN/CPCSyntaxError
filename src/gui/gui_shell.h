@@ -126,6 +126,12 @@ private:
     std::unique_ptr<ExpansionPortWindow> expansionPort;
     std::unique_ptr<DevServer> dev;
     void sectionDevelopment(bool asMenu);   // Settings > External debugging (gui_panels.cpp)
+    // The Cartridge window's PicoGX part (gui_picogx.cpp): its SD card folder, browsed as the
+    // cartridge's menu shows it, and the file to launch.
+    void picoGxPanel();
+    std::string picoGxDir;                  // the folder shown, relative to the card
+    std::string picoGxPick;                 // the file picked in it, relative to the card
+    std::string picoGxInfo;                 // the picked file's .txt beside it
     char devWatchPath[512] = {}, devWatchAddr[32] = {}, devWatchRun[32] = {}, devWatchCommand[128] = {};
     bool devWatchReset = false;
     bool resetLayout = false;

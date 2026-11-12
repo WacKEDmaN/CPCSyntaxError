@@ -213,6 +213,7 @@ add_executable(cpcse
   src/gui/emuhost.cpp
   src/gui/crt_filter.cpp
   src/gui/gui_shell.cpp
+  src/gui/gui_picogx.cpp
   src/gui/gui_panels.cpp
   src/gui/gui_widgets.cpp
   src/gui/gui_debugger.cpp
@@ -236,6 +237,7 @@ add_executable(cpcse
   src/gui/gui_basic.cpp
   src/gui/asm_highlight.cpp
   src/gui/devserver.cpp
+  src/gui/png_encode.cpp
   src/gui/devnet.cpp
 )
 # A GUI-subsystem executable: no console window. SDL2main provides the WinMain

@@ -201,6 +201,13 @@ GX4000::GX4000() {
     o.onVsyncStart = [this]() {
         gateArray->onVsyncStart(crtc->hsync,
             crtc->behaviour->cVsyncNeedsCrtcVsync());       // ACCC §16.2.3: the pin gates it on CRTC 3/4
+        // ACCC §16.2.1 (p.160): "The GATE ARRAY reacts as soon as it receives the VSYNC
+        // signal from the CRTC", so the black opens on this character, not at the next
+        // HSYNC end. The mirror was only refreshed from the HSYNC callbacks, so a VSYNC an
+        // R7 write starts part-way through a line drew its black from the next line on.
+        // MEASURED on SHAKER DT/A1-A3 (CRTC 1): the real CPC's band top steps down at the
+        // R7 write position; ours was flat.
+        crtc->gateArrayBlanking = gateArray->blanking();
         // ACCC §16.1: the monitor is not driven from the CRTC's VSYNC directly — the
         // GATE ARRAY's V26 counter delays the composite C-SYNC by two HSYNCs. The
         // monitor is therefore synced from onHsync above, not from here.
@@ -993,12 +1000,30 @@ void GX4000::captureRasterCharacter() {
         // on SHAKER DT/B1 (R2 moved off the line, then R0=1 lines under a VSYNC): the real
         // CPC and AmSpiriT 2.0 show one solid black line there; ours showed only the
         // dashes of those lines' R3=1 HSYNCs.
-        if (crtc->gateArrayBlanking) { from = 0; to = 16; }
+        // ACCC §16.2.1 (p.161): the first blanked character opens at the chip's own
+        // Pixel-M2 (6th on CRTC 1, 5th on 0 and 2, 2nd on 4), and on its R7.JIT position
+        // when R7 was written on this character (CRTC 0's lands a whole microsecond later,
+        // so its excess is carried into the next character). The same numbers the beam
+        // renderer uses in plotBeamCharacter.
+        if (crtc->gateArrayBlanking) {
+            int open = 0;
+            if (!classicBlankLast) {
+                open = crtc->r7WrittenThisCharacter
+                    ? crtc->behaviour->vsyncBlackStartPixelJit(crtc->lastWriteBlockIo)
+                    : crtc->behaviour->vsyncBlackStartPixel();
+                if (open > 16) { classicBlankCarry = open - 16; open = 16; }
+            } else { open = classicBlankCarry; classicBlankCarry = 0; }
+            if (open < 16) { from = std::min(from, open); to = 16; }
+        }
         // ...and the record's own flag means blanked from end to end: a record the
         // blanking leaves part-way (V26 counts HSYNC ends, and R0=1 lines make one every
         // 2 µsec) keeps only these per-character windows. DT/B1 again: the record after
         // the solid line was painted black whole, a second line neither reference has.
-        else line->gateArrayBlank = false;
+        else { line->gateArrayBlank = false; classicBlankCarry = 0; }
+        // a record that opens with the black must still be fully blanked: only a black
+        // that opens part-way (start pixel above 0) leaves the record's flag off
+        if (crtc->gateArrayBlanking && !classicBlankLast && from > 0) line->gateArrayBlank = false;
+        classicBlankLast = crtc->gateArrayBlanking;
         int at = (character - crtc->behaviour->hsyncBlackCharacterLead()) & 0xff;
         line->hsyncBlackFrom[at] = (uint8_t)from;
         line->hsyncBlackTo[at] = (uint8_t)to;
@@ -1524,8 +1549,9 @@ int GX4000::stepInstruction() {
     advanceHardwareToInstructionOffset(cycles);
     cycles = std::max(cycles, hardwareCyclesAdvanced);
     if (raiseMicrosecond > 0 && interruptPhaseTrace)
-        std::fprintf(stderr, "INT us=%lld instr=%dus arrived in us %d of %d\n",
-                     instructionStart / 4, cycles / 4, raiseMicrosecond, cycles / 4);
+        std::fprintf(stderr, "INT us=%lld instr=%dus arrived in us %d of %d  C4=%d C9=%d C0=%d R0=%d\n",
+                     instructionStart / 4, cycles / 4, raiseMicrosecond, cycles / 4,
+                     crtc->vertical, crtc->raster, crtc->horizontal, crtc->registers[0]);
     // ...and the exemption the same section ends on: "The timing logic of the Gate Array
     // to align the cycles of the Z80A instructions allows for the avoidance of the
     // consequences of these discordant HSYNC ends FOR CERTAIN INSTRUCTIONS WHOSE FIRST

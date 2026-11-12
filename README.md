@@ -115,6 +115,11 @@ It runs on Windows, Linux and macOS. It has a cycle-level model of the chips of 
 - **A cartridge on a classic CPC.** Load a CPR on a 464, 664 or 6128 and the machine stays as it
   is, with its CRTC and its expansions (on a real CPC an M4 Board loads them the same way). Most
   cartridges run. A cartridge that unlocks the Plus ASIC needs a Plus or a GX4000.
+- **PicoGX** ([github.com/Neo2003/PicoGX](https://github.com/Neo2003/PicoGX)), the SD-card
+  cartridge. In the Cartridge window, choose a folder to be its SD card, then pick a CPR, BIN,
+  CRO or DSK file from it. Programs can use its 16 KB save (`saves/<name>.SAV` on the card) and
+  cartridges up to 1.5 MB, as its Programming.md describes. From the command line:
+  `--picogx <folder> --picogx-launch <file>`.
 
 ### Cheats
 
@@ -301,7 +306,8 @@ Select the expansions in the **Expansions** menu or in the Settings window.
   Its tokenizer is checked byte for byte against Locomotive BASIC itself.
 - **External debugging and code loading**: a **GDB server** for
   [DeZog](https://github.com/maziac/DeZog) in VS Code, a **command API** with the `cpcse-ctl`
-  client, and an **auto-reload** of your build. Refer to [External debugging](#external-debugging).
+  client, an **MCP server** for AI agents, and an **auto-reload** of your build. Refer to
+  [External debugging](#external-debugging).
 - **CSL scripts and SSM screenshots**: these are the CPC Script Language 1.5 and ScreenShot
   Management 1.1 standards by Longshot. `cpcse.exe --csl <script>` runs a script with no
   window. The SHAKER scripts run in this mode. Refer to
@@ -484,6 +490,10 @@ command line. The servers listen on `127.0.0.1` only.
   the registers.
 - **Command API** (`--api`, port 6128) and `cpcse-ctl` (next to `cpcse.exe`): load code,
   type, read and write memory, set breakpoints, wait for a stop and take screenshots.
+- **MCP server** (`--mcp`, port 6129): AI agents (Claude Code, Claude Desktop, Cursor, VS Code)
+  connect to `http://127.0.0.1:6129/mcp`. They can load and run code, type, read and write
+  memory and registers, set breakpoints, step and see the screen. For Claude Code:
+  `claude mcp add --transport http cpcse http://127.0.0.1:6129/mcp`.
 - **Auto-reload** (`--watch build/game.bin@0x4000 --run entry`): the emulator writes each new
   build into memory and starts it again.
 

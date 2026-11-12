@@ -225,6 +225,9 @@ std::string EmuHost::findCart(const std::string& keyword) const {
 
 bool EmuHost::bootModel(int index, int ram, int crtc) {
     if (index < 0 || index >= (int)models.size()) { status = "Invalid model."; return false; }
+    // A boot takes whatever is in the cartridge slot out: a PicoGX goes back in only when
+    // launchPicoGx puts a file in it.
+    if (emu && emu->memory && !picoGxLaunching) emu->memory->picoGx = nullptr;
     // The SF3 bank's ROMs come out: the boot loads the model's own, and applySettings puts
     // the bank's back (a lower ROM saved from another model must not come back).
     if (emu && emu->memory) for (int s : sf3RomSlots) emu->memory->setUpperRom(s, Bytes{});
@@ -316,6 +319,7 @@ bool EmuHost::bootModel(int index, int ram, int crtc) {
         opt.classicExpansion = plusExpansionClassic;
         emu->loadCartridge(cart, opt);
         emu->hasFdc = m.amsdos;
+        emu->memory->ramdisBlocksInternalWrites = true;   // the Plus: no classic 464 RAM path
         applyAudioRate();
         currentModel = index;              // before the settings: the SF3 picks its bank by it
         applySettings();
@@ -360,6 +364,9 @@ bool EmuHost::bootModel(int index, int ram, int crtc) {
     // BASIC (ROM 0) is the machine's own; AMSDOS (ROM 7) is too on a 664 and a 6128, but on
     // a 464 it comes from the DDI-1 on the connector (expansion_bus.h: ROMDIS).
     emu->builtInUpperRoms = m.id == "cpc464" ? 0x01 : 0x81;
+    // A board's RAMDIS stops internal RAM writes only through the 6128's banking PAL; the
+    // 464 and the 664 have none (memory.h, ramdisBlocksInternalWrites).
+    emu->memory->ramdisBlocksInternalWrites = !(m.id == "cpc464" || m.id == "cpc664");
     applyAudioRate();
     currentModel = index;                  // before the settings: the SF3 picks its bank by it
     applySettings();
@@ -1281,6 +1288,13 @@ bool EmuHost::loadCartridgeData(const Bytes& data, const std::string& path) {
         catch (const std::exception& ex) { status = std::string("Not a valid .CPR cartridge: ") + ex.what(); return false; }
     }
     if (cart.banks.empty()) { status = "Not a valid .CPR cartridge."; return false; }
+    return installCartridge(cart, path, shownName, croWhat);
+}
+
+// A parsed cartridge into the slot, on the machine selected (see loadCartridgeData).
+bool EmuHost::installCartridge(const Cartridge& cart, const std::string& path, const std::string& shownName,
+                               const std::string& croWhat) {
+    if (emu && emu->memory && !picoGxLaunching) emu->memory->picoGx = nullptr;   // a plain cartridge replaces it
     // A CLASSIC CPC selected: the cartridge goes on THAT machine, as a board on its expansion
     // port (an M4, a ROM board) presents one. It keeps its CRTC, Gate Array, RAM, ROMs and
     // expansions; the machine is started afresh, then the cartridge is mapped as a Plus maps
@@ -1337,6 +1351,76 @@ bool EmuHost::loadCartridgeData(const Bytes& data, const std::string& path) {
     status = "Loaded " + cartName + croWhat + " into " + m.label;
     return true;
 }
+
+// ================================================================ PicoGX (core/picogx.h)
+std::string EmuHost::picoGxConfig(const std::string& section, const std::string& key) const {
+    // PicoGX.cfg at the SD card's root: "[Section]" headers, "Key=Value" lines, "#" comments.
+    std::ifstream f(std::filesystem::u8path(picoGxSd) / "PicoGX.cfg");
+    std::string line, current;
+    auto trim = [](std::string s) {
+        while (!s.empty() && (s.back() == '\r' || s.back() == ' ' || s.back() == '\t')) s.pop_back();
+        s.erase(0, std::min(s.find_first_not_of(" \t"), s.size()));
+        return s;
+    };
+    auto lower = [](std::string s) { for (char& c : s) c = (char)std::tolower((unsigned char)c); return s; };
+    while (std::getline(f, line)) {
+        line = trim(line);
+        if (line.empty() || line[0] == '#') continue;
+        if (line.front() == '[' && line.back() == ']') { current = lower(line.substr(1, line.size() - 2)); continue; }
+        const size_t eq = line.find('=');
+        if (eq != std::string::npos && current == lower(section) && lower(trim(line.substr(0, eq))) == lower(key))
+            return trim(line.substr(eq + 1));
+    }
+    return "";
+}
+
+bool EmuHost::launchPicoGx(const std::string& relative) {
+    if (picoGxSd.empty()) { status = "PicoGX: choose its SD card folder first."; return false; }
+    const std::filesystem::path file = std::filesystem::u8path(picoGxSd) / std::filesystem::u8path(relative);
+    std::string ext = file.extension().u8string();
+    for (char& c : ext) c = (char)std::tolower((unsigned char)c);
+    const std::string name = file.filename().u8string();
+    if (ext == ".dsk") {
+        // The PicoGX runs a disc on a Plus with a disc drive; here the disc goes in drive A
+        // and the cartridge stays as it is.
+        if (!emu || !emu->hasFdc) { status = "PicoGX: " + name + " is a disc, and this machine has no disc drive (a 6128 Plus has)."; return false; }
+        if (!loadDiskFile(file.u8string(), 0)) return false;
+        picoGxLast = relative;
+        status = "PicoGX: " + name + " in drive A (|CPM or RUN\"...)";
+        return true;
+    }
+    bool ok = false;
+    const Bytes data = readFile(file.u8string(), ok);
+    if (!ok || data.empty()) { status = "PicoGX: could not read " + name; return false; }
+    std::vector<Bytes> pages;
+    if (ext == ".cro") {
+        Cartridge c;
+        try { c = parseCartridge(data); } catch (const std::exception& ex) { status = std::string("PicoGX: ") + name + ": " + ex.what(); return false; }
+        pages = c.banks;
+    } else {
+        try { pages = picoGxPages(data); } catch (const std::exception& ex) { status = std::string("PicoGX: ") + name + ": " + ex.what(); return false; }
+    }
+    if (!picoGx) picoGx = std::make_unique<PicoGX>();
+    Cartridge cart;
+    cart.format = "PicoGX";
+    cart.banks = picoGx->blockPages(0);
+    if (pages.size() < cart.banks.size()) for (size_t i = 0; i < cart.banks.size(); i++) cart.banks[i] = i < pages.size() ? pages[i] : Bytes{};
+    else for (size_t i = 0; i < cart.banks.size(); i++) cart.banks[i] = pages[i];
+    for (const Bytes& b : cart.banks) if (!b.empty()) cart.bankCount++;
+    picoGxLaunching = true;
+    const bool installed = installCartridge(cart, file.u8string(), "PicoGX: " + name, "");
+    picoGxLaunching = false;
+    if (!installed) return false;
+    const std::string save = (std::filesystem::u8path(picoGxSd) / "saves" / (file.stem().u8string() + ".SAV")).u8string();
+    picoGx->launch(pages, save);
+    picoGx->mapBlock = [this](const std::vector<Bytes>& banks) { if (emu && emu->memory) emu->memory->loadCartridge(banks); };
+    emu->memory->picoGx = picoGx.get();
+    picoGxLast = relative;
+    status = "PicoGX: launched " + name + (picoGx->large() ? " (" + std::to_string(pages.size() * 16) + " KB, 512 KB blocks)" : "");
+    return true;
+}
+
+bool EmuHost::picoGxActive() const { return emu && emu->memory && picoGx && emu->memory->picoGx == picoGx.get(); }
 
 // A CRO group of CPC ROMs: a classic CPC (the one selected, else a 6128) boots with them.
 bool EmuHost::loadCroRomSet(const CroRomSet& set, const std::string& path, const std::string& what) {
