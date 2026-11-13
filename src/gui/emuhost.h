@@ -333,7 +333,16 @@ public:
     std::string picoGxLast;                // the last file launched, relative to the card
     bool picoGxLaunching = false;          // launchPicoGx is putting it in (boots keep it)
     bool launchPicoGx(const std::string& relative);
+    // The PicoGX's own menu, taken out of its firmware file (picoGxFirmware, a .uf2 the user
+    // has; nothing of it is shipped). The menu lists picoGxSd and launches what is chosen.
+    std::string picoGxFirmware;
+    bool startPicoGxMenu();
     bool picoGxActive() const;             // the PicoGX is in the slot
+    // The PicoGX is a device the user adds (picogx_enabled in cpcse.ini). Off: it is not in the
+    // machine at all. If it is in the slot, the machine boots again without a cartridge, and
+    // the PicoGX object is deleted. Its folder and firmware settings stay for the next time.
+    bool picoGxEnabled = false;
+    void setPicoGxEnabled(bool on);
     // A value from the card's PicoGX.cfg ("" when it has none): AutoFlash in [Special].
     std::string picoGxConfig(const std::string& section, const std::string& key) const;
     bool loadDiskFile(const std::string& path, int unit);

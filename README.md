@@ -116,10 +116,12 @@ It runs on Windows, Linux and macOS. It has a cycle-level model of the chips of 
   is, with its CRTC and its expansions (on a real CPC an M4 Board loads them the same way). Most
   cartridges run. A cartridge that unlocks the Plus ASIC needs a Plus or a GX4000.
 - **PicoGX** ([github.com/Neo2003/PicoGX](https://github.com/Neo2003/PicoGX)), the SD-card
-  cartridge. In the Cartridge window, choose a folder to be its SD card, then pick a CPR, BIN,
-  CRO or DSK file from it. Programs can use its 16 KB save (`saves/<name>.SAV` on the card) and
-  cartridges up to 1.5 MB, as its Programming.md describes. From the command line:
-  `--picogx <folder> --picogx-launch <file>`.
+  cartridge. In the Cartridge window, select "Use a PicoGX", choose a folder to be its SD card,
+  then pick a CPR, BIN, CRO or DSK file from it. With your own PicoGX firmware file (.uf2), the
+  PicoGX's real menu runs on the CPC screen ("Start the PicoGX menu"); the firmware is not
+  included. Programs can use its 16 KB save (`saves/<name>.SAV` on the card) and cartridges up
+  to 1.5 MB, as its Programming.md describes. From the command line:
+  `--picogx <folder> --picogx-launch <file>` or `--picogx <folder> --picogx-menu <file.uf2>`.
 
 ### Cheats
 

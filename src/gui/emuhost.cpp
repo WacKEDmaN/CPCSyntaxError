@@ -1375,6 +1375,7 @@ std::string EmuHost::picoGxConfig(const std::string& section, const std::string&
 }
 
 bool EmuHost::launchPicoGx(const std::string& relative) {
+    if (!picoGxEnabled) { status = "PicoGX: it is off (Cartridge window: Use a PicoGX)."; return false; }
     if (picoGxSd.empty()) { status = "PicoGX: choose its SD card folder first."; return false; }
     const std::filesystem::path file = std::filesystem::u8path(picoGxSd) / std::filesystem::u8path(relative);
     std::string ext = file.extension().u8string();
@@ -1420,7 +1421,62 @@ bool EmuHost::launchPicoGx(const std::string& relative) {
     return true;
 }
 
+// The PicoGX's own menu, taken out of the user's firmware file (core/picogx.h).
+bool EmuHost::startPicoGxMenu() {
+    if (!picoGxEnabled) { status = "PicoGX: it is off (Cartridge window: Use a PicoGX)."; return false; }
+    if (picoGxSd.empty()) { status = "PicoGX: choose its SD card folder first."; return false; }
+    if (picoGxFirmware.empty()) { status = "PicoGX: choose its firmware file (.uf2) first."; return false; }
+    bool ok = false;
+    const Bytes uf2 = readFile(picoGxFirmware, ok);
+    if (!ok || uf2.empty()) { status = "PicoGX: could not read " + picoGxFirmware; return false; }
+    std::string why;
+    const Bytes page = PicoGX::menuFromFirmware(uf2, why);
+    if (page.empty()) { status = "PicoGX: " + why + " (" + std::filesystem::u8path(picoGxFirmware).filename().u8string() + ")"; return false; }
+    if (!picoGx) picoGx = std::make_unique<PicoGX>();
+    Cartridge cart;
+    cart.format = "PicoGX";
+    cart.banks.assign(BANK_COUNT, Bytes{});
+    cart.banks[0] = page;
+    cart.bankCount = 1;
+    picoGxLaunching = true;
+    const bool installed = installCartridge(cart, "", "PicoGX menu", "");
+    picoGxLaunching = false;
+    if (!installed) return false;
+    picoGx->startMenu(page, picoGxSd, picoGxLast);
+    // PicoGX.cfg [Color]: "#nn" an INKR value (&40-&5F), else a BASIC colour 0-26.
+    static const uint8_t BASIC_TO_INKR[27] = { 0x54, 0x44, 0x55, 0x5c, 0x58, 0x5d, 0x4c, 0x45, 0x4d, 0x56, 0x46, 0x57, 0x5e, 0x40,
+                                               0x5f, 0x4e, 0x47, 0x4f, 0x52, 0x42, 0x53, 0x5a, 0x59, 0x5b, 0x4a, 0x43, 0x4b };
+    auto colour = [&](const char* key) -> uint8_t {
+        const std::string v = picoGxConfig("Color", key);
+        if (v.empty()) return 0;
+        if (v[0] == '#') { const long n = std::strtol(v.c_str() + 1, nullptr, 16); return n >= 0x40 && n <= 0x5f ? (uint8_t)n : 0; }
+        const long n = std::strtol(v.c_str(), nullptr, 10);
+        return n >= 0 && n <= 26 ? BASIC_TO_INKR[n] : 0;
+    };
+    picoGx->menuColours[0] = colour("MenuBackground");
+    picoGx->menuColours[1] = colour("MenuText");
+    picoGx->loadColours[0] = colour("LoadBackground");
+    picoGx->loadColours[1] = colour("LoadText");
+    picoGx->loadColours[2] = colour("LoadProgress");
+    picoGx->readFolder();
+    picoGx->mapBlock = nullptr;
+    emu->memory->picoGx = picoGx.get();
+    status = "PicoGX: the menu, from " + std::filesystem::u8path(picoGxFirmware).filename().u8string();
+    return true;
+}
+
 bool EmuHost::picoGxActive() const { return emu && emu->memory && picoGx && emu->memory->picoGx == picoGx.get(); }
+
+void EmuHost::setPicoGxEnabled(bool on) {
+    if (on == picoGxEnabled) return;
+    picoGxEnabled = on;
+    if (on) { status = "PicoGX added (Cartridge window)"; return; }
+    const bool inSlot = picoGxActive();
+    if (inSlot) ejectCartridge();                  // boots without it: bootModel detaches it
+    if (emu && emu->memory && picoGx && emu->memory->picoGx == picoGx.get()) emu->memory->picoGx = nullptr;
+    picoGx.reset();
+    status = inSlot ? "PicoGX removed; the machine booted without a cartridge" : "PicoGX removed";
+}
 
 // A CRO group of CPC ROMs: a classic CPC (the one selected, else a 6128) boots with them.
 bool EmuHost::loadCroRomSet(const CroRomSet& set, const std::string& path, const std::string& what) {
@@ -2578,6 +2634,14 @@ bool EmuHost::injectBasic(const Bytes& program, std::string& why) {
 
 void EmuHost::runFrame() {
     if (!booted() || paused) { audioOut.clear(); return; }
+    // The PicoGX menu asked for a file (its launch command): done here, between frames, as
+    // it boots the machine again. It is never done inside the memory read that asked for it.
+    // A launch that fails leaves &3FFF at 0, so the menu restarts (status: why).
+    if (picoGxActive() && !picoGx->pendingLaunch.empty()) {
+        const std::string file = picoGx->pendingLaunch;
+        picoGx->pendingLaunch.clear();
+        launchPicoGx(file);
+    }
     framesRun++;
     // the advanced CRT filter's signal stage spreads the colour itself
     if (video) video->chromaSpread = !(cpcLook.crtFilter.enabled && cpcLook.crtFilter.signal);

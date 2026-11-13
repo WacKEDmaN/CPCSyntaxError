@@ -19,9 +19,23 @@
 //     two low bits: 11 the first, 10 the second, 01 the third, 00 nothing. Only for a
 //     cartridge larger than 512 KB.
 //
-// The Pico's own menu program (a cartridge in its firmware) is not published, so the menu
-// is the emulator's: the Cartridge window lists the SD folder, and launching a file loads it
-// as the Pico would flash it (picogx host code in src/gui/emuhost.cpp).
+// THE MENU. The menu the CPC shows is a Z80 cartridge page inside the Pico's firmware (the
+// .uf2 file). It is not published and not shipped here: menuFromFirmware() takes it out of the
+// user's own .uf2 when they start it, and this class plays the Pico's part of it (read off the
+// menu's Z80 code, firmware 1.2.1; scratch notes picogx_work/notes.txt):
+//   * The page is whole in the flash, from its &0000 (LD BC,&7F8A / OUT (C),C / JP &004E:
+//     mode 2 and the lower ROM on, then the start-up code at &004E).
+//   * Contact sequence, command 0-4, then ONE more cartridge read whose ADDRESS is the
+//     argument (the menu does LD H,0 / LD L,row / LD A,(HL)). Then it polls &3FFF until 0.
+//       1 (arg 0 / 1) list the folder: previous / next page (0 at start-up: the first page)
+//       3 (row) enter the folder on that row      4 go up a folder
+//       0 (row) the row's information text        2 (row) launch the row's file
+//   * The data window in page 0: &3D84 first row of the information text, &3D85-&3D87
+//     loading colours, &3D88-&3D89 menu colours (INKR values), &3D8A+row 1 = a folder,
+//     &3D9A 1 = row 0 is the last game (drawn inverted), &3D9B 1 = the page changed,
+//     &3D9C the page text, &3DA8 the rows' names (0-terminated, an empty one ends them; a
+//     first byte of 1 means "launch directly" at start-up), &3900 the information text
+//     (0-terminated lines, an empty one ends them), &3FFF busy / launch progress.
 #pragma once
 #include "common.h"
 
@@ -64,7 +78,30 @@ public:
     // byte is `value`. Answers the byte the bus carries.
     int onRead(int page, int offset, int value);
 
+    // ---- the menu
+    static constexpr int ROWS = 13;           // rows 4, 6 ... 28 of the menu's screen
+    struct Entry { std::string name, relative; bool folder = false, last = false; };
+    bool menuActive = false;
+    std::string sdRoot;                       // the card (a folder on this computer)
+    std::string menuDir;                      // the folder shown, relative to the card
+    int menuPage = 0;
+    std::vector<Entry> entries;               // the folder's rows, every page
+    std::string lastGame;                     // relative to the card ("": none)
+    std::string pendingLaunch;                // set by command 2: the host launches it
+    uint8_t menuColours[2] = { 0, 0 }, loadColours[3] = { 0, 0, 0 };   // 0: the image's own
+    // The menu page (16 KB) taken out of a .uf2 file; empty with the reason when not found.
+    static Bytes menuFromFirmware(const Bytes& uf2, std::string& why);
+    // Starts the menu on the card: pages = { the menu page }.
+    void startMenu(const Bytes& image, const std::string& card, const std::string& last);
+    void readFolder();                        // entries of menuDir
+    const std::vector<Entry*> pageEntries();
+
 private:
+    int argCommand = -1;                      // a menu command waiting for its argument read
+    Bytes window;                             // page 0 as the menu reads it (menu mode)
+    void menuCommand(int command, int argument);
+    void fillWindow(bool pageChanged);
+    void putInfo(const Entry& e);
     int sequence = 0;                 // 0, 1 after &0133C, 2 after &025C4
     int writeMark = 0;                // writePos when the sequence started (see onRead)
     // The last three bytes written, with what they replaced: a stop sequence's own reads

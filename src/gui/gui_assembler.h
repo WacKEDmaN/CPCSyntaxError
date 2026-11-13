@@ -155,6 +155,9 @@ private:
     std::string summary = "Nothing assembled yet.";
     bool lastOk = false;
     char symbolFilter[64] = {0};
+    // The height of the Messages / Symbols / Build log part under the editor (<key>result_height
+    // in cpcse.ini). 0: the start value, 28% of the window. The bar above it changes it.
+    float resultHeight = 0.0f;
 
     // Syntax colouring (asm_highlight.h): the text box draws its text invisibly and the
     // coloured spans are drawn over it, so editing, selection and undo stay ImGui's own.

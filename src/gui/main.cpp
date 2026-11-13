@@ -40,6 +40,8 @@
 #include "emuhost.h"
 #include "c_build.h"
 #include "version.h"
+#include "app_icon_png.h"
+#include "png_decode.h"
 #include "crash_report.h"
 #include "core/machine_sounds.h"
 #include "gui_shell.h"
@@ -288,7 +290,7 @@ int main(int argc, char** argv) {
     // uses, with no window. --shot out.bmp [--model id] [--sna f] [--crtc N] [--gate-array 40007|40008|40010]
     // [--frames N] [--beam] [--gfx9000] [--v9990-shot out.bmp] (the GFX9000's own monitor).
     {
-        std::string picoGxSd, picoGxFile; std::string shot, modelId, snaPath, saveSnaPath, dumpRamPath, diskPath, cartPath, tapePath, typeStr, keysStr; int croGroup = -1, wantCrtc = -1, wantGa = 0, frames = 200, f1at = -1; bool f1first = false; int wantRam = -1, seq = 0; bool beam = false, diag = false, gfx9000 = false, opl4 = false, playcity = false; std::string v9990Shot, video9000Shot, m4Folder, ideFolder, mouseScript, mouseInterface, cbuildPath, cbuildCpct, cbuildSdcc, wavPath, speechKind, mp3Card, dacType; int cbuildLoc = -1; bool cbuildForce = false; std::string cbuildZ88dk, sf3Usb, sf3Sd, hd20Image; int sf3RomBank = -2; bool cbuildSccz80 = false; bool cbuildUseZ88dk = false; std::string albireoArg[2], albireoUsbArg[2], albireoSerialArg, albireoSwitchArg; bool sf2 = false, sf3 = false, xmass = false, multiface = false, diskWriteBack = false; int monitorHHold = std::getenv("CPCSE_MONITOR_HHOLD") ? std::atoi(std::getenv("CPCSE_MONITOR_HHOLD")) : 0; int monitorVHold = std::getenv("CPCSE_MONITOR_VHOLD") ? std::atoi(std::getenv("CPCSE_MONITOR_VHOLD")) : 0; std::vector<std::string> xroms; std::string serialLine, recordTape, tapeFast, recordPath, recordFormat = "mjpeg", recordSource = "shown", gfx9000Monitor; bool rasterOverlayOn = false; bool z80Cmos = false, gx4000Ram128 = false, plusExpansionClassic = true; std::string monitorSet; TubeKnobs monitorKnobs; std::array<int, 3> monitorIntensity = TubeKnobs().intensity;
+        std::string picoGxSd, picoGxFile, picoGxMenu; std::string shot, modelId, snaPath, saveSnaPath, dumpRamPath, diskPath, cartPath, tapePath, typeStr, keysStr; int croGroup = -1, wantCrtc = -1, wantGa = 0, frames = 200, f1at = -1; bool f1first = false; int wantRam = -1, seq = 0; bool beam = false, diag = false, gfx9000 = false, opl4 = false, playcity = false; std::string v9990Shot, video9000Shot, m4Folder, ideFolder, mouseScript, mouseInterface, cbuildPath, cbuildCpct, cbuildSdcc, wavPath, speechKind, mp3Card, dacType; int cbuildLoc = -1; bool cbuildForce = false; std::string cbuildZ88dk, sf3Usb, sf3Sd, hd20Image; int sf3RomBank = -2; bool cbuildSccz80 = false; bool cbuildUseZ88dk = false; std::string albireoArg[2], albireoUsbArg[2], albireoSerialArg, albireoSwitchArg; bool sf2 = false, sf3 = false, xmass = false, multiface = false, diskWriteBack = false; int monitorHHold = std::getenv("CPCSE_MONITOR_HHOLD") ? std::atoi(std::getenv("CPCSE_MONITOR_HHOLD")) : 0; int monitorVHold = std::getenv("CPCSE_MONITOR_VHOLD") ? std::atoi(std::getenv("CPCSE_MONITOR_VHOLD")) : 0; std::vector<std::string> xroms; std::string serialLine, recordTape, tapeFast, recordPath, recordFormat = "mjpeg", recordSource = "shown", gfx9000Monitor; bool rasterOverlayOn = false; bool z80Cmos = false, gx4000Ram128 = false, plusExpansionClassic = true; std::string monitorSet; TubeKnobs monitorKnobs; std::array<int, 3> monitorIntensity = TubeKnobs().intensity;
         for (int i = 1; i < argc; i++) { std::string a = argv[i];
             if (a == "--shot" && i + 1 < argc) shot = argv[++i];
             else if (a == "--ram" && i + 1 < argc) wantRam = std::atoi(argv[++i]);
@@ -300,6 +302,7 @@ int main(int argc, char** argv) {
             else if (a == "--cart" && i + 1 < argc) cartPath = argv[++i];
             else if (a == "--picogx" && i + 1 < argc) picoGxSd = argv[++i];          // the PicoGX's SD card folder
             else if (a == "--picogx-launch" && i + 1 < argc) picoGxFile = argv[++i]; // ...and the file it launches
+            else if (a == "--picogx-menu" && i + 1 < argc) picoGxMenu = argv[++i];   // ...or its menu, from this firmware (.uf2)
             else if (a == "--cro-group" && i + 1 < argc) croGroup = std::atoi(argv[++i]);   // the CRO group (GNUM) --cart takes
             else if (a == "--cbuild" && i + 1 < argc) cbuildPath = argv[++i];        // build this C file's project with SDCC, then run it
             else if (a == "--cpctelera" && i + 1 < argc) cbuildCpct = argv[++i];     // ...with CPCtelera's library from this folder
@@ -427,7 +430,7 @@ int main(int argc, char** argv) {
             if (sf3RomBank >= -1) host.sf3RomBank = sf3RomBank;
             // --cart with no --model: a GX4000, as before a classic CPC could take a cartridge
             // (with a classic --model the cartridge goes on that machine).
-            if (modelId.empty() && (!cartPath.empty() || !picoGxFile.empty()))
+            if (modelId.empty() && (!cartPath.empty() || !picoGxFile.empty() || !picoGxMenu.empty()))
                 for (const char* id : { "gx4000", "cpc6128plus", "cpc464plus" }) {
                     bool have = false;
                     for (const auto& m : host.models) if (m.id == id && m.available) have = true;
@@ -464,6 +467,12 @@ int main(int argc, char** argv) {
                 host.recordSource = recordSource;
                 std::string why;
                 if (!host.startRecording(recordPath, why)) { std::printf("[record] %s\n", why.c_str()); return 2; }
+            }
+            if (!picoGxMenu.empty() || !picoGxFile.empty()) host.picoGxEnabled = true;   // the options add it
+            if (!picoGxMenu.empty()) {   // the PicoGX's menu: its card and its firmware
+                host.picoGxSd = picoGxSd;
+                host.picoGxFirmware = picoGxMenu;
+                if (!host.startPicoGxMenu() || diag) std::printf("[picogx] %s\n", host.status.c_str());
             }
             if (!picoGxFile.empty()) {   // the PicoGX: its card, then the file it launches
                 host.picoGxSd = picoGxSd;
@@ -787,6 +796,13 @@ int main(int argc, char** argv) {
             return ok ? 0 : 1;
         }
     }
+    // X11: SDL2 asks the compositor to stop compositing while its window is in front
+    // (_NET_WM_BYPASS_COMPOSITOR, meant for full-screen games). KWin and others then turn
+    // compositing back on for every other window that opens, such as a tooltip's own OS window
+    // (multi-viewport), and the whole window flashes. A desktop program keeps the compositor.
+    // Reported on Linux for the C and ASM windows' right-hand buttons, whose tooltips do not
+    // fit in the main window. No effect on Windows, macOS or Wayland.
+    SDL_SetHint(SDL_HINT_VIDEO_X11_NET_WM_BYPASS_COMPOSITOR, "0");
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO) != 0) {
         SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "CPCSyntaxError", SDL_GetError(), nullptr);
         return 1;
@@ -829,6 +845,19 @@ int main(int argc, char** argv) {
         "CPCSyntaxError " CPCSE_VERSION, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
         winW, winH, SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI | SDL_WINDOW_HIDDEN);
     if (!window) { SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "CPCSyntaxError", SDL_GetError(), nullptr); SDL_Quit(); return 1; }
+    // The window icon (assets/icon.ico, built in by tools/make_app_icon.py): the title bar,
+    // task bar and window switcher on every system. On Windows the .exe has it too (cpcse.rc).
+    {
+        int iw = 0, ih = 0;
+        std::vector<uint8_t> rgba;
+        std::string why;
+        if (cpcse::decodePng(std::vector<uint8_t>(cpcse::APP_ICON_PNG, cpcse::APP_ICON_PNG + cpcse::APP_ICON_PNG_SIZE), iw, ih, rgba, why)) {
+            if (SDL_Surface* icon = SDL_CreateRGBSurfaceWithFormatFrom(rgba.data(), iw, ih, 32, iw * 4, SDL_PIXELFORMAT_RGBA32)) {
+                SDL_SetWindowIcon(window, icon);   // SDL copies it
+                SDL_FreeSurface(icon);
+            }
+        }
+    }
     placeWindow(window, ini.count("winx") && ini.count("winy"), geti("winx", 0), geti("winy", 0), winW, winH);
     // Its place and size when not maximized, minimized or full screen: what is saved, and
     // what a maximized window goes back to.
@@ -856,7 +885,13 @@ int main(int argc, char** argv) {
     static std::string layoutIni;
     layoutIni = homeDir() + "cpcse_layout.ini";
     io.IniFilename = layoutIni.c_str();
-    io.ConfigFlags |= ImGuiConfigFlags_DockingEnable | ImGuiConfigFlags_ViewportsEnable;
+    io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
+    // OS windows for ImGui windows and tooltips that leave the main window (multi-viewport).
+    // os_windows=0 in cpcse.ini (Window menu, or --no-os-windows) keeps everything
+    // inside the main window: the way out for a Linux desktop that flashes when one opens.
+    bool osWindows = geti("os_windows", 1) != 0;
+    for (int i = 1; i < argc; i++) if (std::string(argv[i]) == "--no-os-windows") osWindows = false;
+    if (osWindows) io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;
     io.ConfigWindowsMoveFromTitleBarOnly = true;   // dragging inside the screen never moves it
     ImGui_ImplSDL2_InitForOpenGL(window, gl);
     if (!ImGui_ImplOpenGL3_Init(glslVersion)) {
@@ -916,6 +951,9 @@ int main(int argc, char** argv) {
     host.m4Folder       = gets("m4folder", "");
     host.picoGxSd       = gets("picogx_sd", "");
     host.picoGxLast     = gets("picogx_last", "");
+    host.picoGxFirmware = gets("picogx_firmware", "");
+    // Off unless the user added it. An ini from before this setting: on if a card was chosen.
+    host.picoGxEnabled  = geti("picogx_enabled", host.picoGxSd.empty() ? 0 : 1) != 0;
     host.m4Enabled      = geti("m4", 0) != 0;             // applied by applySettings during boot
     host.m4Network      = geti("m4net", 1) != 0;
     host.m4NetworkLan   = geti("m4netlan", 0) != 0;
@@ -1376,6 +1414,8 @@ int main(int argc, char** argv) {
             f << "m4folder=" << host.m4Folder << "\n";
             f << "picogx_sd=" << host.picoGxSd << "\n";
             f << "picogx_last=" << host.picoGxLast << "\n";
+            f << "picogx_firmware=" << host.picoGxFirmware << "\n";
+            f << "picogx_enabled=" << (host.picoGxEnabled ? 1 : 0) << "\n";
             f << "m4net=" << (host.m4Network ? 1 : 0) << "\n";
             f << "m4netlan=" << (host.m4NetworkLan ? 1 : 0) << "\n";
             f << "multiface=" << (host.multifaceEnabled ? 1 : 0) << "\n";

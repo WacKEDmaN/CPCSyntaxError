@@ -88,6 +88,7 @@ jobs:
           cp build/cpcse build/cpcse-ctl "pkg/$name/"
           cp -r roms sounds docs "pkg/$name/"
           cp README.md LICENSE THIRD_PARTY_NOTICES.md "pkg/$name/"
+          cp assets/icon-256.png "pkg/$name/cpcse.png"
           printf '%s\n' \
             "CPCSyntaxError for Linux (x86_64)." \
             "" \
@@ -96,7 +97,8 @@ jobs:
             "  Fedora:        sudo dnf install SDL2 mesa-libGL" \
             "  Arch:          sudo pacman -S sdl2" \
             "" \
-            "Run ./cpcse from this folder. It finds roms/ and sounds/ beside it." > "pkg/$name/README-LINUX.txt"
+            "Run ./cpcse from this folder. It finds roms/ and sounds/ beside it." \
+            "cpcse.png is the program icon, for a desktop shortcut (Icon=)." > "pkg/$name/README-LINUX.txt"
           tar -C pkg -czf "$name.tar.gz" "$name"
           echo "PKG=$name.tar.gz" >> "$GITHUB_ENV"
       - uses: actions/upload-artifact@v4
@@ -161,6 +163,14 @@ jobs:
           # SDL_GetBasePath() is Contents/Resources in a bundle: the program finds roms/,
           # sounds/ and its settings there.
           cp -r roms sounds "$app/Contents/Resources/"
+          # The app icon: assets/icon-256.png (made from assets/icon.ico) as an .icns.
+          mkdir -p cpcse.iconset
+          for s in 16 32 128 256; do
+            sips -z $s $s assets/icon-256.png --out "cpcse.iconset/icon_${s}x${s}.png" > /dev/null
+            d=$((s * 2))
+            if [ $d -le 256 ]; then sips -z $d $d assets/icon-256.png --out "cpcse.iconset/icon_${s}x${s}@2x.png" > /dev/null; fi
+          done
+          iconutil -c icns cpcse.iconset -o "$app/Contents/Resources/cpcse.icns"
           dylib="$(ls sdl2/lib/libSDL2-2.0.0.dylib)"
           cp "$dylib" "$app/Contents/Frameworks/"
           install_name_tool -add_rpath "@executable_path/../Frameworks" "$app/Contents/MacOS/cpcse"
@@ -173,6 +183,7 @@ jobs:
             '  <key>CFBundleDisplayName</key><string>CPCSyntaxError</string>' \
             '  <key>CFBundleIdentifier</key><string>com.github.wackedman.cpcsyntaxerror</string>' \
             '  <key>CFBundleExecutable</key><string>cpcse</string>' \
+            '  <key>CFBundleIconFile</key><string>cpcse.icns</string>' \
             '  <key>CFBundlePackageType</key><string>APPL</string>' \
             "  <key>CFBundleShortVersionString</key><string>${version}</string>" \
             "  <key>CFBundleVersion</key><string>${version}</string>" \

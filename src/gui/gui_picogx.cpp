@@ -58,6 +58,12 @@ std::string relativeTo(const fs::path& root, const fs::path& p) {
 void GuiShell::picoGxPanel() {
     ImGui::Separator();
     sectionHeading("PicoGX (SD card cartridge)");
+    bool enabled = host.picoGxEnabled;
+    if (checkboxWrapped("Use a PicoGX", &enabled)) host.setPicoGxEnabled(enabled);
+    if (!host.picoGxEnabled) {
+        textWrappedDisabled("Off: the machine has no PicoGX. Turn it on to choose its SD card folder and launch from it.");
+        return;
+    }
     FlowRow row;
     if (row.smallButton(host.picoGxSd.empty() ? "Choose its SD card folder..." : "SD card folder..."))
         browser.openDir("PicoGX SD card folder", host.picoGxSd.empty() ? host.romDir : host.picoGxSd,
@@ -70,6 +76,23 @@ void GuiShell::picoGxPanel() {
     std::error_code ec;
     if (!fs::is_directory(root, ec)) { textWrappedDisabled("The SD card folder is not there: %s", host.picoGxSd.c_str()); return; }
     textWrappedDisabled("Card: %s", host.picoGxSd.c_str());
+
+    // The PicoGX's own menu: it is inside its firmware, which is not shipped here. The user's
+    // own .uf2 file (from the PicoGX releases) gives it.
+    {
+        FlowRow fw;
+        if (fw.smallButton(host.picoGxFirmware.empty() ? "Firmware (.uf2)..." : "Firmware..."))
+            browser.open("PicoGX firmware", host.picoGxFirmware.empty() ? host.picoGxSd : fs::u8path(host.picoGxFirmware).parent_path().u8string(),
+                         { ".uf2" }, [this](const std::string& p) { host.picoGxFirmware = p; });
+        ImGui::BeginDisabled(host.picoGxFirmware.empty());
+        if (fw.smallButton("Start the PicoGX menu")) host.startPicoGxMenu();
+        ImGui::EndDisabled();
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+            ImGui::SetTooltip("The PicoGX's own menu on the CPC screen, taken from its firmware file\n"
+                              "(github.com/Neo2003/PicoGX releases). Choose the firmware first.");
+        if (!host.picoGxFirmware.empty())
+            textWrappedDisabled("Firmware: %s", fs::u8path(host.picoGxFirmware).filename().u8string().c_str());
+    }
 
     if (host.picoGxActive()) {
         const PicoGX& p = *host.picoGx;

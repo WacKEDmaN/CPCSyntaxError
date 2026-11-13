@@ -641,6 +641,7 @@ void AssemblerWindow::loadSettings(const std::map<std::string, std::string>& ini
     it = find(key("highlight"));
     if (it == ini.end()) it = find("asm_highlight");
     if (it != ini.end()) highlight = std::atoi(it->second.c_str()) != 0;
+    if ((it = find(key("result_height"))) != ini.end()) resultHeight = std::clamp((float)std::atof(it->second.c_str()), 0.0f, 4000.0f);
     for (size_t k = 0; k < colours.size(); k++) {
         it = find(key("colour_") + asmTokenKey((AsmToken)k));
         if (it == ini.end()) it = find(std::string("asm_colour_") + asmTokenKey((AsmToken)k));
@@ -686,6 +687,7 @@ void AssemblerWindow::saveSettings(std::ostream& out) const {
     for (int i = 0; i < (int)tabs.size(); i++)
         if (tabs[(size_t)i].isMain && i != mainTab() && !tabPath(i).empty()) out << key("file") << "." << ++n << "=" << tabPath(i) << "\n";
     out << key("highlight") << "=" << (highlight ? 1 : 0) << "\n";
+    if (resultHeight > 0) out << key("result_height") << "=" << (int)resultHeight << "\n";
     if (lang == Language::C) {
         out << "asm_sdcc=" << ctools.sdccFolder << "\n";
         out << "asm_cpctelera=" << ctools.cpcteleraFolder << "\n";
@@ -1331,8 +1333,14 @@ void AssemblerWindow::draw(bool* open) {
     // ---- editor with a line-number gutter
     const ImGuiStyle& style = ImGui::GetStyle();
     const float lineH = ImGui::GetTextLineHeight();
-    const float bottomH = std::max(120.0f, ImGui::GetContentRegionAvail().y * 0.28f);
-    const float editorH = std::max(80.0f, ImGui::GetContentRegionAvail().y - bottomH);
+    // The editor, then a bar to drag, then the result part (resultHeight high).
+    const float splitH = std::max(6.0f, ImGui::GetTextLineHeight() * 0.4f);
+    const float spaceY = ImGui::GetStyle().ItemSpacing.y;
+    const float availY = ImGui::GetContentRegionAvail().y;
+    const float minResult = ImGui::GetFrameHeightWithSpacing() * 3;
+    float bottomH = resultHeight > 0 ? resultHeight : std::max(120.0f, availY * 0.28f);
+    bottomH = std::clamp(bottomH, minResult, std::max(minResult, availY - 80.0f - splitH - spaceY));
+    const float editorH = std::max(80.0f, availY - bottomH - splitH - spaceY);
     char digits[16]; std::snprintf(digits, sizeof(digits), "%d", std::max(lineCount, 999));
     const float gutterW = ImGui::CalcTextSize(digits).x + 12.0f;
 
@@ -1447,6 +1455,21 @@ void AssemblerWindow::draw(bool* open) {
         }
     }
 
+    // ---- the bar between the editor and the result: drag it up or down
+    {
+        ImGui::InvisibleButton("##resultsplit", ImVec2(-1, splitH));
+        const bool hot = ImGui::IsItemHovered() || ImGui::IsItemActive();
+        if (hot) ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeNS);
+        if (ImGui::IsItemActive() && ImGui::GetIO().MouseDelta.y != 0)
+            resultHeight = std::clamp(bottomH - ImGui::GetIO().MouseDelta.y, minResult, std::max(minResult, availY - 80.0f - splitH - spaceY));
+        if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) resultHeight = 0;   // back to the start value
+        const ImVec2 a = ImGui::GetItemRectMin(), b = ImGui::GetItemRectMax();
+        const float y = (a.y + b.y) * 0.5f;
+        ImGui::GetWindowDrawList()->AddLine(ImVec2(a.x, y), ImVec2(b.x, y),
+                                            ImGui::GetColorU32(ImGui::IsItemActive() ? ImGuiCol_SeparatorActive : hot ? ImGuiCol_SeparatorHovered : ImGuiCol_Separator),
+                                            hot ? 3.0f : 1.0f);
+    }
+
     // ---- result
     {
         FlowRow result;
@@ -1479,11 +1502,12 @@ void AssemblerWindow::draw(bool* open) {
             fitNextItemWidth(200, "##symfilter");
             ImGui::InputTextWithHint("##symfilter", "filter", symbolFilter, sizeof(symbolFilter));
             after().textDisabled("click a symbol to show it in the disassembly");
-            if (ImGui::BeginTable("##symtab", 2, ImGuiTableFlags_ScrollY | ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerV |
-                                                 ImGuiTableFlags_Sortable, ImVec2(0, 0))) {
+            // Resizable: drag the line between Name and Value (ImGui keeps the width in imgui.ini).
+            if (ImGui::BeginTable("##symbols", 2, ImGuiTableFlags_ScrollY | ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerV |
+                                                  ImGuiTableFlags_Sortable | ImGuiTableFlags_Resizable, ImVec2(0, 0))) {
                 ImGui::TableSetupScrollFreeze(0, 1);
-                ImGui::TableSetupColumn("Name", ImGuiTableColumnFlags_DefaultSort);
-                ImGui::TableSetupColumn("Value", ImGuiTableColumnFlags_WidthFixed, 80);
+                ImGui::TableSetupColumn("Name", ImGuiTableColumnFlags_DefaultSort | ImGuiTableColumnFlags_WidthStretch);
+                ImGui::TableSetupColumn("Value", ImGuiTableColumnFlags_WidthFixed, ImGui::CalcTextSize("Value  &FFFF (65535)").x);
                 ImGui::TableHeadersRow();
                 if (ImGuiTableSortSpecs* sort = ImGui::TableGetSortSpecs()) {
                     if (sort->SpecsDirty && sort->SpecsCount > 0) {
@@ -1510,7 +1534,7 @@ void AssemblerWindow::draw(bool* open) {
                         showInDisassembly(s.second & 0xffff);
                     ImGui::PopID();
                     ImGui::TableNextColumn();
-                    ImGui::Text("&%04X", s.second & 0xffff);
+                    ImGui::Text("&%04X (%d)", s.second & 0xffff, s.second & 0xffff);
                 }
                 ImGui::EndTable();
             }

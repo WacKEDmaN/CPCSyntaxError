@@ -65,6 +65,9 @@ public:
     // Mono (embedded) at 15 px times uiScale, and room between things.
     void applyStyle();
     float uiScale = 1.0f;
+    // os_windows in cpcse.ini: ImGui's multi-viewport (windows and tooltips in OS windows of
+    // their own). main.cpp reads it at start; changing it takes effect at the next start.
+    bool osWindows = true;
     void loadSettings(const std::map<std::string, std::string>& ini);
     void saveSettings(std::ostream& out) const;
 

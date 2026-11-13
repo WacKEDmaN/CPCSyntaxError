@@ -1,2 +1,5 @@
-// CPCSyntaxError's Windows resources: the manifest (cpcse.manifest; UTF-8 file names).
+// CPCSyntaxError's Windows resources: the manifest (cpcse.manifest; UTF-8 file names) and the
+// program icon (assets/icon.ico: Explorer, the task bar, shortcuts). The first icon resource is
+// the one Windows shows for the .exe.
 1 24 "cpcse.manifest"
+1 ICON "../../assets/icon.ico"

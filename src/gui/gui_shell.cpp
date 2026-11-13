@@ -120,6 +120,7 @@ void GuiShell::loadSettings(const std::map<std::string, std::string>& ini) {
     if (fp != ini.end()) fullscreenPictureOnly = std::atoi(fp->second.c_str()) != 0;
     auto us = ini.find("ui_scale");
     if (us != ini.end()) uiScale = std::clamp((float)std::atof(us->second.c_str()), 0.75f, 2.5f);
+    if (auto ow = ini.find("os_windows"); ow != ini.end()) osWindows = std::atoi(ow->second.c_str()) != 0;
     auto str = [&](const char* k, std::string& v) { auto i = ini.find(k); if (i != ini.end()) v = i->second; };
     str("csl_script", cslScript); str("csl_out", cslOut); str("csl_diskdir", cslDiskDir);
     auto ci = ini.find("csl_crtc"); if (ci != ini.end()) cslCrtc = std::atoi(ci->second.c_str());
@@ -138,6 +139,7 @@ void GuiShell::saveSettings(std::ostream& out) const {
     out << "timing_nops=" << (timingNops ? 1 : 0) << "\n";
     out << "gfx_window_scale=" << gfxWindowScale << "\n";
     out << "ui_scale=" << uiScale << "\n";
+    out << "os_windows=" << (osWindows ? 1 : 0) << "\n";
     out << "csl_script=" << cslScript << "\n" << "csl_out=" << cslOut << "\n"
         << "csl_diskdir=" << cslDiskDir << "\n" << "csl_crtc=" << cslCrtc << "\n";
     assembler->saveSettings(out);
@@ -1184,6 +1186,10 @@ void GuiShell::menuWindow() {
         ImGui::EndMenu();
     }
     ImGui::MenuItem("Status bar", nullptr, &showStatusBar);
+    ImGui::MenuItem("Windows can leave the main window", nullptr, &osWindows);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Windows and tooltips that do not fit open as windows of their own (takes effect at the next start).\n"
+                          "Turn it off if the picture flashes when a tooltip opens (seen on some Linux desktops).");
     if (ImGui::MenuItem("Reset layout")) {
         for (auto& p : panels) p.open = p.byDefault;
         resetLayout = true;
