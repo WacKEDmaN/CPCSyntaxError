@@ -177,6 +177,7 @@ private:
     void menuFile();
     void menuMachine();
     void machineProfileItems();      // Machine > Machine profiles
+    void machineProfileFolderQuestion();   // a profile that would change host folders: ask
     void menuMedia();
     void menuSection(const char* title, void (GuiShell::*section)(bool));
     void menuTools();

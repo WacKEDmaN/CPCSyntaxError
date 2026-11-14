@@ -101,6 +101,7 @@ void UPD765A::powerOn() {
     tracks = {};
     insertedAt = { -(1LL << 40), -(1LL << 40) };
     lastPoll = 0;
+    lastBusyAt = -(1LL << 40);
     resultAt = -1;
 }
 void UPD765A::restoreSnapshotState(const SnapshotState& state) {
@@ -154,6 +155,7 @@ bool UPD765A::ready(int drive) const {
     const size_t d = (size_t)(drive & 1);
     if (!drives[d] || motorSince < 0) return false;
     if (!motor) return false;
+    if (quickSpinUp) return true;
     return now - std::max(motorSince, insertedAt[d]) >= 2 * REVOLUTION_US;
 }
 
@@ -162,6 +164,7 @@ void UPD765A::advanceCycles(int cycles) {
     // microsecond; the rest below would do nothing)
     if (phase == IDLE && !seeks[0].busy && !seeks[1].busy && now + cycles - lastPoll < 2048) { now += cycles; return; }
     now += cycles;
+    if (phase != IDLE || seeks[0].busy || seeks[1].busy) lastBusyAt = now;
     for (int d = 0; d < 2; d++) {
         Seek& s = seeks[(size_t)d];
         if (s.busy && now >= s.doneAt) {
@@ -320,6 +323,8 @@ void UPD765A::sectorCommand(int opcode) {
     std::vector<std::pair<std::shared_ptr<Track>, size_t>> moved;
     std::vector<long long> starts;
     long long resultTime = -1;                              // set when it ends without a sector
+    const long long searchFrom = t;                         // (instant: see below)
+    long long firstIdAt = -1;
     for (int guard = 0; guard < 512; guard++) {
         if (!track || track->sectors.empty()) {
             o.st0 |= ST0_AT; o.st1 |= ST1_MA | ST1_ND;
@@ -347,6 +352,7 @@ void UPD765A::sectorCommand(int opcode) {
             break;
         }
         const Sector& s = track->sectors[found];
+        if (firstIdAt < 0) firstIdAt = foundAt;
         const long long dataAt = foundAt + (long long)(places[found].data - places[found].id) * BYTE_US;
         t = foundAt + (long long)(places[found].end - places[found].id) * BYTE_US;   // past its data field
         bool skipped = false;
@@ -374,6 +380,25 @@ void UPD765A::sectorCommand(int opcode) {
             break;
         }
         o.r = (o.r + step) & 0xff;
+    }
+    // Instant (quickSpinUp): a READ DATA of plain sectors (their IDs' CRC good, no status bits,
+    // one copy) does not wait for the disc to turn to the first one: the data starts at once,
+    // the sectors after it as far apart as on the disc, each byte 32 us after the last as
+    // always (a loader's own loop sees the bytes come as it would). A protection's sector,
+    // READ ID and the other commands keep the disc's own timing.
+    if (quickSpinUp && opcode == 0x06 && !moved.empty() && !starts.empty()) {
+        bool plain = true;
+        for (const auto& [tr, i] : moved) {
+            const Sector& s = tr->sectors[i];
+            plain = plain && !s.st1 && !s.st2 && s.data.size() == 1 && !idCrcBad(s);
+        }
+        // the wait until the first ID comes to the head goes; the ID field and the gap to the
+        // data stay (a loader's loop needs that time: data 32 us after the command overran)
+        const long long shift = firstIdAt - searchFrom;
+        if (plain && shift > 0) {
+            for (long long& s : starts) s -= shift;
+            if (resultTime >= 0) resultTime -= shift;
+        }
     }
     outcome = o;
     resultAt = resultTime;
@@ -475,7 +500,7 @@ void UPD765A::execute() {
         if (opcode == 0x07 && steps > 77) { steps = 77; target = from - 77; st0 |= ST0_AT | 0x10; }   // EC
         Seek& s = seeks[(size_t)driveIndex];
         s.busy = true; s.target = target; s.st0 = st0;
-        s.doneAt = now + (long long)steps * stepRateMs * 1000;
+        s.doneAt = quickSpinUp ? now : now + (long long)steps * stepRateMs * 1000;   // instant: there at once
         if (traceFdc()) std::fprintf(stderr, "FDC            seek drive %d from %d to %d: %d steps, done at %lld\n",
                                      driveIndex, from, target, steps, s.doneAt);
         phase = IDLE;

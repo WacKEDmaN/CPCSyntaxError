@@ -102,6 +102,14 @@ public:
     std::array<bool, 2> wasReady{ false, false };
     std::array<long long, 2> insertedAt{ -(1LL << 40), -(1LL << 40) };   // a disc turns from when it went in
     long long lastPoll = 0;
+    // Disc turbo (the host): the controller had a command or a seek running this recently.
+    // A program reads a file sector after sector with short gaps; holdUs covers the gaps.
+    long long lastBusyAt = -(1LL << 40);
+    // Instant disc loading (the host): a drive is READY as soon as its motor runs, not after
+    // two turns of the disc, and a SEEK is there at once (AMSDOS's own motor and seek waits
+    // are cut short too: GX4000::amsdosTrap).
+    bool quickSpinUp = false;
+    bool busyWithin(long long holdUs) const { return phase != 0 /* idle */ || seeks[0].busy || seeks[1].busy || now - lastBusyAt < holdUs; }
 
     UPD765A() { reset(); }
     void reset();

@@ -379,6 +379,7 @@ struct DevServer::Impl {
         std::string tool;
         ApiClient api;             // the API's deferred answer goes here (its socket is unused)
     };
+    static constexpr size_t MAX_CLIENTS = 32;   // connections at once, per server
     net::Socket mcpListener = net::NO_SOCKET;
     int mcpPortNow = 0;
     std::vector<McpClient> mcpClients;
@@ -1667,6 +1668,7 @@ struct DevServer::Impl {
         for (;;) {
             net::Socket s = net::acceptClient(mcpListener);
             if (s == net::NO_SOCKET) break;
+            if (mcpClients.size() >= MAX_CLIENTS) { net::closeSocket(s); continue; }   // a program opening connections without end
             McpClient c;
             c.sock = s;
             mcpClients.push_back(c);
@@ -1743,6 +1745,7 @@ struct DevServer::Impl {
         for (;;) {
             net::Socket s = net::acceptClient(apiListener);
             if (s == net::NO_SOCKET) break;
+            if (apiClients.size() >= MAX_CLIENTS) { net::closeSocket(s); continue; }   // a program opening connections without end
             ApiClient c;
             c.sock = s;
             apiClients.push_back(c);

@@ -1,5 +1,6 @@
 // CPCSyntaxError — Locomotive BASIC decoder.
 #include "basic.h"
+#include <cmath>
 #include <cstdio>
 #include <cctype>
 #include <cstdlib>
@@ -163,9 +164,16 @@ static char upperChar(char c) { return (c >= 'a' && c <= 'z') ? (char)(c - 32) :
 // BASIC's five-byte real: a 32-bit mantissa (its top bit, always 1, holds the sign) and an
 // exponent biased by 128; the value is 0.1mmm... x 2^(exponent-128). 0 is all zeros.
 static void putReal(Bytes& out, double v) {
-    if (v == 0.0) { for (int i = 0; i < 5; i++) out.push_back(0); return; }
+    if (v == 0.0 || std::isnan(v)) { for (int i = 0; i < 5; i++) out.push_back(0); return; }
     const bool negative = v < 0;
     v = std::fabs(v);
+    // BASIC's range: exponent bytes 1-255, 2^-128 to just under 2^127. Typed text can say
+    // more ("1E999" is infinity, and (int) of it is undefined): the largest or 0 then.
+    if (std::isinf(v) || v >= 1.7014118e38) {
+        out.push_back(0xff); out.push_back(0xff); out.push_back(0xff); out.push_back(negative ? 0xff : 0x7f); out.push_back(0xff);
+        return;
+    }
+    if (v < 2.9387359e-39) { for (int i = 0; i < 5; i++) out.push_back(0); return; }
     int e = (int)std::floor(std::log2(v));
     double f = v / std::ldexp(1.0, e);                 // 1 <= f < 2
     if (f >= 2.0) { f /= 2.0; e++; }
@@ -246,6 +254,7 @@ Bytes BasicDecoder::tokenizeLine(const std::string& text, std::string& error) co
             } else if (!real && v <= 9) out.push_back((uint8_t)(0x0e + (int)v));
             else if (!real && v <= 255) { out.push_back(0x19); out.push_back((uint8_t)v); }
             else if (!real && v <= 32767) { out.push_back(0x1a); out.push_back((uint8_t)((int)v & 0xff)); out.push_back((uint8_t)((int)v >> 8)); }
+            else if (!(v < 1.7014118e38)) out.insert(out.end(), num.begin(), num.end());   // past BASIC's range: BASIC keeps the text ("1E999")
             else { out.push_back(0x1f); putReal(out, v); }
             continue;
         }

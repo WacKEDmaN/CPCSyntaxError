@@ -124,9 +124,25 @@ static std::string asUtf8(const std::string& s) {
     return out;
 }
 
+static bool validLongName(const std::string& leaf);
+
+// A real path is "/" and names joined by '/', each one a name the folder can hold. Anything
+// else ('\', "..", a drive or stream ':', a device such as CON) could reach outside the
+// folder, so it names nothing: the empty path, which every file operation refuses. (A CPC
+// program's SET_FILE_NAME "..\..\X" once reached here unresolved and wrote above the folder.)
 fs::path M4Storage::host(const std::string& realPath) const {
     fs::path p(root);
-    if (realPath.size() > 1) p /= fs::u8path(asUtf8(realPath.substr(1)));
+    if (realPath.empty() || realPath == "/") return p;
+    if (realPath[0] != '/') return fs::path();
+    size_t a = 1;
+    while (a <= realPath.size()) {
+        size_t b = realPath.find('/', a);
+        if (b == std::string::npos) b = realPath.size();
+        const std::string part = realPath.substr(a, b - a);
+        if (!validLongName(part)) return fs::path();
+        p /= fs::u8path(asUtf8(part));
+        a = b + 1;
+    }
     return p;
 }
 

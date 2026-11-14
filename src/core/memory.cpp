@@ -46,6 +46,8 @@ void GXMemory::reset(bool clearRam) {
 void GXMemory::loadCartridge(const std::vector<Bytes>& banks) {
     cartridge.assign(BANK_COUNT, Bytes{});
     for (int i = 0; i < BANK_COUNT; i++) if (i < (int)banks.size() && !banks[i].empty()) cartridge[i] = banks[i];
+    // every page is read as [address & 0x3fff]: a short one (from any source) is filled out
+    for (Bytes& b : cartridge) if (!b.empty() && b.size() != 0x4000) b.resize(0x4000, 0xff);
     populatedBanks = 0;
     for (const Bytes& b : cartridge) if (!b.empty()) populatedBanks++;
     remap();

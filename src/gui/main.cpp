@@ -290,7 +290,7 @@ int main(int argc, char** argv) {
     // uses, with no window. --shot out.bmp [--model id] [--sna f] [--crtc N] [--gate-array 40007|40008|40010]
     // [--frames N] [--beam] [--gfx9000] [--v9990-shot out.bmp] (the GFX9000's own monitor).
     {
-        std::string picoGxSd, picoGxFile, picoGxMenu; std::string shot, modelId, snaPath, saveSnaPath, dumpRamPath, diskPath, cartPath, tapePath, typeStr, keysStr; int croGroup = -1, wantCrtc = -1, wantGa = 0, frames = 200, f1at = -1; bool f1first = false; int wantRam = -1, seq = 0; bool beam = false, diag = false, gfx9000 = false, opl4 = false, playcity = false; std::string v9990Shot, video9000Shot, m4Folder, ideFolder, mouseScript, mouseInterface, cbuildPath, cbuildCpct, cbuildSdcc, wavPath, speechKind, mp3Card, dacType; int cbuildLoc = -1; bool cbuildForce = false; std::string cbuildZ88dk, sf3Usb, sf3Sd, hd20Image; int sf3RomBank = -2; bool cbuildSccz80 = false; bool cbuildUseZ88dk = false; std::string albireoArg[2], albireoUsbArg[2], albireoSerialArg, albireoSwitchArg; bool sf2 = false, sf3 = false, xmass = false, multiface = false, diskWriteBack = false; int monitorHHold = std::getenv("CPCSE_MONITOR_HHOLD") ? std::atoi(std::getenv("CPCSE_MONITOR_HHOLD")) : 0; int monitorVHold = std::getenv("CPCSE_MONITOR_VHOLD") ? std::atoi(std::getenv("CPCSE_MONITOR_VHOLD")) : 0; std::vector<std::string> xroms; std::string serialLine, recordTape, tapeFast, recordPath, recordFormat = "mjpeg", recordSource = "shown", gfx9000Monitor; bool rasterOverlayOn = false; bool z80Cmos = false, gx4000Ram128 = false, plusExpansionClassic = true; std::string monitorSet; TubeKnobs monitorKnobs; std::array<int, 3> monitorIntensity = TubeKnobs().intensity;
+        std::string picoGxSd, picoGxFile, picoGxMenu; std::string shot, modelId, snaPath, saveSnaPath, dumpRamPath, diskPath, cartPath, tapePath, typeStr, keysStr; int croGroup = -1, wantCrtc = -1, wantGa = 0, frames = 200, f1at = -1; bool f1first = false; int wantRam = -1, seq = 0; bool beam = false, diag = false, gfx9000 = false, opl4 = false, playcity = false; std::string v9990Shot, video9000Shot, m4Folder, ideFolder, mouseScript, mouseInterface, cbuildPath, cbuildCpct, cbuildSdcc, wavPath, speechKind, mp3Card, dacType; int cbuildLoc = -1; bool cbuildForce = false; std::string cbuildZ88dk, sf3Usb, sf3Sd, hd20Image; int sf3RomBank = -2; bool cbuildSccz80 = false; bool cbuildUseZ88dk = false; std::string albireoArg[2], albireoUsbArg[2], albireoSerialArg, albireoSwitchArg; bool sf2 = false, sf3 = false, xmass = false, multiface = false, diskWriteBack = false, discInstant = false; int monitorHHold = std::getenv("CPCSE_MONITOR_HHOLD") ? std::atoi(std::getenv("CPCSE_MONITOR_HHOLD")) : 0; int monitorVHold = std::getenv("CPCSE_MONITOR_VHOLD") ? std::atoi(std::getenv("CPCSE_MONITOR_VHOLD")) : 0; std::vector<std::string> xroms; std::string serialLine, recordTape, tapeFast, recordPath, recordFormat = "mjpeg", recordSource = "shown", gfx9000Monitor; bool rasterOverlayOn = false; bool z80Cmos = false, gx4000Ram128 = false, plusExpansionClassic = true; std::string monitorSet; TubeKnobs monitorKnobs; std::array<int, 3> monitorIntensity = TubeKnobs().intensity;
         for (int i = 1; i < argc; i++) { std::string a = argv[i];
             if (a == "--shot" && i + 1 < argc) shot = argv[++i];
             else if (a == "--ram" && i + 1 < argc) wantRam = std::atoi(argv[++i]);
@@ -314,6 +314,7 @@ int main(int argc, char** argv) {
             else if (a == "--tape" && i + 1 < argc) tapePath = argv[++i];   // .cdt/.tzx/.wav in the deck
             else if (a == "--record-tape" && i + 1 < argc) recordTape = argv[++i];   // a blank tape, REC down; saved here at the end
             else if (a == "--tape-fast" && i + 1 < argc) tapeFast = argv[++i];   // fast loading: a baud rate, instant, or off
+            else if (a == "--disc-instant") discInstant = true;                  // firmware file loads into memory at once
             else if (a == "--raster-overlay") rasterOverlayOn = true;   // the raster timing overlay drawn on the picture
             else if (a == "--type" && i + 1 < argc) typeStr = argv[++i];   // typed after boot (\\n = Enter)
             else if (a == "--keys" && i + 1 < argc) keysStr = argv[++i];   // tap after F1 loads: e.g. "Space" launches PD ball
@@ -387,6 +388,7 @@ int main(int argc, char** argv) {
             if (xmass) host.symbifaceModule = "xmass";
             if (multiface) host.multifaceEnabled = true;
             host.diskWriteBack = diskWriteBack;
+            if (discInstant) host.discInstantLoad = true;
             if (tapeFast == "off") host.tapeFastLoad = false;
             else if (tapeFast == "instant") host.tapeInstantLoad = true;
             else if (!tapeFast.empty())
@@ -1016,6 +1018,8 @@ int main(int argc, char** argv) {
     host.tapeInstantLoad = geti("tapeinstant", 0) != 0;
     host.tapeFastBaud   = std::clamp(geti("tapefastbaud", host.tapeFastBaud), (int)CPCTapeDrive::FAST_BAUD_MIN, (int)CPCTapeDrive::FAST_BAUD_MAX);
     host.tapeTurbo      = std::clamp(geti("tapeturbo", 1), 1, (int)EmuHost::TAPE_TURBO_UNLIMITED);
+    host.discTurbo      = std::clamp(geti("discturbo", 1), 1, (int)EmuHost::TAPE_TURBO_UNLIMITED);
+    host.discInstantLoad = geti("discinstant", 0) != 0;
     host.beamRenderer   = geti("beam", 0) != 0;
     {
         const std::string rf = gets("recordformat", "mjpeg");
@@ -1068,12 +1072,17 @@ int main(int argc, char** argv) {
 
     // --machine <name or file>: a machine profile (emuhost.h) for this session, after the
     // settings' machine has booted. A name is looked for in the profiles folder.
+    // Its host folders only with --machine-folders (a command line cannot ask; see emuhost.h).
+    bool profileFolders = false;
+    for (int i = 1; i < argc; i++) if (std::string(argv[i]) == "--machine-folders") profileFolders = true;
     for (int i = 1; i + 1 < argc; i++) {
         if (std::string(argv[i]) != "--machine") continue;
         const std::string found = host.findMachineProfile(argv[i + 1]);
         std::string why;
         if (found.empty()) host.status = std::string("No machine profile ") + argv[i + 1];
-        else if (!host.loadMachineProfile(found, why)) host.status = why;
+        else if (!host.loadMachineProfile(found, why, profileFolders)) host.status = why;
+        else if (!profileFolders && !host.machineProfileFolders(found).empty())
+            host.status += "  (its folders not taken: --machine-folders takes them)";
     }
 
     // External development (devserver.h): the servers the settings ask for, then the
@@ -1241,9 +1250,11 @@ int main(int argc, char** argv) {
         bool ran = false;
         int framesThisIter = 0;
         // tape turbo: faster while the tape moves (unlimited at the slider's top)
-        const bool tapeFast = host.tapeTurboActive();
-        const bool unlimited = host.turbo || (tapeFast && host.tapeTurbo >= EmuHost::TAPE_TURBO_UNLIMITED);
-        const float speed = host.speed * (tapeFast ? (float)host.tapeTurbo : 1.0f);
+        // disc turbo: the same while the disc controller works
+        const bool tapeFast = host.tapeTurboActive(), discFast = host.discTurboActive();
+        const int loadFactor = std::max(tapeFast ? host.tapeTurbo : 1, discFast ? host.discTurboFactor() : 1);
+        const bool unlimited = host.turbo || loadFactor >= EmuHost::TAPE_TURBO_UNLIMITED;
+        const float speed = host.speed * (float)loadFactor;
         auto feedAudio = [&]() {
             if (audioDev && !host.audioOut.empty() && !unlimited && speed <= 1.5f &&
                 SDL_GetQueuedAudioSize(audioDev) < (Uint32)(host.sampleRate * 2 * sizeof(int16_t) / 5))
@@ -1463,6 +1474,8 @@ int main(int argc, char** argv) {
             f << "tapeinstant=" << (host.tapeInstantLoad ? 1 : 0) << "\n";
             f << "tapefastbaud=" << host.tapeFastBaud << "\n";
             f << "tapeturbo=" << host.tapeTurbo << "\n";
+            f << "discturbo=" << host.discTurbo << "\n";
+            f << "discinstant=" << (host.discInstantLoad ? 1 : 0) << "\n";
             f << "beam=" << (host.beamRenderer ? 1 : 0) << "\n";
             f << "recordformat=" << host.recordFormat << "\n";
             f << "ffmpeg=" << host.ffmpegPath << "\n";

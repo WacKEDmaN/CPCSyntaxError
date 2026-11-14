@@ -38,6 +38,11 @@ static const uint8_t USB_NAK = 0x2a, USB_STALL = 0x2e, USB_TIMEOUT = 0x20;
 static const uint8_t IC_VERSION = 0x44;
 // The CPC's clock: machine cycles at 4 MHz.
 static const long long CYCLES_PER_MS = 4000;
+// The largest file a program can make through the chip here. Its lengths are the program's
+// own (SET_FILE_SIZE, a directory entry it writes, BYTE_WRITE past the end), and the file is
+// held in memory: a length of FFFFFFFFH asked for 4 GB. A file larger than this is DISK FULL.
+static const uint32_t MAX_FILE_BYTES = 256u << 20;
+static uint32_t capFileSize(uint32_t v) { return std::min(v, MAX_FILE_BYTES); }
 
 Ch376::~Ch376() { flush(); }
 
@@ -298,7 +303,7 @@ void Ch376::execute() {
             break;
         }
         case WRITE_VAR32:
-            if (in[0] == 0x68 && opened == Open::File) sizeVar = le32(in, 1);   // SET_FILE_SIZE (§5.8)
+            if (in[0] == 0x68 && opened == Open::File) sizeVar = capFileSize(le32(in, 1));   // SET_FILE_SIZE (§5.8)
             break;
         case DELAY_100US: delayUntil = now + CYCLES_PER_MS / 10; break;
         case SET_USB_ADDR: hostAddress = in[0] & 0x7f; break;
@@ -734,7 +739,9 @@ void Ch376::fileCreate() {
     M4Entry e;
     std::string real = resolve(dir, leaf, &e);
     if (!real.empty() && e.dir) { complete(ERR_FOUND_NAME); return; }
-    if (real.empty()) real = join(dir, shortForm(leaf));
+    // a new name through the folder's own checks (a name with '\', "..", ':' or a device's
+    // name is refused: the program's name must not reach outside the folder)
+    if (real.empty() && m->fs->resolveForCreate(join(dir, shortForm(leaf)), real) != M4_FR_OK) { complete(ERR_MISS_FILE); return; }
     // §5.20: an existing file is deleted first; "the default file length is 1".
     content.assign(1, 0);
     if (m->fs->writeFile(real, content) != M4_FR_OK) { complete(ERR_DISK_FULL); return; }
@@ -813,7 +820,7 @@ void Ch376::dirInfoSave() {
     if (opened != Open::File) { complete(ERR_FILE_CLOSE); return; }
     Medium* m = medium();
     if (!m) { complete(ERR_DISK_DISCON); return; }
-    dirLength = sizeVar = (uint32_t)dirInfo[28] | (uint32_t)dirInfo[29] << 8 | (uint32_t)dirInfo[30] << 16 | (uint32_t)dirInfo[31] << 24;
+    dirLength = sizeVar = capFileSize((uint32_t)dirInfo[28] | (uint32_t)dirInfo[29] << 8 | (uint32_t)dirInfo[30] << 16 | (uint32_t)dirInfo[31] << 24);
     saveFile();
     const std::string up = M4Storage::parentOf(openPath), dir = up.empty() ? "/" : up;
     if (dirInfo[0] == 0xe5) {
@@ -836,7 +843,10 @@ void Ch376::dirInfoSave() {
         M4Entry other;
         const std::string clash = resolve(dir, wanted, &other);
         if (!clash.empty() && M4Storage::lower(clash) != M4Storage::lower(openPath)) m->fs->remove(clash);
-        if (m->fs->rename(openPath, join(dir, wanted)) == M4_FR_OK) openPath = join(dir, wanted);
+        if (m->fs->rename(openPath, join(dir, wanted)) == M4_FR_OK) {
+            const std::string moved = m->fs->find(join(dir, wanted));   // where it really is now
+            if (!moved.empty()) openPath = moved;
+        }
     }
     complete(USB_INT_SUCCESS);
 }
@@ -854,8 +864,10 @@ void Ch376::dirCreate() {
     std::string real = resolve(dir, leaf, &e);
     if (!real.empty() && !e.dir) { complete(ERR_FOUND_NAME); return; }   // §5.32
     if (real.empty()) {
-        real = join(dir, shortForm(leaf));
-        if (m->fs->makeDir(real) != M4_FR_OK) { complete(ERR_DISK_FULL); return; }
+        const std::string wanted = join(dir, shortForm(leaf));
+        if (m->fs->makeDir(wanted) != M4_FR_OK) { complete(ERR_DISK_FULL); return; }
+        real = m->fs->find(wanted);                   // the folder's own path for it
+        if (real.empty()) { complete(ERR_DISK_FULL); return; }
     }
     cwd = real; opened = Open::Dir; openPath = real;
     sizeVar = 0xffffffffu;
@@ -902,6 +914,7 @@ void Ch376::byteReadStep() {
 void Ch376::byteWriteStep() {
     if (remaining == 0) { xfer = Xfer::None; complete(USB_INT_SUCCESS); return; }
     const uint32_t n = std::min<uint32_t>(remaining, 255u);
+    if ((uint64_t)pointer + n > MAX_FILE_BYTES) { xfer = Xfer::None; remaining = 0; complete(ERR_DISK_FULL); return; }
     writeAt = pointer;
     reqLen = (int)n;
     reqGot = 0;
@@ -935,6 +948,7 @@ void Ch376::secRead(int count, bool write) {
     uint32_t allowed;
     if (write) {
         allowed = (uint32_t)count;
+        if ((uint64_t)pointer + (uint64_t)allowed * 512 > MAX_FILE_BYTES) { complete(ERR_DISK_FULL); return; }
         const uint32_t end = pointer + allowed * 512;
         if (end > sizeVar) { sizeVar = end; content.resize(end, 0); }
         dirLength = std::max(dirLength, sizeVar);

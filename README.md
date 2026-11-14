@@ -75,7 +75,8 @@ It runs on Windows, Linux and macOS. It has a cycle-level model of the chips of 
   file: the model, RAM, chips, keyboard, monitor, ROMs and every expansion with its settings,
   and if you want, the discs, tape and cartridge. Click a profile to build that machine again.
   An expansion that the profile does not name is removed. Profiles are kept in the `machines`
-  folder beside the program.
+  folder beside the program. A profile that names other folders for the cards (M4, IDE,
+  Albireo, SYMBiFACE III, HD20) asks first: a program on the CPC can write to those folders.
 
 ### Discs and tapes
 
@@ -90,6 +91,14 @@ It runs on Windows, Linux and macOS. It has a cycle-level model of the chips of 
   - A seek takes the step rate that the program sets.
   - The drive is ready when the disc turns at full speed.
   - A program that is too slow for the bytes gets an overrun, as on a real CPC.
+- **Fast disc loading** (Discs window, Media menu; both off by default):
+  - **Turbo**: while the disc drive works, the full CPC runs faster, up to 20 times or the
+    maximum speed of your computer. All loaders work, protected loaders too.
+  - **Instant loading**: the files and sectors that AMSDOS reads (`LOAD`, `RUN"`, `CAT`,
+    `|CPM`, and loaders that use AMSDOS) go into memory at once, with no motor or seek wait.
+    Loaders that use the disc controller themselves get their sectors without a wait for the
+    disc to turn. Protected sectors keep the timing of the disc. This works with AMSDOS on the
+    464, 664, 6128 and the Plus, and with ParaDOS.
 - **The tape deck** is in the Tape window and in Media → Tape. It has a counter with a reset,
   the time and the block of the tape, and a list of the blocks. Its buttons are rewind, back a
   block, play, record, pause, stop, fast forward and eject. It reads CDT, TZX, TAP and WAV.
@@ -424,7 +433,8 @@ joystick: switch it off to use them as the CPC's cursor keys, CONTROL and COPY.
 ## Command line
 
 `cpcse.exe --roms <folder>` starts the emulator with another ROM folder.
-`cpcse.exe --machine <name or file>` starts it with a machine profile.
+`cpcse.exe --machine <name or file>` starts it with a machine profile. It keeps your folders
+for the cards; add `--machine-folders` to use the folders of the profile.
 [External debugging](#external-debugging) shows the options `--gdb`, `--api`, `--load`,
 `--watch`, `--run`, `--reset`, `--command` and `--symbols`. It also takes the `-i`, `-o`, `-s`
 and `-O` options TRSE passes, so TRSE can run CPC programs in it
@@ -436,7 +446,7 @@ A headless screenshot mode is available for scripts:
 cpcse.exe --shot out.bmp --model cpc6128 --frames 200 [--disk game.dsk] [--type "RUN\"GAME\n"]
           [--cart file.cpr] [--tape file.cdt] [--sna file.sna] [--savesna out.sna]
           [--crtc 0-4] [--gate-array 40007|40008|40010] [--beam] [--ram 64-4160]
-          [--disk-writeback] [--record-tape out.cdt] [--tape-fast <baud>|instant|off] [--raster-overlay]
+          [--disk-writeback] [--record-tape out.cdt] [--tape-fast <baud>|instant|off] [--disc-instant] [--raster-overlay]
           [--hhold -79..79] [--vhold -50..50]
           [--m4 <folder>] [--multiface] [--sf2] [--sf3] [--xmass] [--ide <folder>] [--xrom <slot>=<rom file>]
           [--mouse-interface amx|kempston|multiplay-a|multiplay-b] [--cro-group <n>]
@@ -470,6 +480,7 @@ cpcse.exe --shot out.bmp --model cpc6128 --frames 200 [--disk game.dsk] [--type 
   `--albireo-switches` sets its DIP switches S1 to S4 (four digits 0 or 1, default `1100`).
 - `--tape-fast` sets the fast loading of the tape: a speed in baud, `instant`, or `off`. At
   the end, the emulator prints the decision for each block.
+- `--disc-instant` sets instant disc loading on.
 - `--mouse` runs a small script after all the other steps. The commands are: `w` (wait
   frames), `m` (move the mouse), `c` (click), `d` (double-click), `j` (hold the joystick,
   `j<bits>,<frames>`), `t` (type text), `k` (tap a key) and `s` (save a screenshot). This is

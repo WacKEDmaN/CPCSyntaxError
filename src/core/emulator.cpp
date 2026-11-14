@@ -30,6 +30,7 @@
 #include "monitor_model.h"
 #include "monitor_renderer.h"
 #include "lightgun.h"
+#include "dsk_edit.h"
 
 namespace cpcse {
 
@@ -1425,6 +1426,139 @@ bool GX4000::motorStartWaitTrap() {
     return true;
 }
 
+// AMSDOS's READ SECTOR (&C666 in AMSDOS 0.5 and the Plus's AMSDOS, and in ParaDOS 1.2: the
+// RSX &84, the CP/M BIOS jump at &C03C, and AMSDOS's own directory and file reads all call it).
+// Entry HL = where to, E = drive, D = track, C = sector ID. It turns the motor on (waiting for
+// the disc to come up to speed), seeks, and sends READ DATA (&66) for C=D, H=0, R=C, N=2;
+// its exit restores BC, DE, HL and gives A = 0 and carry set. Here, when the disc has that
+// sector once, as a plain sector (its ID as asked, 512 bytes, no status bits, one copy), its
+// bytes go to HL at once and the routine returns as it would. Anything else (no disc, a
+// protection's sector, drive bit 2: a second side) goes to the real controller.
+void GX4000::amsdosReadSectorTrap() {
+    static const uint8_t sign[] = { 0xcd, 0x00, 0xc9, 0x3e, 0x66, 0x06, 0x10, 0x22, 0x62, 0xbe };
+    for (int i = 0; i < (int)sizeof(sign); i++)
+        if (i != 1 && (memory->readMapped(0xc666 + i) & 0xff) != sign[i]) return;
+    if (cpu->halted || !fdc || !hasFdc || cpu->e > 1) return;
+    const std::shared_ptr<Disk> disk = fdc->drives[(size_t)cpu->e];
+    if (!disk) return;
+    const int track = cpu->d, id = cpu->c;
+    if (track >= (int)disk->trackData.size() || disk->trackData[(size_t)track].empty() || !disk->trackData[(size_t)track][0]) return;
+    const Sector* found = nullptr;
+    for (const Sector& s : disk->trackData[(size_t)track][0]->sectors) {
+        if (s.r != id) continue;
+        if (found) return;                               // the same ID twice: the controller decides
+        found = &s;
+    }
+    if (!found || found->c != track || found->h != 0 || found->n != 2 || found->st1 || found->st2 ||
+        found->data.size() != 1 || found->data[0].size() < 512) return;
+    const int to = cpu->h << 8 | cpu->l;
+    for (int i = 0; i < 512; i++) memory->write((to + i) & 0xffff, found->data[0][(size_t)i]);
+    discInstantSectors++;
+    static const bool trace = std::getenv("CPCSE_TRACE_INSTANT") != nullptr;
+    if (trace && std::getenv("CPCSE_TRACE_SECTORS"))
+        std::fprintf(stderr, "INSTANT SECTOR at %.3f s: drive %d track %d sector &%02X to &%04X\n", machineCycles / 4000000.0, cpu->e, track, id, to);
+    cpu->a = 0;
+    cpu->f |= 0x01;
+    cpu->pc = (memory->readMapped(cpu->sp) & 0xff) | (memory->readMapped((cpu->sp + 1) & 0xffff) & 0xff) << 8;
+    cpu->sp = (cpu->sp + 2) & 0xffff;
+}
+
+// Instant disc loading: see emulator.h (discInstant).
+void GX4000::amsdosTrap() {
+    const int pc = cpu->pc & 0xffff;
+    auto word = [&](int a) { return (memory->readMapped(a & 0xffff) & 0xff) | (memory->readMapped((a + 1) & 0xffff) & 0xff) << 8; };
+    // CAS IN OPEN returns: the header AMSDOS read, and the file's length
+    if (amsdosOpen.returnPc >= 0 && pc == amsdosOpen.returnPc && (cpu->sp & 0xffff) == ((amsdosOpen.sp + 2) & 0xffff)) {
+        amsdosOpen.returnPc = -1;
+        amsdosOpen.open = (cpu->f & 0x01) != 0;
+        if (amsdosOpen.open) {
+            const int at = cpu->h << 8 | cpu->l;
+            amsdosOpen.header.assign(128, 0);
+            for (int i = 0; i < 128; i++) amsdosOpen.header[(size_t)i] = (uint8_t)memory->readMapped((at + i) & 0xffff);
+            amsdosOpen.length = cpu->b << 8 | cpu->c;
+        }
+        return;
+    }
+    if (pc == 0xc666) { amsdosReadSectorTrap(); return; }
+    // AMSDOS's motor start: OUT &FA7E,1, then a ticker event (block &BE67, its count at
+    // &BE69) toggles &BE5F after the motor-on time (&BE44, about a second), and the loop
+    // LD A,(&BE5F) / OR A / JR Z,loop waits for it (&C9A0 in AMSDOS 0.5 and ParaDOS 1.2,
+    // &CA02 in the Plus's). Instant: the count is cut to 1, so the event comes on the next
+    // tick (1/50 s). The firmware's own event does the rest, as it would.
+    if (pc == 0xc9a0 || pc == 0xca02) {
+        static const uint8_t loop[] = { 0x3a, 0x5f, 0xbe, 0xb7, 0x28, 0xfa };
+        for (int i = 0; i < (int)sizeof(loop); i++) if ((memory->readMapped(pc + i) & 0xff) != loop[i]) return;
+        if ((memory->readMapped(0xbe5f) & 0xff) != 0) return;
+        if (word(0xbe69) > 1) { memory->write(0xbe69, 1); memory->write(0xbe6a, 0); }
+        return;
+    }
+    // AMSDOS's seek wait (&C7C7 in AMSDOS 0.5 and ParaDOS 1.2, &C7F3 in the Plus's): A steps
+    // of the step time (&BE4A ms), then the head settle time (&BE49 ms), counted in a 1 ms
+    // loop; then SENSE INTERRUPT STATUS. Instant: the count is skipped (the controller's
+    // seek is there at once: UPD765A::quickSpinUp) and it goes on at the SENSE.
+    if (pc == 0xc7c7 || pc == 0xc7f3) {
+        static const uint8_t wait[] = { 0xf5, 0x3a, 0x4a, 0xbe, 0xcd, 0x00, 0x00, 0xf1, 0x3d, 0x20, 0xf5,
+                                        0x3a, 0x49, 0xbe, 0xcd, 0x00, 0x00, 0x3e, 0x08, 0xcd };
+        for (int i = 0; i < (int)sizeof(wait); i++)
+            if (i != 5 && i != 6 && i != 15 && i != 16 && (memory->readMapped(pc + i) & 0xff) != wait[i]) return;
+        if (!fdc || !fdc->quickSpinUp) return;
+        cpu->pc = (pc + 0x11) & 0xffff;                // LD A,&08 (SENSE INTERRUPT STATUS)
+        return;
+    }
+    if (pc != 0xbc77 && pc != 0xbc7a && pc != 0xbc7d && pc != 0xbc83) return;
+    if ((memory->readMapped(pc) & 0xff) != 0xdf || cpu->halted) return;   // not AMSDOS's entry
+    if (pc == 0xbc77) {                                  // OPEN: watch for its return
+        amsdosOpen = AmsdosOpen{};
+        amsdosOpen.returnPc = word(cpu->sp);
+        amsdosOpen.sp = cpu->sp & 0xffff;
+        return;
+    }
+    if (pc != 0xbc83) { amsdosOpen = AmsdosOpen{}; return; }   // CLOSE or ABANDON
+    if (!amsdosOpen.open) return;
+    const AmsdosOpen opened = amsdosOpen;
+    amsdosOpen = AmsdosOpen{};
+    const auto want = parseAmsdosHeader(opened.header);
+    if (!want || !fdc) return;                           // no header: AMSDOS reads it itself
+    // The file with this header on the discs in drives A and B. Two with the same header but
+    // other bytes: AMSDOS reads it itself (it knows which drive it opened).
+    Bytes data;
+    std::string name;
+    int found = 0;
+    for (int d = 0; d < 2; d++) {
+        const std::shared_ptr<Disk> disk = fdc->drives[(size_t)d];
+        if (!disk) continue;
+        const auto g = dskDetect(*disk);
+        if (!g) continue;
+        DskFs fs(disk, *g);
+        for (const DskFsFile& f : fs.files()) {
+            if (!f.header) continue;
+            const AmsdosHeader& h = *f.header;
+            if (h.user != want->user || h.filename != want->filename || h.ext != want->ext || h.type != want->type ||
+                h.loadAddress != want->loadAddress || h.execAddress != want->execAddress || h.logicalLength != want->logicalLength ||
+                h.fullLength != want->fullLength) continue;
+            Bytes bytes = fs.read(f, true);
+            if (found && bytes != data) return;
+            data = std::move(bytes);
+            name = f.displayName();
+            found++;
+        }
+    }
+    if (!found || (int)data.size() < opened.length) return;
+    const int to = cpu->h << 8 | cpu->l;
+    for (int i = 0; i < opened.length; i++) memory->write((to + i) & 0xffff, data[(size_t)i]);
+    static const bool trace = std::getenv("CPCSE_TRACE_INSTANT") != nullptr;
+    if (trace) std::fprintf(stderr, "INSTANT DISC at %.2f s: %s, %d bytes to &%04X, entry &%04X\n", machineCycles / 4000000.0,
+                            name.c_str(), opened.length, to, want->execAddress);
+    discInstantFiles++;
+    discInstantLast = name;
+    // as AMSDOS returns: HL = the entry address, carry set and Z clear (read); then the RET
+    cpu->h = (want->execAddress >> 8) & 0xff;
+    cpu->l = want->execAddress & 0xff;
+    cpu->f = (cpu->f | 0x01) & ~0x40;
+    cpu->pc = word(cpu->sp);
+    cpu->sp = (cpu->sp + 2) & 0xffff;
+}
+
 int GX4000::stepInstruction() {
     // the timeline: inputs logged for this point of a replay, then the count
     if (instructions >= inputDueAt && onInputDue) onInputDue();
@@ -1434,6 +1568,7 @@ int GX4000::stepInstruction() {
         if (cpu->pc == 0x2836 || cpu->pc == 0x29a6) casReadTrap();
         else if (cpu->pc == 0x2a72 || cpu->pc == 0x2be2) motorStartWaitTrap();
     }
+    if (discInstant) amsdosTrap();
     // The M4 pulled the CPC's RESET line (|M4ROMOFF): the whole machine resets here.
     if (m4->resetLine) { m4->resetLine = false; reset(); }
     // |CTR: the M4's flashed cartridge image takes the cartridge's place. On a classic CPC the
@@ -1684,6 +1819,7 @@ int GX4000::runFrame() {
 void GX4000::reset() {
     resetCount += 1;                    // the expansion connector's /RESET (expansion_bus.h)
     breakpointSkipOnce = -1; watchpointPending.reset();
+    amsdosOpen = AmsdosOpen{}; discInstantFiles = 0; discInstantSectors = 0; discInstantLast.clear();
     timingInstructionActive = false; hardwareCyclesAdvanced = 0; classicFrameOvershoot = 0;
     interruptHeldOver = -1; interruptsHeldOver = 0;
     classicMonitorCharacter = 0; classicMonitorLine = 0; classicMonitorFrame = 0;

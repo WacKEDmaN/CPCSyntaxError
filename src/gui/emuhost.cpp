@@ -1169,6 +1169,8 @@ void EmuHost::applyTapeOptions() {
     emu->tape->tapeRelayDelay = tapeRelayDelay;
     emu->tape->fastLoad = tapeFastLoad;
     emu->tape->instantLoad = tapeInstantLoad;
+    emu->discInstant = discInstantLoad;          // (the disc's instant loading, set with the tape's)
+    if (emu->fdc) emu->fdc->quickSpinUp = discInstantLoad;
     emu->tape->fastLoadBaud = std::clamp(tapeFastBaud, (int)CPCTapeDrive::FAST_BAUD_MIN, (int)CPCTapeDrive::FAST_BAUD_MAX);
 }
 
@@ -1190,7 +1192,7 @@ bool EmuHost::loadByExtension(const std::string& path) {
     if (ext == ".dsk" || ext == ".edsk" || ext == ".hfe" || ext == ".ipf") return loadDiskFile(path, 0);
     if (ext == ".cdt" || ext == ".tzx" || ext == ".tap" || ext == ".wav") return loadTapeFile(path);
     if (ext == ".sna") return loadSnapshot(path);
-    if (ext == MACHINE_PROFILE_EXT_NAME) { std::string why; if (!loadMachineProfile(path, why)) { status = why; return false; } return true; }
+    if (ext == MACHINE_PROFILE_EXT_NAME) return openMachineProfile(path);   // asks before it changes folders
     status = "Unrecognised file type: " + ext;
     return false;
 }
@@ -1705,6 +1707,17 @@ void EmuHost::enableCheat(size_t index, bool on) {
 bool EmuHost::tapeTurboActive() const {
     CPCTapeDrive* d = tapeDeck();
     return tapeTurbo > 1 && d && d->playing && !d->paused && d->isMotorActive();
+}
+
+int EmuHost::discTurboFactor() const {
+    if (discTurbo > 1) return discTurbo;
+    return discInstantLoad ? TAPE_TURBO_UNLIMITED : 1;   // instant: the rest of the disc's work at full speed
+}
+
+bool EmuHost::discTurboActive() const {
+    if (discTurboFactor() <= 1 || !emu || !emu->hasFdc || !emu->fdc) return false;
+    const UPD765A& f = *emu->fdc;
+    return f.motor && (f.busyWithin(300000) || (f.motorSince >= 0 && f.now - f.motorSince < 1500000));
 }
 
 bool EmuHost::tapeRecording() const { CPCTapeDrive* d = tapeDeck(); return d && d->recording; }
@@ -3139,10 +3152,10 @@ bool EmuHost::saveMachineProfile(const std::string& path, bool withMedia, std::s
     return true;
 }
 
-bool EmuHost::loadMachineProfile(const std::string& path, std::string& why) {
+// A profile's lines, key=value ('#' a comment). False when the file cannot be read.
+static bool readProfileFile(const std::string& path, std::map<std::string, std::string>& p) {
     std::ifstream in(path, std::ios::binary);
-    if (!in) { why = "Could not read " + path; return false; }
-    std::map<std::string, std::string> p;
+    if (!in) return false;
     for (std::string line; std::getline(in, line);) {
         if (!line.empty() && line.back() == '\r') line.pop_back();
         if (line.empty() || line[0] == '#') continue;
@@ -3150,6 +3163,49 @@ bool EmuHost::loadMachineProfile(const std::string& path, std::string& why) {
         if (eq == std::string::npos) continue;
         p[line.substr(0, eq)] = line.substr(eq + 1);
     }
+    return true;
+}
+
+std::vector<EmuHost::ProfileFolder> EmuHost::machineProfileFolders(const std::string& path) const {
+    std::vector<ProfileFolder> out;
+    std::map<std::string, std::string> p;
+    if (!readProfileFile(path, p)) return out;
+    auto check = [&](const char* key, const char* what, const std::string& current) {
+        auto it = p.find(key);
+        if (it == p.end() || it->second.empty() || it->second == current) return;
+        out.push_back({ what, current, it->second });
+    };
+    check("m4folder", "M4 Board SD card", m4Folder);
+    check("idefolder", "SYMBiFACE IDE card", ideFolder);
+    check("albireo1sd", "Albireo 1 SD card", albireo[0].sdFolder);
+    check("albireo1usbfolder", "Albireo 1 USB stick", albireo[0].usbFolder);
+    check("albireo2sd", "Albireo 2 SD card", albireo[1].sdFolder);
+    check("albireo2usbfolder", "Albireo 2 USB stick", albireo[1].usbFolder);
+    check("sf3usb", "SYMBiFACE III USB stick", sf3UsbFolder);
+    check("sf3sd", "SYMBiFACE III SD card", sf3SdFolder);
+    check("hd20", "HD20 hard disc image", hd20Image);
+    return out;
+}
+
+bool EmuHost::openMachineProfile(const std::string& path) {
+    if (!machineProfileFolders(path).empty()) {
+        profileToConfirm = path;
+        status = "The machine profile changes folders: answer in its window";
+        return true;
+    }
+    std::string why;
+    if (!loadMachineProfile(path, why, false)) { status = why; return false; }
+    return true;
+}
+
+bool EmuHost::loadMachineProfile(const std::string& path, std::string& why, bool takeFolders) {
+    std::map<std::string, std::string> p;
+    if (!readProfileFile(path, p)) { why = "Could not read " + path; return false; }
+    // This computer's folders stay unless the profile's are taken (takeFolders, see emuhost.h).
+    if (!takeFolders)
+        for (const char* k : { "m4folder", "idefolder", "albireo1sd", "albireo1usbfolder", "albireo2sd", "albireo2usbfolder", "sf3usb", "sf3sd", "hd20" })
+            p.erase(k);
+    const std::string keptHd20 = hd20Image;
     // A key the profile does not have takes the setting's default: the profile is the whole
     // machine. A folder it does not name stays as it is (folders are this computer's).
     auto has = [&](const char* k) { return p.count(k) != 0; };
@@ -3197,7 +3253,7 @@ bool EmuHost::loadMachineProfile(const std::string& path, std::string& why) {
     }
     sf3UsbFolder = str("sf3usb", sf3UsbFolder);
     sf3SdFolder = str("sf3sd", sf3SdFolder);
-    hd20Image = str("hd20", "");
+    hd20Image = takeFolders ? str("hd20", "") : keptHd20;
     sf3RomBank = num("sf3_rom_bank", -1);
     lightgunType = str("lightgun", "none");
     v9990Enabled = flag("v9990", false);

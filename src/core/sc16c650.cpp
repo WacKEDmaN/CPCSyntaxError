@@ -262,7 +262,7 @@ void Sc16c650::flowAfterRx() {
     }
     updateRtsPin();
     const int tx = (efr >> 2) & 3;       // Table 23: Cont-3, Cont-2
-    if (tx) {
+    if (tx && txControl.size() < 64) {   // (a queue the line never empties stays small)
         if (!xoffSent && n >= rxTrigger()) {
             if (tx & 2) txControl.push_back(xoff1);
             if (tx & 1) txControl.push_back(xoff2);

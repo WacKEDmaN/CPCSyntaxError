@@ -251,6 +251,7 @@ void GuiShell::draw(const ShellFrameInfo& info) {
     }
 
     windowScreen(info);
+    machineProfileFolderQuestion();
     windowMachine();
     windowMedia();
     windowSettings();
@@ -618,7 +619,7 @@ void GuiShell::drawStatusBar(const ShellFrameInfo& info) {
     ImGui::PopStyleVar();
     if (open) {
         ImGui::PushStyleColor(ImGuiCol_Text, kAccent);
-        ImGui::TextUnformatted(host.paused ? "PAUSED" : (host.turbo ? "TURBO" : host.tapeTurboActive() ? "TAPE TURBO" : "RUNNING"));
+        ImGui::TextUnformatted(host.paused ? "PAUSED" : (host.turbo ? "TURBO" : host.tapeTurboActive() ? "TAPE TURBO" : host.discTurboActive() ? "DISC TURBO" : "RUNNING"));
         if (host.mouseCaptured) { after().text("  MOUSE CAPTURED (F12 or middle button releases)"); }
         else if (host.emulatedMouseActive()) { after().textDisabled("  click the picture to use the mouse"); }
         if (host.recording()) {
@@ -910,10 +911,7 @@ void GuiShell::menuFile() {
         if (ImGui::MenuItem("Cartridge (.cpr, .cro)...")) browser.open("Load cartridge", host.romDir, { ".cpr", ".cro", ".bin" }, [this](const std::string& p) { host.loadCartridgeFile(p); });
         if (ImGui::MenuItem("Snapshot (.sna)...")) browser.open("Load snapshot", host.romDir, { ".sna" }, [this](const std::string& p) { host.loadSnapshot(p); });
         if (ImGui::MenuItem("Machine profile (.cpcmachine)..."))
-            browser.open("Load machine profile", host.machineDir, { ".cpcmachine" }, [this](const std::string& p) {
-                std::string why;
-                if (!host.loadMachineProfile(p, why)) host.status = why;
-            });
+            browser.open("Load machine profile", host.machineDir, { ".cpcmachine" }, [this](const std::string& p) { host.openMachineProfile(p); });
         ImGui::Separator();
         if (ImGui::MenuItem("Assembler source...")) { panelOpen("Assembler") = true; assembler->requestOpen(); }
         if (ImGui::MenuItem("C program...")) { panelOpen("C") = true; cWindow->requestOpen(); }
@@ -995,6 +993,43 @@ void GuiShell::menuMachine() {
     ImGui::EndMenu();
 }
 
+// A profile that would change host folders (EmuHost::openMachineProfile): the folders, this
+// computer's and the profile's, and the choice. A CPC program writes to those folders, so a
+// profile from someone else does not change them unasked.
+void GuiShell::machineProfileFolderQuestion() {
+    if (host.profileToConfirm.empty()) return;
+    const char* title = "Machine profile: folders###profilefolders";
+    if (!ImGui::IsPopupOpen(title)) ImGui::OpenPopup(title);
+    ImGui::SetNextWindowSize(ImVec2(560, 0), ImGuiCond_Appearing);
+    if (!ImGui::BeginPopupModal(title, nullptr)) return;
+    WrapText wrapText;
+    const std::string path = host.profileToConfirm;
+    ImGui::TextUnformatted(std::filesystem::u8path(path).filename().u8string().c_str());
+    textWrappedDisabled("This profile names other folders for the machine's cards. A program on the CPC can write to "
+                        "these folders and change or delete the files in them. Use them only when you know the profile.");
+    for (const EmuHost::ProfileFolder& f : host.machineProfileFolders(path)) {
+        ImGui::Separator();
+        ImGui::TextColored(kAccent, "%s", f.what.c_str());
+        textWrappedDisabled("Now:     %s", f.current.empty() ? "(none)" : f.current.c_str());
+        ImGui::PushTextWrapPos(0.0f);
+        ImGui::Text("Profile: %s", f.profile.c_str());
+        ImGui::PopTextWrapPos();
+    }
+    ImGui::Separator();
+    FlowRow row;
+    std::string why;
+    auto finish = [&](bool load, bool takeFolders) {
+        host.profileToConfirm.clear();
+        if (load && !host.loadMachineProfile(path, why, takeFolders)) host.status = why;
+        if (!load) host.status = "Machine profile not loaded";
+        ImGui::CloseCurrentPopup();
+    };
+    if (row.button("Keep my folders")) finish(true, false);
+    else if (row.button("Use the profile's folders")) finish(true, true);
+    else if (row.button("Cancel")) finish(false, false);
+    ImGui::EndPopup();
+}
+
 // MACHINE PROFILES (EmuHost::saveMachineProfile / loadMachineProfile): the saved machines,
 // each a model with its RAM, chips, ROMs and expansions; clicking one rebuilds the machine.
 void GuiShell::machineProfileItems() {
@@ -1002,8 +1037,7 @@ void GuiShell::machineProfileItems() {
     if (profiles.empty()) ImGui::TextDisabled("(no profiles saved yet)");
     for (const auto& prof : profiles) {
         if (ImGui::MenuItem(prof.first.c_str(), nullptr, prof.first == host.machineProfileName)) {
-            std::string why;
-            if (!host.loadMachineProfile(prof.second, why)) host.status = why;
+            host.openMachineProfile(prof.second);
         }
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", prof.second.c_str());
     }
@@ -1024,10 +1058,7 @@ void GuiShell::machineProfileItems() {
         });
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("As above, and the discs in drives A and B, the tape and the cartridge.");
     if (ImGui::MenuItem("Load a profile file..."))
-        browser.open("Load machine profile", host.machineDir, { ".cpcmachine" }, [this](const std::string& p) {
-            std::string why;
-            if (!host.loadMachineProfile(p, why)) host.status = why;
-        });
+        browser.open("Load machine profile", host.machineDir, { ".cpcmachine" }, [this](const std::string& p) { host.openMachineProfile(p); });
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("A profile is the whole machine: an expansion it does not name is removed,\n"
                           "then the machine restarts. Discs stay in unless the profile has its own.");
@@ -1057,6 +1088,9 @@ void GuiShell::menuMedia() {
             ImGui::EndMenu();
         }
     }
+    if (ImGui::MenuItem("Disc turbo loading", nullptr, host.discTurbo > 1))
+        host.discTurbo = host.discTurbo > 1 ? 1 : EmuHost::TAPE_TURBO_UNLIMITED;
+    if (ImGui::MenuItem("Instant disc loading", nullptr, host.discInstantLoad)) { host.discInstantLoad = !host.discInstantLoad; host.applyTapeOptions(); }
     if (ImGui::BeginMenu("Tape")) {
         ImGui::TextDisabled("%s", host.tapeName.empty() ? "(no tape)" : host.tapeName.c_str());
         if (ImGui::MenuItem("Insert...")) browser.open("Insert tape", host.romDir, { ".cdt", ".tzx", ".tap", ".wav" }, [this](const std::string& p) { host.loadTapeFile(p); });
@@ -1502,6 +1536,27 @@ void GuiShell::windowMedia() {
                 ImGui::PopID();
             }
             textWrappedDisabled("Drop a .DSK or .EDSK onto the window");
+            // Fast loading: turbo (the whole machine faster while the disc works: every loader)
+            // and instant (a file the firmware loads in one piece goes into memory at once).
+            ImGui::Separator();
+            {
+                FlowRow fast;
+                const bool on = host.discTurboActive();
+                if (fast.smallButton(on ? "Turbo: on##dt" : "Turbo##dt")) host.discTurbo = host.discTurbo > 1 ? 1 : EmuHost::TAPE_TURBO_UNLIMITED;
+                fitNextItemWidth(160, "##discturbo");
+                const char* shown = host.discTurbo <= 1 ? "off (real speed)" : host.discTurbo >= EmuHost::TAPE_TURBO_UNLIMITED ? "unlimited" : "%dx";
+                ImGui::SliderInt("##discturbo", &host.discTurbo, 1, EmuHost::TAPE_TURBO_UNLIMITED, shown, ImGuiSliderFlags_AlwaysClamp);
+            }
+            textWrappedDisabled("Turbo: the whole machine runs faster while the disc drive works. Every loader works with it.");
+            if (checkboxWrapped("Instant loading", &host.discInstantLoad)) host.applyTapeOptions();
+            textWrappedDisabled("Files and sectors AMSDOS reads (LOAD, RUN\", CAT, |CPM, sector loaders that use AMSDOS) go into memory at once, "
+                                "with no motor or seek wait. Loaders that drive the disc controller themselves get their sectors without "
+                                "waiting for the disc to turn. Protected sectors keep the disc's own timing.");
+            if (host.emu && (host.emu->discInstantFiles > 0 || host.emu->discInstantSectors > 0))
+                textWrappedDisabled("Instant: %d file%s, %d sector%s%s%s", host.emu->discInstantFiles, host.emu->discInstantFiles == 1 ? "" : "s",
+                                    host.emu->discInstantSectors, host.emu->discInstantSectors == 1 ? "" : "s",
+                                    host.emu->discInstantLast.empty() ? "" : ", last file ", host.emu->discInstantLast.c_str());
+            ImGui::Separator();
             checkboxWrapped("Save disc and tape writes to their files", &host.diskWriteBack);
             if (ImGui::IsItemHovered()) ImGui::SetTooltip("What a program writes to a disc goes back into its image file.\nOff: the changes stay in memory (save them from the DSK editor).");
             if (!host.diskWriteError.empty()) textWrappedDisabled("Not saved: %s", host.diskWriteError.c_str());

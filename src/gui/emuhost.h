@@ -181,6 +181,18 @@ public:
     static constexpr int TAPE_TURBO_UNLIMITED = 21;
     int tapeTurbo = 1;
     bool tapeTurboActive() const;
+    // Disc turbo: while the disc controller works (a command or a seek now, or in the last
+    // 0.3 s), and for 1.5 s after the motor starts (AMSDOS waits for the disc to come up to
+    // speed), the whole machine runs this many times faster. Every loader sees nothing
+    // different, protected ones too. 1 = off; TAPE_TURBO_UNLIMITED = as fast as it goes.
+    int discTurbo = 1;
+    bool discTurboActive() const;
+    int discTurboFactor() const;           // discTurbo, or unlimited when only instant loading is on
+    // Instant disc loading (GX4000::discInstant): a file the firmware loads in one piece
+    // (CAS IN DIRECT: LOAD, RUN" and loaders that use the firmware) goes into memory at once.
+    // The rest of the disc's work (AMSDOS's motor wait, the directory) runs at turbo speed:
+    // the machine's time stays the real CPC's, only the clock on the wall is faster.
+    bool discInstantLoad = false;
     bool fullscreen = false;
     // How each screen is shown (crt_filter.h): the CPC's monitor and the GFX9000's have
     // their own scaling, CRT effect and advanced CRT filter. The GFX9000's starts as a copy
@@ -460,7 +472,18 @@ public:
     std::string machineDir = "machines";       // where profiles are kept (set by main)
     std::string machineProfileName;            // the profile loaded last ("" = none since)
     bool saveMachineProfile(const std::string& path, bool withMedia, std::string& why);
-    bool loadMachineProfile(const std::string& path, std::string& why);
+    // takeFolders: the profile's host folders too (the M4, IDE, Albireo and SF3 cards, the HD20
+    // image). A CPC program writes to those, so a profile from someone else must not change
+    // them unasked: false keeps this computer's own. (Audit 2026-11-14.)
+    bool loadMachineProfile(const std::string& path, std::string& why, bool takeFolders = false);
+    // The folders a profile would change: { what, this computer's, the profile's }. A folder
+    // the profile leaves empty or does not name is not a change to ask about.
+    struct ProfileFolder { std::string what, current, profile; };
+    std::vector<ProfileFolder> machineProfileFolders(const std::string& path) const;
+    // The GUI's way in (menus, a dropped file, the recent list): loads at once when no folder
+    // would change, else leaves the path in profileToConfirm for the shell to ask about.
+    bool openMachineProfile(const std::string& path);
+    std::string profileToConfirm;
     // The profile files in machineDir: { name, path }, by name. A name (no folder, no
     // extension) is looked for there by findMachineProfile.
     std::vector<std::pair<std::string, std::string>> machineProfiles() const;

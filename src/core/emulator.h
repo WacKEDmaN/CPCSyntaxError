@@ -223,6 +223,27 @@ public:
     uint64_t inputDueAt = UINT64_MAX;
     std::function<void()> onInputDue;
     bool motorStartWaitTrap();
+    // INSTANT DISC LOADING (discInstant, the host's setting). AMSDOS puts a far call (RST 3,
+    // &DF) in each cassette entry of the jumpblock (&BC77-&BC9B). A program that loads a file
+    // with the firmware calls CAS IN OPEN (&BC77), then CAS IN DIRECT (&BC83): BASIC's LOAD
+    // and RUN", and most loaders that load files. OPEN runs as it is (it reads the directory
+    // and the header); its return gives the header (HL) and the length (BC). DIRECT is then
+    // done here: the file with that header is found on the disc in drive A or B (DskFs), and
+    // its data goes into memory at HL at once; the entry address back in HL, carry set, Z
+    // clear, as AMSDOS returns. A file without an AMSDOS header, a file read a byte at a time
+    // (CAS IN CHAR), and a loader that reads sectors itself load as they are here (the sector
+    // trap below and UPD765A::quickSpinUp make those fast).
+    bool discInstant = false;
+    int discInstantFiles = 0;            // files loaded this way since the last reset (for the host)
+    std::string discInstantLast;         // the last one, NAME.EXT
+    // ...and every sector read through AMSDOS's READ SECTOR (&C666: the RSX &84, the CP/M
+    // BIOS, AMSDOS's directory and records): a plain sector is copied at once, with no motor
+    // wait, seek or turn of the disc (amsdosReadSectorTrap). Protected sectors are not.
+    int discInstantSectors = 0;
+    void amsdosTrap();
+    void amsdosReadSectorTrap();
+    struct AmsdosOpen { int returnPc = -1, sp = 0; bool open = false; Bytes header; int length = 0; };
+    AmsdosOpen amsdosOpen;
     // Machine time in T-states (4 per usec): every instruction as long as the hardware
     // ran it, i.e. after the CPC's rounding to whole usec. cpu->tStates is the Z80's own
     // count and runs ~14% short of this -- it is not a clock for anything outside the CPU.
