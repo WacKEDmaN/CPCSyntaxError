@@ -1080,7 +1080,7 @@ void GuiShell::tapeDeckControls(bool asMenu) {
     {
         FlowRow lamp = after();
         lamp.spacing = 14.0f;
-        lamp.textColored(motor ? ImVec4(0.45f, 0.9f, 0.45f, 1.0f) : ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled), motor ? "MOTOR" : "motor");
+        lamp.textColored(motor ? kGood : ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled), motor ? "MOTOR" : "motor");
     }
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("The cassette motor, as the CPC's relay switches it");
     // where the tape is, of how long; the block numbered as the list below numbers them
@@ -1395,7 +1395,7 @@ void GuiShell::romPrompt() {
         }
         if (!romChooseStatus.empty()) { status = romChooseStatus; romChooseStatus.clear(); }
         if (after().button("Not now")) { romPromptFor.clear(); status.clear(); ImGui::CloseCurrentPopup(); }
-        if (!status.empty()) ImGui::TextColored(status.rfind("Not", 0) == 0 ? ImVec4(1, 0.5f, 0.4f, 1) : kAccent, "%s", status.c_str());
+        if (!status.empty()) ImGui::TextColored(status.rfind("Not", 0) == 0 ? kBad : kAccent, "%s", status.c_str());
         if (romPromptFor.empty()) ImGui::CloseCurrentPopup();
         ImGui::EndPopup();
     }
@@ -1891,7 +1891,7 @@ void GuiShell::sectionDevelopment(bool asMenu) {
             port = std::clamp(port, 1, 65535);
             if (listening) (d.*start)(port);
         }
-        if (!error.empty() && !listening) ImGui::TextColored(ImVec4(1.0f, 0.45f, 0.35f, 1.0f), "%s", error.c_str());
+        if (!error.empty() && !listening) ImGui::TextColored(kBad, "%s", error.c_str());
         ImGui::PopID();
     };
 

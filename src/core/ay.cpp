@@ -43,6 +43,10 @@ void AY38912::advanceTStates(int tStates) {
     outputSamplePhase += tStates * outputSampleRate / clockRate;
     while (outputSamplePhase >= 1) {
         outputSamplePhase -= 1; lastOutputSample = level(); sampleQueue.push_back(lastOutputSample);
+        if (scopeOn) {
+            for (int c = 0; c < 3; c++) scope[(size_t)c][(size_t)scopePos] = (float)channelLevel[(size_t)c];
+            scopePos = (scopePos + 1) % SCOPE;
+        }
     }
     int maximum = (int)std::ceil(outputSampleRate / 4);
     if ((int)sampleQueue.size() - sampleReadIndex > maximum) sampleReadIndex = (int)sampleQueue.size() - maximum;
@@ -128,12 +132,15 @@ void AY38912::tick() {
 std::array<double, 2> AY38912::level() {
     double chA = 0, chB = 0, chC = 0;
     for (int channel = 0; channel < 3; channel += 1) {
+        channelLevel[(size_t)channel] = 0;
         int mixer = registers[7];
         bool toneOk = (mixer & (1 << channel)) || toneState[channel];
         bool noiseOk = (mixer & (8 << channel)) || noiseState;
         if (!toneOk || !noiseOk) continue;
         int volume = registers[8 + channel];
         double lvl = VOLUME[volume & 0x10 ? envelopeVolume : volume & 0x0f];
+        channelLevel[(size_t)channel] = lvl;               // (the scope's, muted or not)
+        if (muted[(size_t)channel]) continue;
         if (channel == 0) chA = lvl;
         else if (channel == 1) chB = lvl;
         else chC = lvl;

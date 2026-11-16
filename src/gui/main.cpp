@@ -907,6 +907,7 @@ int main(int argc, char** argv) {
     EmuHost host;
     loadMachineSounds();
     GuiShell shell(host);
+    shell.themeDir = homeDir() + "themes";       // the GUI's theme files (.cpctheme)
     shell.loadSettings(ini);
     shell.applyStyle();                         // after the settings: the saved interface size
 
@@ -1203,7 +1204,8 @@ int main(int argc, char** argv) {
             if (ev.type == SDL_JOYDEVICEADDED || ev.type == SDL_JOYDEVICEREMOVED) host.pads.open();
             if (ev.type == SDL_WINDOWEVENT && ev.window.event == SDL_WINDOWEVENT_CLOSE &&
                 ev.window.windowID == SDL_GetWindowID(window)) running = false;
-            if (ev.type == SDL_DROPFILE && ev.drop.file) { host.loadByExtension(ev.drop.file); SDL_free(ev.drop.file); }
+            // a source file into its editor window, any other file as media
+            if (ev.type == SDL_DROPFILE && ev.drop.file) { if (!shell.openSourceFile(ev.drop.file)) host.loadByExtension(ev.drop.file); SDL_free(ev.drop.file); }
             // While grabbed, the host mouse is the CPC's mouse (a Symbiface or a mouse interface).
             if (host.mouseCaptured && !host.emulatedMouseActive()) releaseMouse();
             if (host.mouseCaptured && mouseEvent) {

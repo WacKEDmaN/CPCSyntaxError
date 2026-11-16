@@ -340,7 +340,7 @@ void GuiShell::croEditorBody() {
         const std::vector<std::string> problems = croProblems(cro.groups);
         ImGui::Separator();
         if (problems.empty()) ImGui::TextDisabled("No problems found.");
-        for (const std::string& p : problems) ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.3f, 1.0f), "%s", p.c_str());
+        for (const std::string& p : problems) ImGui::TextColored(kWarn, "%s", p.c_str());
     }
     if (!cro.message.empty()) ImGui::TextDisabled("%s", cro.message.c_str());
 }

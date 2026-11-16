@@ -35,6 +35,15 @@ public:
     std::vector<std::array<double, 2>> sampleQueue;
     int sampleReadIndex = 0;
     std::array<double, 2> lastOutputSample{ 0, 0 };
+    // For the PSG view (the host's, not the chip's): a channel muted is left out of the mix
+    // only; the scope keeps each channel's own level (before the mute) for the last SCOPE
+    // output samples, while scopeOn is set.
+    std::array<bool, 3> muted{};
+    static constexpr int SCOPE = 1024;
+    std::array<std::array<float, SCOPE>, 3> scope{};
+    int scopePos = 0;                          // where the next sample goes
+    bool scopeOn = false;
+    std::array<double, 3> channelLevel{};      // each channel's level at the last sample
 
     explicit AY38912(KeyboardMatrix* keyboard, int clockRate = 4000000, int tStatesPerTick = 32);
     void reset();

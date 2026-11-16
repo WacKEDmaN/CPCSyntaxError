@@ -122,6 +122,42 @@ cc rasm.c -O2 -lm -march=native -o rasm
 #define KLWHITE   ""
 #endif
 
+
+#ifdef __MORPHOS__
+#include <string.h>
+#include <limits.h>
+#ifndef PATH_MAX
+#define PATH_MAX 4096
+#endif
+/* MorphOS uses AmigaDOS paths: "." is not the current directory and the
+   parent directory is "/" instead of "../". Translate Unix style relative
+   paths ("./x", "../x", "a/./b", "a/../b") before they reach the C
+   library (used by minilib.h), so sources and the autotest written for
+   Unix work unchanged. Other systems: no change. */
+static const char *SysPath(const char *p) {
+	static char b[4][PATH_MAX];
+	static int n;
+	char *d,*o;
+	int st=1;
+
+	if (!p || !strchr(p,'.')) return p;
+	d=o=b[n++&3];
+	while (*p && o-d<PATH_MAX-1) {
+		if (st && p[0]=='.') {
+			if (p[1]=='/') {p+=2;continue;}
+			if (!p[1]) {p++;continue;}
+			if (p[1]=='.' && (p[2]=='/' || !p[2])) {*o++='/';p+=p[2]?3:2;continue;}
+		}
+		st=(*p=='/' || *p==':');
+		*o++=*p++;
+	}
+	*o=0;
+	return d;
+}
+#else
+#define SysPath(p) (p)
+#endif
+
 #ifndef RDD
 	/* public lib */
 	#include"minilib.h"
@@ -233,12 +269,6 @@ size_t salvador_get_max_compressed_size(const size_t nInputSize);
 #endif
 #endif
 
-#ifdef __MORPHOS__
-/* Add standard version string to executable */
-const char __attribute__((section(".text"))) ver_version[]={ "\0$VER: "PROGRAM_NAME" "PROGRAM_VERSION" ("PROGRAM_DATE") "PROGRAM_COPYRIGHT"" };
-/* Expand the default stack to match rasm requirements (about 64KiB) */
-unsigned long __stack = 128 * 1024;
-#endif
 
 #undef __FILENAME__
 #define __FILENAME__ "rasm.c"
@@ -254,6 +284,13 @@ E_DEPENDENCIES_MAKE
 
 #define INSIDE_RASM
 #include "rasm.h"
+
+#ifdef __MORPHOS__
+/* Add standard version string to executable */
+const char __attribute__((section(".text"))) ver_version[]={ "\0$VER: "PROGRAM_NAME" "PROGRAM_VERSION" ("PROGRAM_DATE") "PROGRAM_COPYRIGHT"" };
+/* Expand the default stack: rasm -autotest overflows 128 KiB (and 256 KiB) */
+unsigned long __stack = 1024 * 1024;
+#endif
 
 
 /*******************************************************************
@@ -1604,6 +1641,8 @@ struct s_math_keyword math_keyword[]={
 #define CRC_ORG 0x004F5247
 #define CRC_BANK 0x4B4E4142
 #define CRC_HALT 0x544C4148
+#define CRC_EXA 0x00455841
+#define CRC_SRL8 0x384C5253
 #define CRC_NOP 0x004E4F50
 #define CRC_LDI 0x004C4449
 #define CRC_LDD 0x004C4444
@@ -2325,7 +2364,7 @@ void ResolveCaseInsensitivePath(char *path) {
 		if (FileExists(candidate)) {
 			found=1;
 		} else {
-			dir=opendir(ridx?resolved:".");
+			dir=opendir(SysPath(ridx?resolved:"."));
 			if (dir) {
 				while ((entry=readdir(dir))!=NULL) {
 					if (strcasecmp(entry->d_name,component)==0) {
@@ -2425,6 +2464,14 @@ void StateMachineResizeBuffer(char **ABuf, const int idx, int *ASize) {
 	}
 }
 
+/* read 4 label bytes as a little-endian int, on every CPU: the CRC_xxx
+   constants were computed on little-endian machines, so a plain
+   *(int *) read gives different CRCs on big-endian CPUs (PowerPC) */
+#define RASM_LOAD_LE32(p) ((int)( (unsigned int)(unsigned char)(p)[0] \
+                               | ((unsigned int)(unsigned char)(p)[1]<<8) \
+                               | ((unsigned int)(unsigned char)(p)[2]<<16) \
+                               | ((unsigned int)(unsigned char)(p)[3]<<24)))
+
 #if 0
 #ifdef _WIN32
 __forceinline int GetCRC(char *label) {
@@ -2443,7 +2490,11 @@ int GetCRC(const char *label) {
         if (label[1]) {
                 if (label[2]) {
                         if (label[3]) {
+#if IS_BIG_ENDIAN
+                                crc=RASM_LOAD_LE32(label);
+#else
                                 crc=*(int *)label;
+#endif
                                 i=4;
                         } else {
                                 return (label[0]<<16)|(label[1]<<8)|label[2];
@@ -2460,7 +2511,11 @@ int GetCRC(const char *label) {
                 if (label[i+1]) {
                         if (label[i+2]) {
                                 if (label[i+3]) {
-                                        crc^=*(int *)(&label[i]);
+#if IS_BIG_ENDIAN
+                                        crc^=RASM_LOAD_LE32(&label[i]);
+#else
+					crc^=*(int *)(&label[i]);
+#endif
                                         i+=4;
                                 } else {
                                         crc^=(label[i]<<16)|(label[i+1]<<8)|label[i+2];
@@ -2491,7 +2546,11 @@ static inline int GetCRCandLength(const char *label, int *ilength) {
         if (label[1]) {
                 if (label[2]) {
                         if (label[3]) {
+#if IS_BIG_ENDIAN
+                                crc=RASM_LOAD_LE32(label);
+#else
                                 crc=*(int *)label;
+#endif
                                 i=4;
                         } else {
 				*ilength=3;
@@ -2511,7 +2570,11 @@ static inline int GetCRCandLength(const char *label, int *ilength) {
                 if (label[i+1]) {
                         if (label[i+2]) {
                                 if (label[i+3]) {
-                                        crc^=*(int *)(&label[i]);
+#if IS_BIG_ENDIAN
+                                        crc^=RASM_LOAD_LE32(&label[i]);
+#else
+					crc^=*(int *)(&label[i]);
+#endif
                                         i+=4;
                                 } else {
 					*ilength=i+3;
@@ -2572,6 +2635,23 @@ int IsRegister(const char *zeexpression)
 		case CRC_IYH:if (strcmp(zeexpression,"IYH")==0) return 1; else return 0;
 		default:break;
 	}
+	return 0;
+}
+
+int IsMath(struct s_assenv *ae, const char *zeexpression, int crc, int length)
+{
+	#undef FUNC
+	#define FUNC "IsMath"
+
+	int imkey;
+
+	if (length>=FUNCTION_MAXLENGTH) return 0;
+	imkey=ae->fastmath[((unsigned char)zeexpression[0])][length];
+	if (imkey==-1) return 0;
+	do {
+		if (math_keyword[imkey].crc==crc && strcmp(math_keyword[imkey].mnemo,zeexpression)==0) return 1;
+		imkey++;
+	} while (math_keyword[imkey].length==length && math_keyword[imkey].mnemo[0]==zeexpression[0]);
 	return 0;
 }
 
@@ -4654,6 +4734,7 @@ int __GETNOP(struct s_assenv *ae,char *oplist, const int didx)
 			case CRC_CPL:
 			case CRC_EXX:
 			case CRC_EI:
+			case CRC_EXA:
 			case CRC_DI:tick+=1;break;
 
 			case CRC_IM:
@@ -4705,6 +4786,13 @@ int __GETNOP(struct s_assenv *ae,char *oplist, const int didx)
 					if (strcmp(zearg,"IX")==0) tick+=4; else tick+=3;
 				} else {
 					MakeError(ae,GetExpIdx(ae,didx),GetExpFile(ae,didx),GetExpLine(ae,didx),"unsupported opcode [%s] for GETNOP, see documentation about this directive\n",opcode[idx]);
+				}
+				break;
+
+			case CRC_SRL8: tick+=3;
+				if (zearg) {
+					if (strstr(zearg,"IX")) tick+=2;
+					if (strstr(zearg,"IY")) tick+=2;
 				}
 				break;
 
@@ -4809,6 +4897,12 @@ int __GETNOP(struct s_assenv *ae,char *oplist, const int didx)
 				break;
 			case CRC_CALL:
 				// CALL is supposed to skip! (or not...) @@TODO les conditioooooooons
+				tick+=5;
+				if (zearg) {
+					if (strstr(zearg,"Z")) tick-=2;
+					if (strstr(zearg,"C")) tick-=2;
+				}
+				break;
 			case CRC_JR:
 				// JR is supposed to loop!
 				tick+=3;
@@ -5448,6 +5542,8 @@ int __FILEBYTE(struct s_assenv *ae,char *argstr, unsigned int offset, int didx)
 	struct s_filebyte_cache newcache={0};
 	FILE *f;
 	int i;
+        int zesize,lm,touched,fileok=0;
+        char *newfilename;
 	unsigned char zebyte;
 #ifdef OS_WIN
 	int sr;
@@ -5463,12 +5559,53 @@ int __FILEBYTE(struct s_assenv *ae,char *argstr, unsigned int offset, int didx)
 			}
 		}
 	}
-	// no entry in cache, how bgi is the file?
-	f=fopen(argstr,"rb");
-	if (!f) {
-		MakeError(ae,GetExpIdx(ae,didx),GetExpFile(ae,didx),GetExpLine(ae,didx),"invalid filename [%s] for FILEBYTE function \n",argstr);
+
+        newfilename=TxtStrDup(argstr);
+
+        /* need to upper case tags */
+        for (lm=touched=0;newfilename[lm];lm++) {
+                if (newfilename[lm]=='{') touched++; else if (newfilename[lm]=='}') touched--; else if (touched) newfilename[lm]=toupper(newfilename[lm]);
+        }
+        /* on essaie d'interpréter le nom du fichier en dynamique */
+        newfilename=TranslateTag(ae,newfilename,&touched,1,E_TAGOPTION_REMOVESPACE);
+
+        /* Where is the file to load? */
+        if (!FileExists(newfilename)) {
+                int ilookfile;
+                char *filename_toread;
+
+                // on cherche à la racine du fichier qui exécute le filesize
+                filename_toread=MergePath(ae,GetExpFile(ae,didx),newfilename);
+                if (FileExists(filename_toread)) {
+                        fileok=1;
+                        MemFree(newfilename);
+                        newfilename=TxtStrDup(filename_toread); // Merge renvoie un static
+                }
+                if (!fileok) {
+                        /* on cherche dans les include */
+                        for (ilookfile=0;ilookfile<ae->ipath && !fileok;ilookfile++) {
+                                filename_toread=MergePath(ae,ae->includepath[ilookfile],newfilename);
+                                if (FileExists(filename_toread)) {
+                                        fileok=1;
+                                        MemFree(newfilename);
+                                        newfilename=TxtStrDup(filename_toread); // Merge renvoie un static
+                                }
+                        }
+                }
+        } else {
+                fileok=1;
+        }
+	if (!fileok) {
+		MakeError(ae,GetExpIdx(ae,didx),GetExpFile(ae,didx),GetExpLine(ae,didx),"File [%s] not found for FILEBYTE function \n",argstr);
 		return 0;
 	}
+	// no entry in cache, how bgi is the file?
+	f=fopen(SysPath(newfilename),"rb");
+	if (!f) {
+		MakeError(ae,GetExpIdx(ae,didx),GetExpFile(ae,didx),GetExpLine(ae,didx),"invalid filename [%s] for FILEBYTE function \n",newfilename);
+		return 0;
+	}
+
 #ifdef OS_WIN
 sr=_setmode(_fileno(f), _O_BINARY );
 if (sr==-1) {
@@ -5482,7 +5619,7 @@ exit(ABORT_ERROR);
 	// no cache for files bigger than 128k
 	if (newcache.zelen>128*1024) {
 		fseek(f,offset,SEEK_SET);
-		if (fread(&zebyte,1,1,f)!=1) MakeError(ae,GetExpIdx(ae,didx),GetExpFile(ae,didx),GetExpLine(ae,didx),"FILEBYTE function had read error with file [%s]\n",argstr);
+		if (fread(&zebyte,1,1,f)!=1) MakeError(ae,GetExpIdx(ae,didx),GetExpFile(ae,didx),GetExpLine(ae,didx),"FILEBYTE function had read error with file [%s]\n",newfilename);
 		fclose(f);
 		return (int)zebyte&0xFF;
 	}
@@ -5490,14 +5627,14 @@ exit(ABORT_ERROR);
 	newcache.zename=strdup(argstr);
 	newcache.data=MemMalloc(newcache.zelen);
 	fseek(f,0,SEEK_SET);
-	if (fread(newcache.data,1,newcache.zelen,f)!=newcache.zelen) MakeError(ae,GetExpIdx(ae,didx),GetExpFile(ae,didx),GetExpLine(ae,didx),"FILEBYTE function had read error with file [%s]\n",argstr);
+	if (fread(newcache.data,1,newcache.zelen,f)!=newcache.zelen) MakeError(ae,GetExpIdx(ae,didx),GetExpFile(ae,didx),GetExpLine(ae,didx),"FILEBYTE function had read error with file [%s]\n",newfilename);
 	fclose(f);
 
 	ObjectArrayAddDynamicValueConcat((void **)&ae->fbcache,&ae->nbfbcache,&ae->maxfbcache,&newcache,sizeof(newcache));
 	if (offset<newcache.zelen) {
 		return (int)newcache.data[offset]&0xFF;
 	} else {
-		MakeError(ae,GetExpIdx(ae,didx),GetExpFile(ae,didx),GetExpLine(ae,didx),"invalid offset %d for FILEBYTE function and file [%s]\n",offset,argstr);
+		MakeError(ae,GetExpIdx(ae,didx),GetExpFile(ae,didx),GetExpLine(ae,didx),"invalid offset %d for FILEBYTE function and file [%s]\n",offset,newfilename);
 		return 0;
 	}
 }
@@ -6012,16 +6149,59 @@ int __FILESIZE(struct s_assenv *ae,char *zefile, int didx)
 	#define FUNC "__FILESIZE"
 
 	FILE *f;
-	int zesize;
+	int zesize,lm,touched,fileok=0;
+	char *newfilename;
 
-	f=fopen(zefile,"rb");
-	if (!f) {
-		MakeError(ae,GetExpIdx(ae,didx),GetExpFile(ae,didx),GetExpLine(ae,didx),"cannot retrieve filesize of [%s] file\n",zefile);
+        newfilename=TxtStrDup(zefile);
+
+	/* need to upper case tags */
+	for (lm=touched=0;newfilename[lm];lm++) {
+		if (newfilename[lm]=='{') touched++; else if (newfilename[lm]=='}') touched--; else if (touched) newfilename[lm]=toupper(newfilename[lm]);
+	}
+	/* on essaie d'interpréter le nom du fichier en dynamique */
+	newfilename=TranslateTag(ae,newfilename,&touched,1,E_TAGOPTION_REMOVESPACE);
+
+	/* Where is the file to load? */
+	if (!FileExists(newfilename)) {
+		int ilookfile;
+		char *filename_toread;
+
+		// on cherche à la racine du fichier qui exécute le filesize
+		filename_toread=MergePath(ae,GetExpFile(ae,didx),newfilename);
+		if (FileExists(filename_toread)) {
+			fileok=1;
+			MemFree(newfilename);
+			newfilename=TxtStrDup(filename_toread); // Merge renvoie un static
+		}
+		if (!fileok) {
+			/* on cherche dans les include */
+			for (ilookfile=0;ilookfile<ae->ipath && !fileok;ilookfile++) {
+				filename_toread=MergePath(ae,ae->includepath[ilookfile],newfilename);
+				if (FileExists(filename_toread)) {
+					fileok=1;
+					MemFree(newfilename);
+					newfilename=TxtStrDup(filename_toread); // Merge renvoie un static
+				}
+			}
+		}
+	} else {
+		fileok=1;
+	}
+
+	if (fileok) {
+		f=fopen(SysPath(newfilename),"rb");
+		if (!f) {
+			MakeError(ae,GetExpIdx(ae,didx),GetExpFile(ae,didx),GetExpLine(ae,didx),"cannot retrieve filesize of [%s] file\n",newfilename);
+			return 0;
+		}
+		fseek(f,0,SEEK_END);
+		zesize=ftell(f);
+		fclose(f);
+	} else {
+		MakeError(ae,GetExpIdx(ae,didx),GetExpFile(ae,didx),GetExpLine(ae,didx),"FILESIZE did not find [%s] file in the path\n",zefile);
 		return 0;
 	}
-	fseek(f,0,SEEK_END);
-	zesize=ftell(f);
-	fclose(f);
+	MemFree(newfilename);
 	return zesize;
 }
 
@@ -8507,7 +8687,7 @@ double ComputeExpression(struct s_assenv *ae,char *expr, const int ptr, const in
 	#define FUNC "ComputeExpression"
 
 	char *ptr_exp,*ptr_exp2;
-	int crc,idx=0,touched;
+	int crc,idx=0,touched,length;
 	double v;
 	struct s_alias curalias;
 	struct s_expr_dico *curdic;
@@ -8561,11 +8741,17 @@ printf("MakeAlias (2) EXPR=[%s EQU %s]\n",expr,ptr_exp2);
                                 MemFree(curalias.alias);
                                 curalias.alias=newaliasname;
                         }
-			curalias.crc=GetCRC(curalias.alias);
+			curalias.crc=GetCRCandLength(curalias.alias,&length);
 			curalias.ptr=ae->codeadr;
 			curalias.lz=ae->ilz;
 #ifndef SUPERFAST
-			if (SearchLabel(ae,curalias.alias,curalias.crc)) {
+			if (IsMath(ae,curalias.alias,curalias.crc,length)) {
+				MakeError(ae,ae->idx,GetCurrentFile(ae),GetExpLine(ae,0),"Alias cannot be a math function [%s]\n",expr);
+				MemFree(curalias.alias);
+			} else if (IsRegister(curalias.alias)) {
+				MakeError(ae,ae->idx,GetCurrentFile(ae),GetExpLine(ae,0),"Alias cannot be a register [%s]\n",expr);
+				MemFree(curalias.alias);
+			} else if (SearchLabel(ae,curalias.alias,curalias.crc)) {
 				MakeError(ae,ae->idx,GetCurrentFile(ae),GetExpLine(ae,0),"Alias cannot override existing label [%s]\n",expr);
 				MemFree(curalias.alias);
 			} else if (SearchDico(ae,curalias.alias,curalias.crc)) {
@@ -15247,7 +15433,7 @@ struct s_edsk_global_struct *edsktool_EDSK_load(struct s_assenv *ae,char *edskfi
 
         edsk=edsktool_NewEDSK(NULL,1);
 
-        f=fopen(edskfilename,"rb");
+        f=fopen(SysPath(edskfilename),"rb");
         if (!f) {
 		MakeError(ae,0,NULL,0,"Cannot read EDSK header of [%s]\n",edskfilename);
 		return NULL;
@@ -30950,6 +31136,18 @@ struct s_autotest_keyword autotest_keyword[]={
 	{"f{ equ",1},
 	{"aa=4<<456",0},
 	{"aa=5:aa<<=456",0},
+	// alias cannot be a math function (IsMath)
+	{"sin equ 5",1},{"cos equ 5",1},{"int equ 5",1},{"abs equ 5",1},{"ln equ 5",1},{"log10 equ 5",1},
+	{"sqrt equ 5",1},{"floor equ 5",1},{"asin equ 5",1},{"acos equ 5",1},{"atan equ 5",1},{"exp equ 5",1},
+	{"lo equ 5",1},{"hi equ 5",1},{"psgvalue equ 5",1},{"rnd equ 5",1},{"frac equ 5",1},{"ceil equ 5",1},
+	{"getr equ 5",1},{"getv equ 5",1},{"getg equ 5",1},{"getb equ 5",1},{"setr equ 5",1},{"setv equ 5",1},
+	{"setg equ 5",1},{"setb equ 5",1},{"soft2hard_ink equ 5",1},{"s2h_ink equ 5",1},{"hard2soft_ink equ 5",1},
+	{"h2s_ink equ 5",1},{"peek equ 5",1},{"pow2 equ 5",1},{"pow equ 5",1},{"fmod equ 5",1},{"atan2 equ 5",1},
+	{"hypot equ 5",1},{"ldexp equ 5",1},{"fdim equ 5",1},{"fstep equ 5",1},{"fmax equ 5",1},{"fmin equ 5",1},
+	{"clamp equ 5",1},{"lerp equ 5",1},{"isgreater equ 5",1},{"isless equ 5",1},{"fremain equ 5",1},
+	{"getnop equ 5",1},{"gettick equ 5",1},{"duration equ 5",1},{"filesize equ 5",1},{"getsize equ 5",1},
+	{"is_register equ 5",1},{"filebyte equ 5",1},{"countnops equ 5",1},
+	{"FLOOR equ 5",1},{"floors equ 5",0},{"floo equ 5",0},{"high equ 5",0},{"low equ 5",0},{"get_r equ 5",0},{"psg equ 5",0},{"s2h equ 5",0},
 
 	{"defb getnop(1)",1},{"defb getnop(-1)",1},{"defb getnop(10)",1},{"defb getnop(\"rien\")",1},{"defb getnop()",1},{"defb getnop(\"djNz\")",0},
 	{"assert getnop('nop')==1 : nop",0},
@@ -31032,7 +31230,17 @@ struct s_autotest_keyword autotest_keyword[]={
 	{"assert getnop('out (c),l : out (c),0 : out (12),a')==11 : nop",0},
 	{"assert getnop('in a,(c)' )==4 : nop",0}, {"assert getnop('in b,(c)' )==4 : nop",0}, {"assert getnop('in a,(0)' )==3 : nop",0},
 	{"assert getnop('in a,(0) : in a,(c)' )==7 : nop",0},
-
+	{"assert getnop('CALL #1234')==5 : nop",0},
+	{"assert getnop('CALL Z,#1234')==3 : nop",0},
+	{"assert getnop('CALL NZ,#1234')==3 : nop",0},
+	{"assert getnop('CALL NC,#1234')==3 : nop",0},
+	{"assert getnop('CALL C,#1234')==3 : nop",0},
+	{"assert getnop('EXA')==1 : nop",0},
+	{"assert getnop('SRL8 BC')==3 : nop",0},
+	{"assert getnop('SRL8 DE')==3 : nop",0},
+	{"assert getnop('SRL8 HL')==3 : nop",0},
+	{"assert getnop('SRL8 IX')==5 : nop",0},
+	{"assert getnop('SRL8 IY')==5 : nop",0},
 	{"assert getnop('or a')==1 : nop",0}, {"assert getnop('or b')==1 : nop",0}, {"assert getnop('or c')==1 : nop",0},
 	{"assert getnop('or d')==1 : nop",0}, {"assert getnop('or e')==1 : nop",0}, {"assert getnop('or h')==1 : nop",0},
 	{"assert getnop('or l')==1 : nop",0}, {"assert getnop('or (hl)')==2 : nop",0}, {"assert getnop('or ixl')==2 : nop",0},
@@ -31104,10 +31312,11 @@ struct s_autotest_keyword autotest_keyword[]={
 	{"edsk writesect,'autotestw.dsk',0,512,'50:#C1'",1}, // cannot access non existing track
 	{"edsk readsect,'autotestw.dsk','50:#C1',512",1}, // cannot access non existing track
 	{"edsk readsect,'autotestnonexisting.dsk','5:#C1',512",1}, // cannot access non existing DSK
-	{"edsk create,'rasmoutput_test.dsk',DATA,OVERWRITE:edsk putfile,'rasmoutput_test.dsk','minilib.h'",0}, // put minilib.h without header on a DSK
+	{"edsk create,'rasmoutput_test.dsk',DATA,OVERWRITE:edsk putfile,'rasmoutput_test.dsk','minilib.h'",0}, // put minilib.h without header on a new DSK
 	{"incbin 'minilib.h',0,512:edsk check,'rasmoutput_test.dsk:0','0:#C5',512,0",0}, // check minilib was well ASCII written
 	{"edsk putfile,'rasmoutput_test.dsk','minilib.h','other.bin'",0}, // put minilib.h as another filename
 	{"edsk putfile,'rasmoutput_test.dsk','minilib.h','prot.bin',PROT",0}, // put PROT file
+	{"edsk delfile,'rasmoutput_test.dsk','prot.bin'",0}, // remove file because we wont have enough space ^_^
 	{"edsk putfile,'rasmoutput_test.dsk','minilib.h','hidden.bin',HIDDEN",0}, // put HIDDEN file
 	{"edsk putfile,'rasmoutput_test.dsk','minilib.h','pouet.bin',POUET",1}, // pouet must failed
 	{"noHeader defb 'noHeader',0:edsk create,'rasmoutput_test.dsk',DATA,OVERWRITE:edsk savefile,'rasmoutput_test.dsk','monfic1.txt',0,9,RAW:edsk check,'rasmoutput_test.dsk','0:0xC5',9,noHeader",0}, // raw file check
@@ -31311,6 +31520,35 @@ struct s_autotest_keyword autotest_keyword[]={
 	{"nop : a=fremain(29)",1},
 	{"nop : a=5*fremain(29)",1},
 	{"nop : a=fremain()",1},
+	{"nop : f equ 10 : nop",1},
+	{"nop : i equ 10 : nop",1},
+	{"nop : r equ 10 : nop",1},
+	{"nop : a equ 10 : nop",1},
+	{"nop : b equ 10 : nop",1},
+	{"nop : c equ 10 : nop",1},
+	{"nop : d equ 10 : nop",1},
+	{"nop : e equ 10 : nop",1},
+	{"nop : h equ 10 : nop",1},
+	{"nop : l equ 10 : nop",1},
+	{"nop : ix equ 10 : nop",1},
+	{"nop : iy equ 10 : nop",1},
+	{"nop : lx equ 10 : nop",1},
+	{"nop : hx equ 10 : nop",1},
+	{"nop : ly equ 10 : nop",1},
+	{"nop : hy equ 10 : nop",1},
+	{"nop : xl equ 10 : nop",1},
+	{"nop : xh equ 10 : nop",1},
+	{"nop : yl equ 10 : nop",1},
+	{"nop : yh equ 10 : nop",1},
+	{"nop : ixl equ 10 : nop",1},
+	{"nop : ixh equ 10 : nop",1},
+	{"nop : iyl equ 10 : nop",1},
+	{"nop : iyh equ 10 : nop",1},
+	{"nop : af equ 10 : nop",1},
+	{"nop : bc equ 10 : nop",1},
+	{"nop : de equ 10 : nop",1},
+	{"nop : hl equ 10 : nop",1},
+	{"nop : sp equ 10 : nop",1},
 
 	{"nop : a=rnd()",1},
 	{"nop : a=5+rnd()",1},
@@ -31736,6 +31974,7 @@ printf("testing rasm source integrity : activebank and maxptr update OK\n");
 	if (!FileExists("rasmoutput_CRLF.raw")) {printf("Autotest %03d ERROR (fileExists KO)\n",cpt);exit(-1);} else cpt++;
 	printf("testing file exists OK\n");
         if (FileReadBinary("rasmoutput_CRLF.raw",(char*)opcode,FileGetSize("rasmoutput_CRLF.raw"))!=32) {printf("Autotest %03d ERROR (Binary read must not change 0x0D or 0x0A output)\n",cpt);exit(-1);} else cpt++;
+	FileReadBinaryClose("rasmoutput_CRLF.raw"); /* an open file cannot be removed on MorphOS/Windows */
 	printf("testing pure binary file read OK\n");
 	FileRemoveIfExists("rasmoutput_CRLF.raw");
 	if (FileExists("rasmoutput_CRLF.raw")) {printf("Autotest %03d ERROR (cannot remove file or fileExists KO)\n",cpt);exit(-1);} else cpt++;
@@ -31989,6 +32228,8 @@ printf("testing %d various opcode tests OK\n",i);
 		} else {
 			printf("Autotest %03d ERROR ([%s] test) has %d error%s instead of %serror expected\n",cpt,autotest_keyword[idx].keywordtest,ret,ret>1?"s":"",autotest_keyword[idx].result?"":"no ");
 			sko++;
+			RasmAssembleInfo(autotest_keyword[idx].keywordtest,strlen(autotest_keyword[idx].keywordtest),&opcode,&opcodelen, &debug);
+			for (i=0;i<debug->nberror;i++) printf("%d -> %s\n",i,debug->error[i].msg);
 		}
 		if (opcode) MemFree(opcode);opcode=NULL;
 		idx++;
@@ -34569,6 +34810,9 @@ printf("testing EXO (Z80 simulation with exo_docent) OK\n");cpt++;
 	if (opcode) MemFree(opcode);opcode=NULL;cpt++;
 printf("testing simple extended CPR behaviour OK\n");
 
+	/* the snapshot is still open from an earlier test; an open file
+	   cannot be removed on MorphOS (nor on Windows) */
+	FileWriteBinaryClose("rasmoutput.sna");
 #ifndef OS_WIN
 	// remove workfiles
 	FileRemoveIfExists("snap64k.sna");
@@ -34590,9 +34834,14 @@ printf("testing simple extended CPR behaviour OK\n");
 	ret=RasmAssemble(NULL,0,&opcode,&opcodelen)+RasmAssembleInfo(NULL,0,&opcode,&opcodelen,&debug)+RasmAssembleInfoParam(NULL,0,&opcode,&opcodelen,&debug,&param);
 
 	if (sko) {
+		printf("###############################################################\n");
+		printf("###############################################################\n");
 		printf("ERROR => various opcode tests did not pass! (check backlog)\n");
+		printf("###############################################################\n");
+		printf("###############################################################\n");
 		printf("All other tests OK => %d tests done\n",ret);
 	} else {
+		printf("#########################################\n");
 		printf("All internal tests OK => %d tests done\n",ret);
 	}
 

@@ -1,5 +1,6 @@
 // CPCSyntaxError — Locomotive BASIC decoder.
 #include "basic.h"
+#include "dskfs.h"
 #include <cmath>
 #include <cstdio>
 #include <cctype>
@@ -381,6 +382,80 @@ Bytes BasicDecoder::tokenizeProgram(const std::string& text, std::string& error)
     for (auto& [num, b] : lines) out.insert(out.end(), b.begin(), b.end());
     out.push_back(0); out.push_back(0);
     return out;
+}
+
+bool isTokenizedBasic(const Bytes& b) {
+    size_t pos = 0;
+    int lines = 0, last = 0;
+    while (pos + 2 <= b.size()) {
+        const size_t len = (size_t)(b[pos] | b[pos + 1] << 8);
+        if (len == 0) return lines > 0;
+        if (len < 5 || len > b.size() - pos) return false;
+        const int num = b[pos + 2] | b[pos + 3] << 8;
+        if (num < 1 || num <= last || b[pos + len - 1] != 0) return false;
+        last = num;
+        lines++;
+        pos += len;
+    }
+    return lines > 0 && pos == b.size();
+}
+
+// SAVE"x",P: BASIC writes the program XOR this key, the key's byte n at the program's byte n
+// modulo 128 (from the program's first byte, after the AMSDOS header). Taken from BASIC itself:
+// cpcse-basic-check SAVEs one program plain and protected on the 664 and the 6128 (the same
+// key on both); their XOR repeats every 128 bytes. The check decrypts a whole 2215-byte file.
+static const uint8_t PROTECTION_KEY[128] = {
+    0xab, 0x2c, 0xed, 0xea, 0x6c, 0x37, 0x3f, 0xec, 0x9b, 0xdf, 0x7a, 0x0c, 0x3b, 0xd4, 0x6d, 0xf5,
+    0x04, 0x44, 0x03, 0x11, 0xdf, 0x59, 0x8f, 0x21, 0x73, 0x7a, 0xcc, 0x83, 0xdd, 0x30, 0x6a, 0x30,
+    0xd3, 0x8f, 0x02, 0xf0, 0x60, 0x6b, 0x94, 0xe4, 0xb7, 0xf3, 0x03, 0xa8, 0x60, 0x88, 0xf0, 0x43,
+    0xe8, 0x8e, 0x43, 0xa0, 0xca, 0x84, 0x31, 0x53, 0xf3, 0x1f, 0xc9, 0xe8, 0xad, 0xc0, 0xba, 0x6d,
+    0x93, 0x08, 0xd4, 0x6a, 0x2c, 0xb2, 0x07, 0x27, 0xc0, 0x99, 0xee, 0x89, 0xaf, 0xc3, 0x53, 0xab,
+    0x2b, 0x34, 0x5c, 0x2f, 0x13, 0xee, 0xaa, 0x2c, 0xd9, 0xf4, 0xbc, 0x12, 0xb3, 0xc5, 0x1c, 0x68,
+    0x01, 0x20, 0x2c, 0xfa, 0x77, 0xa6, 0xb5, 0xa4, 0xfc, 0x9b, 0xf1, 0x32, 0x5b, 0xc3, 0x70, 0x77,
+    0x85, 0x36, 0xbe, 0x5b, 0x8c, 0xc8, 0xb5, 0xc2, 0xf0, 0x0b, 0x98, 0x0f, 0x36, 0x9d, 0xd8, 0x96,
+};
+
+bool BasicDecoder::fileToText(const Bytes& fileIn, std::string& text, std::string& what) {
+    Bytes file = fileIn;
+    std::string header;
+    bool protectedFile = false, basicHeader = false;
+    if (auto h = parseAmsdosHeader(file)) {
+        basicHeader = h->type == 0;                      // the header says: a BASIC program
+        const size_t length = h->fullLength > 0 ? (size_t)h->fullLength : (size_t)h->logicalLength;
+        file.erase(file.begin(), file.begin() + 128);
+        if (length > 0 && length < file.size()) file.resize(length);
+        header = "an AMSDOS header, ";
+        if (h->type == 1) {                              // protected: decrypted
+            for (size_t i = 0; i < file.size(); i++) file[i] ^= PROTECTION_KEY[i % 128];
+            protectedFile = true;
+        }
+    }
+    if (protectedFile && !isTokenizedBasic(file)) { what = "a protected BASIC program that does not decrypt to a program"; return false; }
+    if (protectedFile) {
+        text.clear();
+        for (const BasicLine& l : listProgram([&](int a) { return a >= 0 && a < (int)file.size() ? (int)file[(size_t)a] : 0; }, 0))
+            text += std::to_string(l.num) + " " + l.text + "\n";
+        what = header + "a protected BASIC program, decrypted";
+        return true;
+    }
+    // A header that says BASIC is taken at its word: a real program can have a line BASIC
+    // itself lists oddly (the Madness demo's loader hides its lines behind a length word of
+    // &0307), and it lists here as BASIC lists it. Without a header the bytes must look right.
+    if ((basicHeader && file.size() >= 2) || isTokenizedBasic(file)) {
+        text.clear();
+        for (const BasicLine& l : listProgram([&](int a) { return a >= 0 && a < (int)file.size() ? (int)file[(size_t)a] : 0; }, 0))
+            text += std::to_string(l.num) + " " + l.text + "\n";
+        what = header + "a tokenized BASIC program";
+        return true;
+    }
+    // ASCII: up to the first &1A (AMSDOS's end of an ASCII file), CR taken out
+    text.clear();
+    for (uint8_t c : file) {
+        if (c == 0x1a) break;
+        if (c != '\r') text += (char)c;
+    }
+    what = header + "ASCII text";
+    return true;
 }
 
 std::vector<BasicLine> BasicDecoder::listProgram(const std::function<int(int)>& read, int startAddr) {

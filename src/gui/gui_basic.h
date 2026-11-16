@@ -7,8 +7,12 @@
 #include <map>
 #include <ostream>
 #include <string>
+#include <utility>
+#include <vector>
 
 #include "core/basic.h"
+
+struct ImGuiInputTextCallbackData;
 
 namespace cpcse {
 
@@ -29,14 +33,45 @@ public:
     void saveFile(const std::string& path);
     void requestOpen();
     void requestSave(bool saveAs);
-    void setSource(const std::string& text) { source = text; }
+    void setSource(const std::string& text) {
+        source = text;
+        if (editorActive) { editPending = true; editText = source; editSelA = editSelB = 0; }
+        findA = findB = -1; selA = selB = 0;
+    }
     const std::string& text() const { return source; }
     const std::string& status() const { return message; }
 
     void loadSettings(const std::map<std::string, std::string>& ini);
     void saveSettings(std::ostream& out) const;
 
+    // FIND AND REPLACE (user 2026-11-17, "add em all"): Ctrl+F, Ctrl+H, F3 / Shift+F3, Enter
+    // in the box. A replace keeps the text before it: "Undo the replace" gives it back.
+    void setFind(const std::string& what, const std::string& with, bool matchCase, bool wholeWord);
+    bool findNext(bool backward);
+    bool replaceOne();
+    int replaceAll();
+    bool undoReplace();
+    int matchStart() const { return findA; }
+    const std::string& findStatus() const { return findMessage; }
+
 private:
+    bool findOpen = false, replaceOpen = false, findFocus = false, findCase = false, findWord = false;
+    char findText[128] = {0}, replaceText[128] = {0};
+    int findA = -1, findB = -1;
+    std::string findMessage;
+    int selA = 0, selB = 0;                     // the editor's selection, as its callback last saw it
+    bool editorActive = false, focusEditor = false;
+    bool editPending = false, selectPending = false;
+    std::string editText;
+    int editSelA = 0, editSelB = 0;
+    std::string beforeReplace;                  // the text before the last replace
+    bool canUndoReplace = false;
+    std::vector<std::pair<int, int>> matches() const;
+    void select(int a, int b);
+    void changeText(std::string text, int a, int b);
+    void findBar();
+    void drawMatches(const char* childName);
+    static int editorCallback(ImGuiInputTextCallbackData* data);
     EmuHost& host;
     FileBrowser& browser;
     SaveDialog& saver;

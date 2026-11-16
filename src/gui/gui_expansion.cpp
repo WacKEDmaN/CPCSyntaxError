@@ -209,7 +209,7 @@ void ExpansionPortWindow::draw(bool* open) {
             ImGui::EndPopup();
         }
         if (p.breakOn) {
-            bar.textColored(ImVec4(1.0f, 0.6f, 0.3f, 1.0f), ("stops on: " + decoderNames(p.breakOn, false)).c_str());
+            bar.textColored(kWarn, ("stops on: " + decoderNames(p.breakOn, false)).c_str());
         }
     }
     if (host.paused && p.breakOn && (p.lastDecoders & p.breakOn)) {
@@ -284,7 +284,7 @@ void ExpansionPortWindow::draw(bool* open) {
             std::snprintf(line, sizeof line, "Last I/O: %s &%04X %s &%02X at PC &%04X: ", p.lastWrite ? "OUT" : "IN", p.lastPort,
                           p.lastWrite ? "<-" : "->", p.lastValue, p.lastPc);
             const bool clashNow = popcount(p.lastDecoders & BOARD_MASK) >= 2;
-            if (clashNow) ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.35f, 0.3f, 1.0f));
+            if (clashNow) ImGui::PushStyleColor(ImGuiCol_Text, kBad);
             ImGui::TextWrapped("%s%s", line, who.empty() ? "no device answers" : who.c_str());
             if (clashNow) ImGui::PopStyleColor();
         } else ImGui::TextDisabled("No I/O cycle yet");
@@ -324,7 +324,7 @@ void ExpansionPortWindow::draw(bool* open) {
         }
         // the clashes
         if (!clashes.empty()) {
-            ImGui::TextColored(ImVec4(1.0f, 0.35f, 0.3f, 1.0f), "Ports two boards both answer (a real bus has the same clash):");
+            ImGui::TextColored(kBad, "Ports two boards both answer (a real bus has the same clash):");
             for (const Clash& c : clashes) {
                 char range[24];
                 if (c.first == c.last) std::snprintf(range, sizeof range, "&%04X", c.first);
@@ -357,7 +357,7 @@ void ExpansionPortWindow::draw(bool* open) {
                 ImGui::TableNextColumn();
                 const std::string who = decoderNames(a.decoders, false);
                 if (who.empty()) ImGui::TextDisabled("nothing");
-                else if (popcount(a.decoders & BOARD_MASK) >= 2) ImGui::TextColored(ImVec4(1.0f, 0.35f, 0.3f, 1.0f), "%s", who.c_str());
+                else if (popcount(a.decoders & BOARD_MASK) >= 2) ImGui::TextColored(kBad, "%s", who.c_str());
                 else ImGui::TextUnformatted(who.c_str());
             }
             ImGui::EndTable();

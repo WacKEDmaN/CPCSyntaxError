@@ -27,11 +27,13 @@
 #include <memory>
 #include <ostream>
 #include <set>
+#include <unordered_map>
 #include <string>
 #include <vector>
 
 #include "emuhost.h"
 #include "gui_debugger.h"
+#include "gui_theme.h"
 #include "gui_widgets.h"
 #include "core/cpr_loader.h"
 #include "core/profiler.h"
@@ -65,11 +67,22 @@ public:
     // Mono (embedded) at 15 px times uiScale, and room between things.
     void applyStyle();
     float uiScale = 1.0f;
+    // The colours (gui_theme.h): the theme in use, and the one it was as chosen or loaded
+    // (each colour's Reset goes back to that). cpcse.ini keeps its base and the colours that
+    // differ from it; theme files (.cpctheme) are in themeDir (main.cpp: beside cpcse.ini).
+    GuiTheme theme = builtInThemes().front();
+    GuiTheme themeChosen = builtInThemes().front();
+    std::string themeDir = "themes";
     // os_windows in cpcse.ini: ImGui's multi-viewport (windows and tooltips in OS windows of
     // their own). main.cpp reads it at start; changing it takes effect at the next start.
     bool osWindows = true;
     void loadSettings(const std::map<std::string, std::string>& ini);
     void saveSettings(std::ostream& out) const;
+
+    // A source file dropped on the window (or given another way): .asm/.z80/.s/.inc/.mac into
+    // the assembler, .c/.h into the C window, .bas into the BASIC window (text or tokenized),
+    // each window opened. False for any other file (the host loads it as media).
+    bool openSourceFile(const std::string& path);
 
     // The whole UI for one frame: menu bar, dockspace, every open window, status bar.
     void draw(const ShellFrameInfo& info);
@@ -129,6 +142,40 @@ private:
     std::unique_ptr<ExpansionPortWindow> expansionPort;
     std::unique_ptr<DevServer> dev;
     void sectionDevelopment(bool asMenu);   // Settings > External debugging (gui_panels.cpp)
+    void sectionTheme(bool asMenu);         // Settings > Colours and themes (gui_shell_theme.cpp)
+    // debugger tools (gui_debug_tools.cpp): watches, memory search, export as RASM source
+    struct Watch { std::string expr; int type = 0; int last = -1; double changedAt = -10.0; };
+    std::vector<Watch> watches;               // watch.N in cpcse.ini
+    char watchInput[64] = {};
+    int watchType = 0;
+    int watchAddress(const std::string& expr) const;
+    void windowWatches();
+    void memorySearchContent();
+    void memorySearch();
+    char memSearchText[128] = {};
+    int memSearchKind = 0, memSearchScope = 0;
+    bool memSearchAnyCase = true;
+    std::vector<int> memSearchHits;
+    std::string memSearchWhy;
+    void disassemblyExportPopup();
+    bool exportOpen = false;
+    char exportFrom[8] = "4000", exportTo[8] = "40FF";
+    // shell tools (gui_shell_tools.cpp): the command palette, the screen to the clipboard, the
+    // keyboard shortcuts window
+    bool copyScreenToClipboard();
+    struct PaletteCommand { std::string name, keys; std::function<void()> run; };
+    std::vector<PaletteCommand> paletteCommands();
+    std::vector<PaletteCommand> paletteList;  // made when the palette opens
+    void commandPalette();
+    bool paletteOpen = false;
+    char paletteFilter[128] = {};
+    int paletteSelected = 0;
+    void windowShortcuts();
+    bool showShortcuts = false;
+    char themeFilter[64] = {};
+    std::vector<std::pair<std::string, std::string>> themeFiles;   // { name, path } in themeDir
+    void scanThemeFiles();
+    void useTheme(const GuiTheme& t);       // in use and chosen, applied
     // The Cartridge window's PicoGX part (gui_picogx.cpp): its SD card folder, browsed as the
     // cartridge's menu shows it, and the file to launch.
     void picoGxPanel();
@@ -201,7 +248,7 @@ private:
     void openAllSettings();
     // The settings sections' windows, in windowSettings()'s order.
     static constexpr const char* SETTINGS_WINDOWS[] = {
-        "Video settings", "Audio settings", "Input settings", "Expansions", "External debugging" };
+        "Video settings", "Audio settings", "Input settings", "Expansions", "External debugging", "Colours and themes" };
     // A window to bring to the front as soon as it exists (it may be opened this frame).
     const char* focusWindowNextFrame = nullptr;
     void windowAbout();
@@ -358,10 +405,48 @@ private:
         bool screenLayout = true, cpcShape = true, grid = true;
         bool pixelGrid = true;             // lines between the CPC pixels, from 4 screen pixels a pixel
         int selected = -1;
+        // drawing (user 2026-11-17, "as in WinAPE"): the pen chosen, Draw on, and the last pixel
+        // painted (in picture pixels, -1 none) so a stroke is joined between frames
+        bool draw = false;
+        int pen = 1;
+        int lastX = -1, lastY = -1;
+        // the tools (user 2026-11-17, "add em all"): 0 pen, 1 line, 2 box, 3 filled box, 4 fill.
+        // A line or a box goes from where the button went down (anchor) to where it comes up.
+        int tool = 0;
+        int anchorX = -1, anchorY = -1;
     } gfx;
+    // a tile copied (Copy tile), its bytes line after line
+    std::vector<uint8_t> gfxClip;
+    int gfxClipW = 0, gfxClipH = 0;
+    int gfxInkPen = -1;                               // the pen whose ink the popup changes
+    int gfxLimit() const;                             // the size of the memory shown
+    void gfxStrokeByte(int at, int value);            // a byte of the stroke (kept for undo)
+    void gfxEndStroke();                              // the stroke made one undo step
+    void gfxInkPopup();
+public:
+    // for the checks and the window: the selected tile's bytes, and the PNG put into it
+    bool gfxCopyTile();
+    bool gfxPasteTile();
+    std::string gfxImportPng(const std::vector<uint8_t>& file);   // what was done, or why not
+    void gfxSetInk(int pen, int value);               // a hardware colour (CPC), or &GRB (Plus)
+private:
     std::vector<uint32_t> gfxPixels;
     unsigned gfxFinderTexture = 0;
     int gfxRead(int address) const;
+    void gfxWrite(int address, int value, int source = -1);   // into the memory the finder shows (or `source`)
+    // Undo for drawing (user 2026-11-17): a stroke is one step, each byte it changed with its
+    // value before and after. The history goes when the machine is booted or reset.
+    struct GfxEdit { int source = 0, address = 0; uint8_t before = 0, after = 0; };
+    struct GfxStroke { std::vector<GfxEdit> edits; };
+    std::vector<GfxStroke> gfxUndo, gfxRedo;
+    GfxStroke gfxStroke;                              // the stroke being drawn
+    std::unordered_map<long long, size_t> gfxStrokeIndex;   // (source, address) -> its edit
+    const void* gfxUndoMachine = nullptr;
+    uint32_t gfxUndoResets = 0;
+    void gfxUndoStroke();
+    void gfxRedoStroke();
+    int gfxPenCount() const;                          // the pens the format has (2, 4 or 16)
+    void gfxPens();                                   // the pens, numbered, in their colours
     int gfxAddress(int start, int x, int y) const;
     uint32_t gfxInk(int pen) const;
 
@@ -370,6 +455,7 @@ private:
     void windowChips();             // CRTC, Gate Array, monitor, ASIC, PSG, PPI, keyboard, disc, tape
     void windowMemory();            // hex editor, memory map
     void cpuContent();
+    static std::string timingToFrame(long long tStates);   // TIMING: 19968 NOPs less the count
     void disassemblyContent();
     void breakpointsContent();
     void memoryHexContent();

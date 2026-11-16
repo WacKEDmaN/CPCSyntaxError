@@ -6,8 +6,6 @@
 
 namespace cpcse {
 
-static const ImVec4 kGood(0.45f, 0.9f, 0.45f, 1.0f);
-static const ImVec4 kNote(0.95f, 0.8f, 0.35f, 1.0f);
 
 CheatsWindow::CheatsWindow(EmuHost& h, FileBrowser& b, SaveDialog& s) : host(h), browser(b), saver(s) {}
 
@@ -305,7 +303,7 @@ void CheatsWindow::tabWizard() {
         if (ImGui::Button("Find another")) restart();
         break;
     }
-    if (!message.empty()) { ImGui::Spacing(); ImGui::TextColored(kNote, "%s", message.c_str()); }
+    if (!message.empty()) { ImGui::Spacing(); ImGui::TextColored(kWarn, "%s", message.c_str()); }
     if (step != CHOOSE && step != DONE) {
         ImGui::Spacing();
         ImGui::Separator();

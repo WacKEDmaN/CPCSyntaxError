@@ -191,10 +191,30 @@ void GuiShell::cpuContent() {
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("Count from 0 from here (the machine's own clock runs on)");
         if (after().smallButton(timingNops ? "NOP##timingunit" : "T##timingunit")) timingNops = !timingNops;
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("Show T-states, or NOPs: 4 T-states, one microsecond each, as CPC programmers count");
+        // The count against one frame, 19968 NOPs (312 lines of 64): 19968 less the count, so
+        // + is what is left to a frame and - how far past it. Only up to 22000 NOPs, where a
+        // count is still about one frame (user 2026-11-17).
+        if (const std::string frame = timingToFrame(since); !frame.empty()) {
+            ImGui::TextColored(since > 19968LL * 4 ? kWarn : kInfo, "%s", frame.c_str());
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("19968 NOPs (one frame: 312 lines of 64 NOPs) less the NOP count above.\n"
+                                  "+: NOPs still to go to a frame;  -: NOPs past it. Shown up to 22000 NOPs.");
+        }
         if (timingZero) ImGui::TextDisabled("since the zero; %lld T in all", now);
         ImGui::Text("picture    %d   beam %d,%d", e->classicMonitorFrame,
                     e->classicMonitorCharacter, e->classicMonitorLine);
     }
+}
+
+// The TIMING section's line against one frame: 19968 NOPs less the count (T-states in, the
+// part of a NOP shown in T), "" past 22000 NOPs.
+std::string GuiShell::timingToFrame(long long tStates) {
+    if (tStates < 0 || tStates > 22000LL * 4) return "";
+    const long long diffT = 19968LL * 4 - tStates;
+    char frame[64];
+    if (diffT % 4) std::snprintf(frame, sizeof frame, "to 19968   %+lld %+lldT", diffT / 4, diffT % 4);
+    else std::snprintf(frame, sizeof frame, "to 19968   %+lld", diffT / 4);
+    return frame;
 }
 
 // ============================================================== Disassembly
@@ -268,6 +288,13 @@ void GuiShell::disassemblyContent() {
             if (a >= 0) { disasmTop = a; disasmFollow = false; }
         }
         if (after().smallButton("PC")) { disasmFollow = true; disasmLastPc = -1; }
+        if (after().smallButton("Export .asm...")) {
+            std::snprintf(exportFrom, sizeof exportFrom, "%04X", disasmTop & 0xffff);
+            std::snprintf(exportTo, sizeof exportTo, "%04X", (disasmTop + 0xff) & 0xffff);
+            exportOpen = true;
+        }
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("A range of memory as RASM source, labels for its jumps and calls (it assembles back to the same bytes)");
+        disassemblyExportPopup();
 
         const float lineH = ImGui::GetTextLineHeightWithSpacing();
         ImGui::BeginChild("##dis", ImVec2(0, 0), ImGuiChildFlags_Borders, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
@@ -295,7 +322,7 @@ void GuiShell::disassemblyContent() {
             auto label = debugger.labelAt.find(addr);
             if (label != debugger.labelAt.end()) {
                 ImGui::SetCursorPosX(ImGui::GetCursorPosX() + gutter);
-                ImGui::TextColored(ImVec4(0.55f, 0.8f, 1.0f, 1.0f), "%s:", label->second.c_str());
+                ImGui::TextColored(kInfo, "%s:", label->second.c_str());
                 if (++row >= rows) break;
             }
             DisasmResult d = debugger.disassembler.disassemble(read, addr);
@@ -438,7 +465,7 @@ void GuiShell::memoryHexContent() {
                         int v = readAt(a);
                         char t[4]; std::snprintf(t, sizeof(t), "%02X", v);
                         bool mark = memView == 0 && (a == pc || a == sp);
-                        if (mark) ImGui::PushStyleColor(ImGuiCol_Text, a == pc ? kPcColour : ImVec4(0.55f, 0.8f, 1.0f, 1.0f));
+                        if (mark) ImGui::PushStyleColor(ImGuiCol_Text, a == pc ? kPcColour : kInfo);
                         else if (v == 0) ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
                         if (ImGui::Selectable(t, memSelected == a, ImGuiSelectableFlags_AllowDoubleClick, ImVec2(cellW, 0))) {
                             memSelected = a;
@@ -513,7 +540,7 @@ void GuiShell::breakpointsContent() {
                 ImGui::TableNextColumn();
                 char cond[128]; std::snprintf(cond, sizeof(cond), "%s", bp.condition.c_str());
                 ImGui::SetNextItemWidth(-1);
-                if (!bp.error.empty()) ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.45f, 0.4f, 1.0f));
+                if (!bp.error.empty()) ImGui::PushStyleColor(ImGuiCol_Text, kBad);
                 ImGui::InputTextWithHint("##cond", "always", cond, sizeof(cond));
                 if (!bp.error.empty()) ImGui::PopStyleColor();
                 if (ImGui::IsItemDeactivatedAfterEdit()) debugger.setCondition(bp, cond);
@@ -831,6 +858,7 @@ void GuiShell::chipTabsIo() {
         GX4000* e = host.emu;
         {
             AY38912* ay = e->ay;
+            if (ay) ay->scopeOn = false;                  // on again below while the PSG tab is on show
             if (ay && ImGui::BeginTabItem("PSG")) {
                 ImGui::BeginChild("##psg");
                 ImGui::PushTextWrapPos(0.0f);    // the pane is a child window: its text wraps here
@@ -861,6 +889,26 @@ void GuiShell::chipTabsIo() {
                 int envPeriod = r[11] | (r[12] << 8);
                 ImGui::Text("Noise period %d   Envelope period %d (%.2f Hz)  shape &%X%s", r[6] & 31, envPeriod,
                             envPeriod ? 1000000.0 / (256.0 * envPeriod) : 0.0, r[13] & 15, ay->envelopeHolding ? "  holding" : "");
+                // each channel's output as the speaker gets it (the last SCOPE samples), and a
+                // switch to leave it out of the sound (the chip runs on: only the mix changes)
+                sectionHeading("CHANNELS");
+                ay->scopeOn = true;                       // recorded while this tab is on show
+                const float scopeH = ImGui::GetTextLineHeight() * 2.6f;
+                for (int c = 0; c < 3; c++) {
+                    ImGui::PushID(c);
+                    char label[16];
+                    std::snprintf(label, sizeof label, "Mute %c", ch[c]);
+                    bool m = ay->muted[(size_t)c];
+                    if (ImGui::Checkbox(label, &m)) ay->muted[(size_t)c] = m;
+                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Leave channel %c out of the sound (the chip and the program are not changed)", ch[c]);
+                    ImGui::SameLine();
+                    float wave[AY38912::SCOPE];
+                    for (int k = 0; k < AY38912::SCOPE; k++) wave[k] = ay->scope[(size_t)c][(size_t)((ay->scopePos + k) % AY38912::SCOPE)];
+                    ImGui::PushStyleColor(ImGuiCol_PlotLines, m ? ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled) : kInfo);
+                    ImGui::PlotLines("##scope", wave, AY38912::SCOPE, 0, nullptr, 0.0f, 1.0f, ImVec2(std::max(60.0f, ImGui::GetContentRegionAvail().x), scopeH));
+                    ImGui::PopStyleColor();
+                    ImGui::PopID();
+                }
                 sectionHeading("REGISTERS");
                 if (ImGui::BeginTable("##ayregs", 4, ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingFixedFit)) {
                     for (int i = 0; i < 16; i++) {
@@ -1058,6 +1106,7 @@ void GuiShell::windowMemory() {
         if (ImGui::BeginTabBar("##memtabs")) {
             if (ImGui::BeginTabItem("Hex", nullptr, memTabRequest == 0 ? ImGuiTabItemFlags_SetSelected : 0)) { memoryHexContent(); ImGui::EndTabItem(); }
             if (ImGui::BeginTabItem("Map", nullptr, memTabRequest == 1 ? ImGuiTabItemFlags_SetSelected : 0)) { memMapShown = true; memoryMapContent(); ImGui::EndTabItem(); }
+            if (ImGui::BeginTabItem("Search", nullptr, memTabRequest == 2 ? ImGuiTabItemFlags_SetSelected : 0)) { memorySearchContent(); ImGui::EndTabItem(); }
             ImGui::EndTabBar();
         }
         memTabRequest = -1;

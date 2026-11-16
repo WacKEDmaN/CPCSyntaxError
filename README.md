@@ -232,9 +232,19 @@ Select the expansions in the **Expansions** menu or in the Settings window.
   - The registers, flags and stack of the Z80, next to the disassembly with labels.
   - Breakpoints with conditions, and memory watchpoints.
   - **Chips**: live views of the CRTC, the Gate Array, the monitor, the Plus ASIC, the PSG,
-    the PPI, the keyboard matrix, the disc controller and the tape.
+    the PPI, the keyboard matrix, the disc controller and the tape. The PSG tab has a scope for
+    each channel and a switch to mute each one.
+  - **Watches**: addresses or labels (with an offset, such as `table+2`), shown as a byte or a
+    word. A value that changes shows in another colour for a second. Type a new value to
+    write it.
+  - **Export .asm** (in the disassembly): a range of memory as RASM source, with labels for
+    its jumps and calls. The export is assembled again: what does not give back the same
+    bytes is written as `db`. The 6128's OS and BASIC ROMs come back byte for byte.
+  - The **timing** line shows the difference between the NOP count and 19968 NOPs (one frame).
   - **Memory**: a hex editor and a **memory map**. The map shows one pixel for each byte of a
     64K bank. The colour shows what the Z80 did there: opcode fetch, operand, read or write.
+    The **Search** tab finds bytes (`??` is any byte), text (in any case) or a word, in the
+    Z80's 64K or in all the RAM.
   - **GFX9000**: its picture, registers, palette, command engine and VRAM.
   - **Logic analyser**: the machine's signals as traces, one sample a microsecond: HSYNC,
     VSYNC, C-SYNC, DISPEN, INT, HALT, the cassette motor and input, the disc controller's
@@ -277,6 +287,12 @@ Select the expansions in the **Expansions** menu or in the Settings window.
   sprite data, to find sprites, fonts and screens. Set the width and the height until the
   graphics line up; select a linear layout or the CPC screen layout. Save a tile as a PNG,
   or copy it as `db` lines.
+  - **Draw** on the picture, as in WinAPE, with the pens of the mode shown in their real
+    colours: **Pen**, **Line**, **Box**, **Filled box** and **Fill**. A right-click on a pixel
+    takes its pen. Ctrl+Z and Ctrl+Y undo and redo each stroke or shape.
+  - Right-click a pen to change its ink (the 27 CPC colours, or the Plus's 4096).
+  - **Copy tile** and **Paste tile**, and **Import PNG**: each pixel of the picture gets the
+    pen with the nearest ink.
 - **The DSK editor** (Tools, or Media → Drive → Edit):
   - Make new discs in all the CPC formats: DATA, SYSTEM, IBM, 42 or 80 tracks, ParaDOS,
     ROMDOS, Vortex, Dobbertin, or your own geometry.
@@ -290,7 +306,14 @@ Select the expansions in the **Expansions** menu or in the Settings window.
   run. You can change the colours of the syntax.
   - Several programs can be open, each in its tab with the files it links after it. F9 builds
     the program of the tab on show.
-  - RASM is the original from its GitHub, with no changes of ours.
+  - RASM is the original from its GitHub (version 3.3.3), with no changes of ours.
+  - **Undo and redo** (Ctrl+Z, Ctrl+Y) for each tab, also after the editor loses the focus.
+  - **Find and replace** (Ctrl+F, Ctrl+H, F3), **go to definition** (F12 or Ctrl+click), and
+    a **Labels** tab with the names the file defines. Ctrl+/ puts a comment on or off for the
+    selected lines; Tab and Shift+Tab move the lines in or out.
+  - A column shows the cost of each line in NOPs, also for lines with several instructions
+    (`ld a,1 : out (c),a`). The costs were measured on the emulated CPC.
+  - Drag a `.asm`, `.c` or `.bas` file onto the window to open it.
   - The **WinAPE** syntax choice gives RASM's own options: `&` is hex and expressions work as
     in Maxam. RASM knows `brk`, `list`, `nolist`, `let`, `charset` and the `relocate`
     directives itself. A `brk` label sets a debugger breakpoint.
@@ -314,7 +337,9 @@ Select the expansions in the **Expansions** menu or in the Settings window.
   a label to see its address and its value.
 - **The BASIC window** (next to the assembler) lists the BASIC program in the machine, edits
   it, and puts it back into memory at once, as if it had been typed. It can type RUN for you.
-  Its tokenizer is checked byte for byte against Locomotive BASIC itself.
+  Its tokenizer is checked byte for byte against Locomotive BASIC itself. It opens ASCII
+  `.bas` files and the files BASIC saves (tokenized, with or without an AMSDOS header), also
+  protected ones. It has find and replace (Ctrl+F, Ctrl+H).
 - **External debugging and code loading**: a **GDB server** for
   [DeZog](https://github.com/maziac/DeZog) in VS Code, a **command API** with the `cpcse-ctl`
   client, an **MCP server** for AI agents, and an **auto-reload** of your build. Refer to
@@ -340,6 +365,12 @@ Select the expansions in the **Expansions** menu or in the Settings window.
 - **Keys**: the CPC layout (each key by its position) or the PC layout (each key types its
   character on the CPC), for a UK, French or Spanish CPC keyboard.
 - **File → Recent files**: the last 12 discs, tapes, cartridges and snapshots.
+- **Themes** (Window → Settings → Colours and themes): a colour for each part of the interface (all of
+  Dear ImGui's colours and the program's own), five themes included, and your own themes as
+  `.cpctheme` files.
+- **The command palette** (Ctrl+Shift+P): type part of a command's name and press Enter.
+- **Copy the screen** to the clipboard (Ctrl+Shift+C, or the File menu).
+- **Help → Keyboard shortcuts** lists every key of the program.
 - Use **Window → Interface size** to make the interface larger (90% to 200%).
 - The file picker shows all the drives (C:, D: and more on Windows). You can type a folder
   name into it. The Save dialog works the same way. Files with all types of names open,
@@ -407,6 +438,8 @@ These files are next to the program. **Window → Reset layout** sets the defaul
 
 | Key | Action |
 |---|---|
+| Ctrl+Shift+P | The command palette |
+| Ctrl+Shift+C | Copy the CPC's screen to the clipboard |
 | F11 | Fullscreen (or double-click the picture) |
 | Ctrl+R | Reset |
 | Ctrl+P | Pause or run |
@@ -420,6 +453,8 @@ These files are next to the program. **Window → Reset layout** sets the defaul
 | F9, Ctrl+F9 | Assemble, assemble and run (in the assembler window); build, build and run for a `.c` file |
 | Ctrl+F10 | Run to the cursor's line, past the breakpoints (in the assembler window) |
 | F10, F11, Shift+F11 | Step a C line over, into, out (in the assembler window, for a `.c` file) |
+| Ctrl+F, Ctrl+H, F3 | Find, find and replace, the next match (in the assembler and BASIC windows) |
+| F12, Ctrl+click | Go to the definition of the name under the cursor (in the assembler window) |
 | F12, middle button | Release the mouse (click the picture to give the mouse to the Symbiface or the mouse interface) |
 
 The keys go to the CPC. The exception is when a debugger or assembler window has the focus.

@@ -440,7 +440,7 @@ void GuiShell::gfxInternalsTabs() {
                         const int value = v->vram[(size_t)v->vramIndex(b + i)];
                         ImGui::SameLine(0, i == 8 ? 12.0f : 6.0f);
                         const bool mark = b + i == wa || b + i == ra;
-                        if (mark) ImGui::TextColored(b + i == wa ? kPcColour : ImVec4(0.55f, 0.8f, 1.0f, 1.0f), "%02X", value);
+                        if (mark) ImGui::TextColored(b + i == wa ? kPcColour : kInfo, "%02X", value);
                         else if (value == 0) ImGui::TextDisabled("00");
                         else ImGui::Text("%02X", value);
                         text[i] = value >= 32 && value < 127 ? (char)value : '.';

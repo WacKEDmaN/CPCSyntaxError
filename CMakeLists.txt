@@ -213,6 +213,11 @@ add_executable(cpcse
   src/gui/emuhost.cpp
   src/gui/crt_filter.cpp
   src/gui/gui_shell.cpp
+  src/gui/gui_debug_tools.cpp
+  src/gui/disasm_export.cpp
+  src/gui/gui_shell_tools.cpp
+  src/gui/gui_shell_theme.cpp
+  src/gui/gui_theme.cpp
   src/gui/gui_picogx.cpp
   src/gui/gui_panels.cpp
   src/gui/gui_widgets.cpp
@@ -228,6 +233,8 @@ add_executable(cpcse
   src/gui/gui_cro.cpp
   src/gui/gui_keyboard.cpp
   src/gui/gui_assembler.cpp
+  src/gui/gui_assembler_edit.cpp
+  src/gui/asm_nops.cpp
   src/gui/c_build.cpp
   src/gui/cpct_assets.cpp
   src/gui/cpct_media.cpp

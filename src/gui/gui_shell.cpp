@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <ctime>
 #include <filesystem>
 #include <SDL.h>              // SDL_OpenURL: the machine profiles folder
@@ -56,6 +57,7 @@ GuiShell::GuiShell(EmuHost& h) : host(h), debugger(h) {
         { "Debugger", "win_debugger", false, false },
         { "Chips", "win_chips", false, false },
         { "Memory", "win_memory", false, false },
+        { "Watches", "win_watches", false, false },
         { "Logic analyser", "win_logic", false, false },
         { "Expansion port", "win_expansion", false, false },
         { "Profiler", "win_profiler", false, false },
@@ -79,6 +81,7 @@ GuiShell::GuiShell(EmuHost& h) : host(h), debugger(h) {
         { "Input settings", "win_set_input", false, false },
         { "Expansions", "win_set_expansions", false, false },
         { "External debugging", "win_set_dev", false, false },
+        { "Colours and themes", "win_set_theme", false, false },
     };
     assembler = std::make_unique<AssemblerWindow>(host, debugger, browser, saver);
     assembler->showInDisassembly = [this](int a) { showInDisassembly(a); };
@@ -121,6 +124,31 @@ void GuiShell::loadSettings(const std::map<std::string, std::string>& ini) {
     auto us = ini.find("ui_scale");
     if (us != ini.end()) uiScale = std::clamp((float)std::atof(us->second.c_str()), 0.75f, 2.5f);
     if (auto ow = ini.find("os_windows"); ow != ini.end()) osWindows = std::atoi(ow->second.c_str()) != 0;
+    // the watches: watch.N=<type>,<address or label>
+    watches.clear();
+    for (int n = 0; n < 256; n++) {
+        auto w = ini.find("watch." + std::to_string(n));
+        if (w == ini.end()) break;
+        const size_t comma = w->second.find(',');
+        if (comma == std::string::npos) continue;
+        watches.push_back({ w->second.substr(comma + 1), std::clamp(std::atoi(w->second.substr(0, comma).c_str()), 0, 3) });
+    }
+    // the theme: its base, its name, and the colours that differ from the base
+    {
+        std::string text;
+        if (auto b = ini.find("gui_theme_base"); b != ini.end()) text += "base=" + b->second + "\n";
+        if (auto n = ini.find("gui_theme_name"); n != ini.end()) text += "name=" + n->second + "\n";
+        for (const auto& kv : ini) if (kv.first.rfind("gui_colour.", 0) == 0) text += kv.first.substr(11) + "=" + kv.second + "\n";
+        GuiTheme t;
+        std::string why;
+        if (themeFromText(text, t, why)) { theme = themeChosen = t; }
+        else if (auto b = ini.find("gui_theme_base"); b != ini.end()) {
+            if (const GuiTheme* bt = builtInTheme(b->second)) {      // a built-in, unchanged
+                theme = themeChosen = *bt;
+                if (auto n = ini.find("gui_theme_name"); n != ini.end() && !n->second.empty()) theme.name = themeChosen.name = n->second;
+            }
+        }
+    }
     auto str = [&](const char* k, std::string& v) { auto i = ini.find(k); if (i != ini.end()) v = i->second; };
     str("csl_script", cslScript); str("csl_out", cslOut); str("csl_diskdir", cslDiskDir);
     auto ci = ini.find("csl_crtc"); if (ci != ini.end()) cslCrtc = std::atoi(ci->second.c_str());
@@ -140,6 +168,18 @@ void GuiShell::saveSettings(std::ostream& out) const {
     out << "gfx_window_scale=" << gfxWindowScale << "\n";
     out << "ui_scale=" << uiScale << "\n";
     out << "os_windows=" << (osWindows ? 1 : 0) << "\n";
+    for (size_t n = 0; n < watches.size() && n < 256; n++) out << "watch." << n << "=" << watches[n].type << "," << watches[n].expr << "\n";
+    {
+        const GuiTheme* base = builtInTheme(theme.base);
+        if (!base) base = &builtInThemes().front();
+        out << "gui_theme_base=" << base->name << "\n" << "gui_theme_name=" << theme.name << "\n";
+        for (int i = 0; i < ImGuiCol_COUNT; i++)
+            if (colourToHex(theme.imgui[i]) != colourToHex(base->imgui[i]))
+                out << "gui_colour." << ImGui::GetStyleColorName(i) << "=" << colourToHex(theme.imgui[i]) << "\n";
+        for (int i = 0; i < APP_COLOUR_COUNT; i++)
+            if (colourToHex(theme.app[i]) != colourToHex(base->app[i]))
+                out << "gui_colour.Program." << appColourKey(i) << "=" << colourToHex(theme.app[i]) << "\n";
+    }
     out << "csl_script=" << cslScript << "\n" << "csl_out=" << cslOut << "\n"
         << "csl_diskdir=" << cslDiskDir << "\n" << "csl_crtc=" << cslCrtc << "\n";
     assembler->saveSettings(out);
@@ -160,11 +200,10 @@ void GuiShell::applyStyle() {
         mono = io.Fonts->AddFontFromMemoryTTF((void*)kDejaVuSansMono, (int)kDejaVuSansMonoSize, 15.0f, &cfg);
     }
     io.FontDefault = mono;
-    ImGui::StyleColorsDark();
+    applyTheme(theme);                        // the colours (gui_theme.h; the default: the dark theme)
     ImGuiStyle& s = ImGui::GetStyle();
     s.WindowRounding = 0.0f;
     s.Colors[ImGuiCol_WindowBg].w = 1.0f;   // floating OS windows must be opaque
-    s.Colors[ImGuiCol_TabSelectedOverline] = kAccent;
     s.WindowPadding = ImVec2(10, 10);
     s.FramePadding = ImVec2(7, 4);
     s.ItemSpacing = ImVec2(9, 6);
@@ -189,9 +228,12 @@ bool GuiShell::beginTool(const char* title, ImGuiWindowFlags flags) {
 
 void GuiShell::handleShortcuts() {
     ImGuiIO& io = ImGui::GetIO();
+    // the command palette: from anywhere, a text box too
+    if (ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_P)) { paletteOpen = true; return; }
     if (io.WantTextInput || !host.booted()) return;
-    if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_R, false)) host.reset();
-    if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_P, false)) { if (host.paused) debugger.run(); else debugger.pause(); }
+    if (ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_C)) { copyScreenToClipboard(); return; }
+    if (io.KeyCtrl && !io.KeyShift && ImGui::IsKeyPressed(ImGuiKey_R, false)) host.reset();
+    if (io.KeyCtrl && !io.KeyShift && ImGui::IsKeyPressed(ImGuiKey_P, false)) { if (host.paused) debugger.run(); else debugger.pause(); }
     // the quick save slots: Ctrl+1..9 loads, Ctrl+Shift+1..9 saves
     if (io.KeyCtrl && !io.KeyAlt)
         for (int s = 1; s <= EmuHost::SLOT_COUNT; s++)
@@ -252,6 +294,8 @@ void GuiShell::draw(const ShellFrameInfo& info) {
 
     windowScreen(info);
     machineProfileFolderQuestion();
+    commandPalette();
+    windowShortcuts();
     windowMachine();
     windowMedia();
     windowSettings();
@@ -260,6 +304,7 @@ void GuiShell::draw(const ShellFrameInfo& info) {
     // The memory map records only while it is shown (and Record is on).
     if (host.emu && host.emu->memory) host.emu->memory->trackAccess = panelOpen("Memory") && memMapShown && memMapRecord;
     windowMemory();
+    windowWatches();
     if (panelOpen("Assembler")) {
         assembler->draw(&panelOpen("Assembler"));
         if (assembler->focused) toolFocusedNow = true;
@@ -336,7 +381,7 @@ void GuiShell::buildDefaultLayout(unsigned id) {
 void GuiShell::placeNewlyOpened(unsigned dockspaceId) {
     struct Group { std::vector<const char*> titles; ImGuiDir dir; float ratio; };
     static const Group groups[] = {
-        { { "Debugger", "Chips", "Memory", "GFX9000", "Logic analyser", "Expansion port", "Profiler" }, ImGuiDir_Right, 0.42f },
+        { { "Debugger", "Chips", "Memory", "Watches", "GFX9000", "Logic analyser", "Expansion port", "Profiler" }, ImGuiDir_Right, 0.42f },
         { { "Assembler", "C", "BASIC", "DSK editor", "CSL scripts", "Printer", "Cheats", "Graphics finder", "CRO editor", "CPC keyboard",
             "Video settings", "Audio settings", "Input settings", "Expansions", "External debugging" }, ImGuiDir_Down, 0.42f },
         // the media windows: tabs together, below the Machine window (a layout saved before
@@ -928,6 +973,7 @@ void GuiShell::menuFile() {
         saver.open("Save snapshot", host.romDir, "snapshot.sna", [this](const std::string& p) { host.saveSnapshot(p); });
     if (ImGui::MenuItem("Save screenshot...", nullptr, false, host.booted()))
         saver.open("Save screenshot", host.romDir, "screenshot.bmp", [this](const std::string& p) { host.saveScreenshotBmp(p); });
+    if (ImGui::MenuItem("Copy the screen to the clipboard", "Ctrl+Shift+C", false, host.booted())) copyScreenToClipboard();
     recordMenu();
     ImGui::Separator();
     if (ImGui::MenuItem("Run CSL script...")) panelOpen("CSL scripts") = true;
@@ -1208,7 +1254,7 @@ void GuiShell::menuWindow() {
         ImGui::EndMenu();
     }
     ImGui::Separator();
-    for (const char* w : { "Debugger", "Chips", "Memory", "Logic analyser", "Expansion port", "Profiler", "GFX9000", "GFX9000 screen" }) ImGui::MenuItem(w, nullptr, &panelOpen(w));
+    for (const char* w : { "Debugger", "Chips", "Memory", "Watches", "Logic analyser", "Expansion port", "Profiler", "GFX9000", "GFX9000 screen" }) ImGui::MenuItem(w, nullptr, &panelOpen(w));
     ImGui::Separator();
     for (const char* w : { "Assembler", "C", "BASIC", "DSK editor", "Cheats", "Graphics finder", "CRO editor", "CSL scripts", "Printer" }) ImGui::MenuItem(w, nullptr, &panelOpen(w));
     ImGui::Separator();
@@ -1233,29 +1279,8 @@ void GuiShell::menuWindow() {
 
 void GuiShell::menuHelp() {
     if (!ImGui::BeginMenu("Help")) return;
-    if (ImGui::BeginMenu("Keyboard shortcuts")) {
-        ImGui::TextUnformatted("F11          fullscreen (or double-click the screen)");
-        ImGui::TextUnformatted("Ctrl+R       reset");
-        ImGui::TextUnformatted("Ctrl+P       pause / run");
-        ImGui::TextUnformatted("Ctrl+1..9    load quick save slot 1..9");
-        ImGui::TextUnformatted("Ctrl+Shift+1..9  save it");
-        ImGui::TextUnformatted("Ctrl+Left    rewind a second");
-        ImGui::Separator();
-        ImGui::TextDisabled("in a debugger window, or while paused:");
-        ImGui::TextUnformatted("F5           run / pause");
-        ImGui::TextUnformatted("F7           step into");
-        ImGui::TextUnformatted("F8           step over");
-        ImGui::TextUnformatted("Shift+F8     step out");
-        ImGui::Separator();
-        ImGui::TextDisabled("in the assembler:");
-        ImGui::TextUnformatted("F9           assemble into memory");
-        ImGui::TextUnformatted("Ctrl+F9      assemble and run");
-        ImGui::TextUnformatted("Ctrl+S / O   save / open");
-        ImGui::Separator();
-        ImGui::TextDisabled("Keys go to the CPC unless a debugger or");
-        ImGui::TextDisabled("assembler window has the focus.");
-        ImGui::EndMenu();
-    }
+    ImGui::MenuItem("Keyboard shortcuts", nullptr, &showShortcuts);
+    if (ImGui::MenuItem("Command palette", "Ctrl+Shift+P")) paletteOpen = true;
     ImGui::MenuItem("About CPCSyntaxError", nullptr, &showAbout);
     ImGui::MenuItem("Dear ImGui demo", nullptr, &showImGuiDemo);
     ImGui::EndMenu();
@@ -1616,13 +1641,35 @@ void GuiShell::windowMedia() {
 void GuiShell::windowSettings() {
     static void (GuiShell::* const sections[])(bool) = {
         &GuiShell::sectionVideo, &GuiShell::sectionAudio, &GuiShell::sectionInput,
-        &GuiShell::sectionExpansions, &GuiShell::sectionDevelopment };
+        &GuiShell::sectionExpansions, &GuiShell::sectionDevelopment, &GuiShell::sectionTheme };
     static_assert(sizeof(sections) / sizeof(sections[0]) == sizeof(SETTINGS_WINDOWS) / sizeof(SETTINGS_WINDOWS[0]),
                   "one section per settings window");
     for (size_t i = 0; i < sizeof(sections) / sizeof(sections[0]); i++) {
         const char* title = SETTINGS_WINDOWS[i];
         if (!panelOpen(title)) continue;
+        // The colours window floats (it is in no docking group). Its first place is the one the
+        // user gave it (2026-11-17: 256,67 and 806 x 721 on the main window), made smaller and
+        // moved on a smaller screen; when it opens outside the main window, it comes back in.
+        const bool themeWindow = std::strcmp(title, "Colours and themes") == 0;
+        const ImGuiViewport* vp = ImGui::GetMainViewport();
+        const ImVec2 room(std::max(200.0f, vp->WorkSize.x - 16.0f), std::max(200.0f, vp->WorkSize.y - 16.0f));
+        if (themeWindow) {
+            const ImVec2 size(std::min(806.0f * uiScale, room.x), std::min(721.0f * uiScale, room.y));
+            const ImVec2 pos(vp->WorkPos.x + std::clamp(256.0f, 8.0f, std::max(8.0f, vp->WorkSize.x - size.x - 8.0f)),
+                             vp->WorkPos.y + std::clamp(67.0f - (vp->WorkPos.y - vp->Pos.y), 8.0f, std::max(8.0f, vp->WorkSize.y - size.y - 8.0f)));
+            ImGui::SetNextWindowPos(pos, ImGuiCond_FirstUseEver);
+            ImGui::SetNextWindowSize(size, ImGuiCond_FirstUseEver);
+        }
         if (ImGui::Begin(title, &panelOpen(title))) {
+            if (themeWindow && ImGui::IsWindowAppearing() && !ImGui::IsWindowDocked()) {
+                ImVec2 p = ImGui::GetWindowPos(), s = ImGui::GetWindowSize();
+                const ImVec2 s2(std::min(s.x, room.x), std::min(s.y, room.y));
+                const float left = vp->WorkPos.x + 8.0f, top = vp->WorkPos.y + 8.0f;   // (the upper limits never below these)
+                const ImVec2 p2(std::clamp(p.x, left, std::max(left, vp->WorkPos.x + vp->WorkSize.x - s2.x - 8.0f)),
+                                std::clamp(p.y, top, std::max(top, vp->WorkPos.y + vp->WorkSize.y - s2.y - 8.0f)));
+                if (s2.x != s.x || s2.y != s.y) ImGui::SetWindowSize(s2);
+                if (p2.x != p.x || p2.y != p.y) ImGui::SetWindowPos(p2);
+            }
             WrapText wrapText;                 // text wraps at the window's edge
             (this->*sections[i])(false);
         }
@@ -1633,6 +1680,20 @@ void GuiShell::windowSettings() {
 void GuiShell::openAllSettings() {
     for (const char* w : SETTINGS_WINDOWS) panelOpen(w) = true;
     focusWindowNextFrame = SETTINGS_WINDOWS[0];
+}
+
+bool GuiShell::openSourceFile(const std::string& path) {
+    std::string ext = std::filesystem::u8path(path).extension().u8string();
+    for (char& c : ext) c = (char)std::tolower((unsigned char)c);
+    const char* window = nullptr;
+    if (ext == ".asm" || ext == ".z80" || ext == ".s" || ext == ".inc" || ext == ".mac") { assembler->openFile(path); window = "Assembler"; }
+    else if (ext == ".c" || ext == ".h") { cWindow->openFile(path); window = "C"; }
+    else if (ext == ".bas") { basicWindow->openFile(path); window = "BASIC"; }
+    if (!window) return false;
+    panelOpen(window) = true;
+    focusWindowNextFrame = window;
+    host.status = "Opened " + std::filesystem::u8path(path).filename().u8string() + " in the " + window + " window";
+    return true;
 }
 
 void GuiShell::windowAbout() {
@@ -1663,9 +1724,6 @@ void GuiShell::windowAbout() {
                            "Emmanuel Marty (LZSA, apultra, salvador).");
         ImGui::Separator();
         ImGui::TextWrapped("Thanks to Fran Gallego for cpctelera and Arnaud6128 for cpctelera_next");
-        ImGui::Separator();
-        ImGui::TextWrapped("Shout OUT(C),A to: The_Clueless_Engineer (Brett), XeNoMoRPH, roudoudou, "
-                           "Logon System, TITAN, Gryzor, eto, salvogendut, Computer Booter, T-Man!");
         ImGui::Separator();
         ImGui::TextWrapped("User interface: Dear ImGui (MIT) on SDL2.");
     }

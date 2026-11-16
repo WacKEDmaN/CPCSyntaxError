@@ -11,9 +11,11 @@
 #include <set>
 #include <string>
 #include <thread>
+#include <unordered_map>
 #include <vector>
 
 #include "asm_highlight.h"
+#include "asm_nops.h"
 #include "c_build.h"
 
 struct ImFont;
@@ -46,7 +48,16 @@ public:
     void setCToolchain(const CToolchain& t) { ctools = t; }
     const CToolchain& cToolchain() const { return ctools; }
     const std::string& buildLog() const { return cLog; }
-    void setSource(const std::string& text) { source = text; modified = true; sourceRevision++; }
+    void setSource(const std::string& text) {
+        source = text; modified = true; sourceRevision++;
+        undoSteps.clear(); redoSteps.clear(); undoText = source; undoReady = true; lastEditTime = -1.0;   // a new text: a new history
+        // the text box with the keyboard writes its own copy back: the new text goes in through its callback
+        if (editorActiveNow) { editPending = true; editText = source; editSelA = editSelB = 0; selectPending = false; }
+        selA = selB = cursorPos = 0; findA = findB = -1;
+    }
+    const std::string& sourceText() const { return source; }
+    size_t undoStepCount() const { return undoSteps.size(); }
+    size_t redoStepCount() const { return redoSteps.size(); }
     void setSyntax(int s) { syntax = s; }        // RASM_SYNTAX_*
     int syntaxMode() const { return syntax; }
     const std::string& resultSummary() const { return summary; }
@@ -110,8 +121,35 @@ private:
     // themselves), in tabs after it. F9 builds the program of the tab on show, and only it.
     // The active tab's text is edited in place in source / path / modified / lineCount
     // below, and put back into its Tab when another tab is shown.
+    // UNDO AND REDO (user 2026-11-17). Dear ImGui's own undo forgets everything when the text
+    // box loses the focus (F9, a click in the messages), so each tab keeps its own history:
+    // the text before each step. Typing in one run (no pause of a second, no space or new
+    // line before it, the same kind: typed or deleted) is one step; a paste, a cut, a
+    // replaced selection is one step each. Ctrl+Z, Ctrl+Y / Ctrl+Shift+Z, the toolbar, and the
+    // right-click menu. At most UNDO_STEPS steps and UNDO_BYTES of text a tab.
+    // THE NOP COLUMN (assembler only; asm_nops.h): each line's cost, kept by the line's text.
+    bool showNops = true;                        // <key>nops in cpcse.ini
+    std::unordered_map<std::string, LineNops> nopCache;
+    const LineNops& nopsOfLine(int line);        // line from 0, after indexLines()
+    struct UndoStep { std::string text; int cursor = 0; };
+    static constexpr size_t UNDO_STEPS = 500, UNDO_BYTES = 64u << 20;
+    std::vector<UndoStep> undoSteps, redoSteps;  // the tab on show (each Tab keeps its own)
+    std::string undoText;                        // the text as the last edit left it
+    bool undoReady = false;                      // undoText is this tab's (set on the first frame)
+    double lastEditTime = -1.0;
+    int lastEditKind = 0;                        // +1 a character typed, -1 one deleted, 0 more
+    bool lastEditBoundary = false;               // the character typed was a space or a new line
+    bool editorActiveNow = false;                // the text box has the keyboard this frame
+    bool historyPending = false, historyApplied = false;
+    UndoStep historyStep;                        // put in by the text box's callback
+    void recordEdit(int cursorBefore);
+    void undoEdit();
+    void redoEdit();
+    void applyHistory(UndoStep step);
+    void historyDone(int cursor);
     struct Tab {
         std::string source, path; bool modified = false; int lineCount = 1;
+        std::vector<UndoStep> undo, redo;        // its history while another tab is on show
         int program = 0;                        // the program it belongs to
         bool isMain = true;                     // its main file (else a file it links)
         int uid = 0;                            // the tab's own identity in the tab bar
@@ -208,6 +246,53 @@ private:
 
     int gotoLine = -1;                          // move the editor's cursor here next frame
     static int editorCallback(ImGuiInputTextCallbackData* data);
+
+    // EDITING TOOLS (gui_assembler_edit.cpp; user 2026-11-17 "add em all"): find and replace
+    // (Ctrl+F, Ctrl+H, F3, Shift+F3), go to a definition (F12, Ctrl+click) and the Labels tab,
+    // a comment on or off for the selected lines (Ctrl+/), and Tab / Shift+Tab to move the
+    // selected lines in or out. Each change of the text is one undo step.
+    bool findOpen = false, replaceOpen = false, findFocus = false;
+    char findText[256] = {0}, replaceText[256] = {0};
+    bool findCase = false, findWord = false;
+    int findA = -1, findB = -1;                 // the match on show (byte offsets in source), -1: none
+    std::string findMessage;
+    int selA = 0, selB = 0;                     // the editor's selection, as the callback last saw it
+    bool editPending = false, editApplied = false, selectPending = false, swallowTab = false;
+    std::string editText;                       // a whole-text change for the text box with the keyboard
+    int editSelA = 0, editSelB = 0;             // the selection after it (or after selectPending)
+    bool focusEditor = false;                   // give the text box the keyboard next frame
+    void findBar();
+    void editorKeys();                          // Ctrl+/, Tab, Shift+Tab, F12: while the text box has the keyboard
+    std::vector<std::pair<int, int>> matches() const;
+    void showMatch(int a, int b);
+    void select(int a, int b);
+    void changeText(std::string text, int a, int b);   // one undo step; then the selection a..b
+    std::string wordAt(int pos) const;
+    void drawFindMatches(const char* childName, float lineH, float editorH);
+    void labelsTab();
+    char labelFilter[64] = {0};
+    std::string menuWord;                       // the name under the mouse when the right-click menu opened
+public:
+    struct Definition { std::string name; int line = 0; std::string kind; };
+    // the names the shown file defines (labels, EQU, macros; in C functions, #define, globals)
+    std::vector<Definition> definitions() const;
+    // for the checks and the keys
+    void setFind(const std::string& what, const std::string& with, bool matchCase, bool wholeWord);
+    bool findNext(bool backward);               // selects the next match after the selection
+    bool replaceOne();                          // the match selected replaced, then the next one found
+    int replaceAll();                           // how many were replaced (one undo step)
+    void toggleComment();                       // the lines of the selection
+    void indentLines(bool out);
+    bool goToDefinition(const std::string& word);
+    void setSelection(int a, int b) { select(a, b); }
+    void openFind(bool replace) { findOpen = true; findFocus = true; replaceOpen = replace; }
+    int selectionStart() const { return selA; }
+    int selectionEnd() const { return selB; }
+    int matchStart() const { return findA; }
+    const std::string& findStatus() const { return findMessage; }
+    const char* findWhat() const { return findText; }
+    int pendingLine() const { return gotoLine; }
+private:
 
     // Run to cursor (Ctrl+F10): the machine runs, past every breakpoint, to the first code
     // of the cursor's line (or of the first line after it with code). C: from the line

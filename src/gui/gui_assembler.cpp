@@ -581,6 +581,7 @@ void AssemblerWindow::storeActive() {
     if (activeTab < 0 || activeTab >= (int)tabs.size()) return;
     Tab& t = tabs[(size_t)activeTab];
     t.source = source; t.path = path; t.modified = modified; t.lineCount = lineCount;
+    t.undo = undoSteps; t.redo = redoSteps;
 }
 
 void AssemblerWindow::showTab(int index) {
@@ -597,6 +598,8 @@ void AssemblerWindow::activate(int index) {
     activeTab = index;
     const Tab& t = tabs[(size_t)index];
     source = t.source; path = t.path; modified = t.modified; lineCount = t.lineCount;
+    undoSteps = t.undo; redoSteps = t.redo;
+    undoText = source; undoReady = true; lastEditTime = -1.0; historyPending = false;
     sourceRevision++;
     refreshErrorLines();
 }
@@ -642,6 +645,7 @@ void AssemblerWindow::loadSettings(const std::map<std::string, std::string>& ini
     if (it == ini.end()) it = find("asm_highlight");
     if (it != ini.end()) highlight = std::atoi(it->second.c_str()) != 0;
     if ((it = find(key("result_height"))) != ini.end()) resultHeight = std::clamp((float)std::atof(it->second.c_str()), 0.0f, 4000.0f);
+    if ((it = find(key("nops"))) != ini.end()) showNops = std::atoi(it->second.c_str()) != 0;
     for (size_t k = 0; k < colours.size(); k++) {
         it = find(key("colour_") + asmTokenKey((AsmToken)k));
         if (it == ini.end()) it = find(std::string("asm_colour_") + asmTokenKey((AsmToken)k));
@@ -688,6 +692,7 @@ void AssemblerWindow::saveSettings(std::ostream& out) const {
         if (tabs[(size_t)i].isMain && i != mainTab() && !tabPath(i).empty()) out << key("file") << "." << ++n << "=" << tabPath(i) << "\n";
     out << key("highlight") << "=" << (highlight ? 1 : 0) << "\n";
     if (resultHeight > 0) out << key("result_height") << "=" << (int)resultHeight << "\n";
+    if (lang == Language::Asm) out << key("nops") << "=" << (showNops ? 1 : 0) << "\n";
     if (lang == Language::C) {
         out << "asm_sdcc=" << ctools.sdccFolder << "\n";
         out << "asm_cpctelera=" << ctools.cpcteleraFolder << "\n";
@@ -1172,13 +1177,119 @@ void AssemblerWindow::finishAsm() {
     }
 }
 
+// The NOP cost of a line (from 0; lineStarts must be current), kept by the line's text.
+const LineNops& AssemblerWindow::nopsOfLine(int line) {
+    static const LineNops none;
+    if (line < 0 || line >= (int)lineStarts.size()) return none;
+    const size_t a = (size_t)lineStarts[(size_t)line];
+    const size_t b = line + 1 < (int)lineStarts.size() ? (size_t)lineStarts[(size_t)line + 1] - 1 : source.size();
+    if (a > source.size() || b < a) return none;
+    const std::string text = source.substr(a, std::min(b, source.size()) - a);
+    auto it = nopCache.find(text);
+    if (it != nopCache.end()) return it->second;
+    if (nopCache.size() > 20000) nopCache.clear();          // (a large file, edited for long)
+    return nopCache.emplace(text, lineNops(text)).first->second;
+}
+
+// ---- undo and redo (see gui_assembler.h)
+void AssemblerWindow::recordEdit(int cursorBefore) {
+    if (historyApplied) { historyDone(cursorPos); return; }   // the text box took an undo or redo
+    if (editApplied) { undoText = source; lastEditTime = -1.0; return; }   // changeText kept its own step
+    const double now = ImGui::GetTime();
+    const long delta = (long)source.size() - (long)undoText.size();
+    const int kind = delta == 1 ? 1 : delta == -1 ? -1 : 0;
+    const bool newStep = lastEditTime < 0 || now - lastEditTime > 1.0 || kind == 0 || kind != lastEditKind || lastEditBoundary;
+    if (newStep) {
+        undoSteps.push_back({ undoText, cursorBefore });
+        size_t bytes = 0;
+        for (const UndoStep& s : undoSteps) bytes += s.text.size();
+        while (undoSteps.size() > 1 && (undoSteps.size() > UNDO_STEPS || bytes > UNDO_BYTES)) {
+            bytes -= undoSteps.front().text.size();
+            undoSteps.erase(undoSteps.begin());
+        }
+    }
+    redoSteps.clear();
+    const char typed = kind == 1 && cursorPos > 0 && cursorPos <= (int)source.size() ? source[(size_t)cursorPos - 1] : 0;
+    lastEditBoundary = typed == ' ' || typed == '\n' || typed == '\t';
+    undoText = source;
+    lastEditTime = now;
+    lastEditKind = kind;
+}
+
+void AssemblerWindow::undoEdit() {
+    if (undoSteps.empty()) return;
+    redoSteps.push_back({ source, cursorPos });
+    UndoStep s = std::move(undoSteps.back());
+    undoSteps.pop_back();
+    applyHistory(std::move(s));
+}
+
+void AssemblerWindow::redoEdit() {
+    if (redoSteps.empty()) return;
+    undoSteps.push_back({ source, cursorPos });
+    UndoStep s = std::move(redoSteps.back());
+    redoSteps.pop_back();
+    applyHistory(std::move(s));
+}
+
+// The text box with the keyboard keeps its own copy of the text: the step goes in through its
+// callback (the cursor kept). Without the keyboard the text is set at once.
+void AssemblerWindow::applyHistory(UndoStep step) {
+    if (editorActiveNow) { historyStep = std::move(step); historyPending = true; return; }
+    source = std::move(step.text);
+    historyDone(step.cursor);
+}
+
+void AssemblerWindow::historyDone(int cursor) {
+    historyApplied = false;
+    modified = true;
+    sourceRevision++;
+    lineCount = countLines(source);
+    undoText = source;
+    lastEditTime = -1.0;
+    lastEditBoundary = false;
+    cursorPos = std::clamp(cursor, 0, (int)source.size());
+}
+
 int AssemblerWindow::editorCallback(ImGuiInputTextCallbackData* data) {
     auto* self = static_cast<AssemblerWindow*>(data->UserData);
     if (data->EventFlag == ImGuiInputTextFlags_CallbackResize) {
         self->source.resize((size_t)data->BufTextLen);
         data->Buf = self->source.data();
+    } else if (data->EventFlag == ImGuiInputTextFlags_CallbackCharFilter) {
+        // Tab over a selection of lines moves them in (editorKeys); its tab character goes
+        if (data->EventChar == '\t' && self->swallowTab) { self->swallowTab = false; return 1; }
+        return 0;
+    } else if (data->EventFlag == ImGuiInputTextFlags_CallbackAlways && self->editPending) {
+        // a change of the whole text (replace, comment, indent) into the text box with the keyboard
+        data->DeleteChars(0, data->BufTextLen);
+        data->InsertChars(0, self->editText.data(), self->editText.data() + self->editText.size());
+        data->SelectionStart = std::clamp(self->editSelA, 0, data->BufTextLen);
+        data->CursorPos = data->SelectionEnd = std::clamp(self->editSelB, 0, data->BufTextLen);
+        self->editPending = false;
+        self->editApplied = true;
+        self->editText.clear();
+        self->cursorPos = data->CursorPos;
+        self->selA = data->SelectionStart; self->selB = data->SelectionEnd;
+    } else if (data->EventFlag == ImGuiInputTextFlags_CallbackAlways && self->selectPending && self->gotoLine <= 0) {
+        data->SelectionStart = std::clamp(self->editSelA, 0, data->BufTextLen);
+        data->CursorPos = data->SelectionEnd = std::clamp(self->editSelB, 0, data->BufTextLen);
+        self->selectPending = false;
+        self->cursorPos = data->CursorPos;
+        self->selA = data->SelectionStart; self->selB = data->SelectionEnd;
+    } else if (data->EventFlag == ImGuiInputTextFlags_CallbackAlways && self->historyPending) {
+        // an undo or redo into the text box that has the keyboard
+        const std::string& text = self->historyStep.text;
+        data->DeleteChars(0, data->BufTextLen);
+        data->InsertChars(0, text.data(), text.data() + text.size());
+        data->CursorPos = data->SelectionStart = data->SelectionEnd = std::clamp(self->historyStep.cursor, 0, data->BufTextLen);
+        self->historyPending = false;
+        self->historyApplied = true;
     } else if (data->EventFlag == ImGuiInputTextFlags_CallbackAlways && self->gotoLine <= 0) {
         self->cursorPos = data->CursorPos;              // for Run to cursor
+        self->selA = std::min(data->SelectionStart, data->SelectionEnd);
+        self->selB = std::max(data->SelectionStart, data->SelectionEnd);
+        if (self->selA == self->selB) self->selA = self->selB = data->CursorPos;
     } else if (data->EventFlag == ImGuiInputTextFlags_CallbackAlways && self->gotoLine > 0) {
         int start = 0, l = 1;
         for (int i = 0; i < data->BufTextLen && l < self->gotoLine; i++) if (data->Buf[i] == '\n') { l++; start = i + 1; }
@@ -1188,6 +1299,8 @@ int AssemblerWindow::editorCallback(ImGuiInputTextCallbackData* data) {
         data->SelectionStart = start;
         data->SelectionEnd = end;
         self->gotoLine = -1;
+        self->selectPending = false;
+        self->cursorPos = start; self->selA = start; self->selB = end;
     }
     return 0;
 }
@@ -1203,6 +1316,17 @@ void AssemblerWindow::draw(bool* open) {
         if (ImGui::IsKeyPressed(ImGuiKey_F9, false)) assemble(io.KeyCtrl);
         if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_S, false)) requestSave(io.KeyShift);
         if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_O, false)) requestOpen();
+        // find and replace (gui_assembler_edit.cpp): the selection, on one line, is what to find
+        const bool ctrlF = ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_F), ctrlH = ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_H);
+        if (ctrlF || ctrlH) {
+            if (selB > selA && selB <= (int)source.size() && source.find('\n', (size_t)selA) >= (size_t)selB)
+                std::snprintf(findText, sizeof findText, "%s", source.substr((size_t)selA, (size_t)(selB - selA)).c_str());
+            findOpen = true;
+            findFocus = true;
+            if (ctrlH) replaceOpen = true;
+            else replaceOpen = false;
+        }
+        if (ImGui::IsKeyPressed(ImGuiKey_F3, false) && findText[0]) { findOpen = true; findNext(io.KeyShift); }
         if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_F10, false)) runToCursor();
         else if (lang == Language::C && !debugger.sourceLines.empty()) {
             if (ImGui::IsKeyPressed(ImGuiKey_F10, false)) debugger.stepLine(true);
@@ -1230,6 +1354,15 @@ void AssemblerWindow::draw(bool* open) {
     if (after().button("Open...")) requestOpen();
     if (after().button("Save")) requestSave(false);
     if (after().button("Save as...")) requestSave(true);
+    after().textDisabled("|");
+    ImGui::BeginDisabled(undoSteps.empty());
+    if (after().button("Undo")) undoEdit();
+    ImGui::EndDisabled();
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip("Undo the last change (Ctrl+Z): %d step%s", (int)undoSteps.size(), undoSteps.size() == 1 ? "" : "s");
+    ImGui::BeginDisabled(redoSteps.empty());
+    if (after().button("Redo")) redoEdit();
+    ImGui::EndDisabled();
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip("Do again what Undo took back (Ctrl+Y or Ctrl+Shift+Z)");
     after().textDisabled("|");
     ImGui::BeginDisabled(building);
     if (after().button(c ? "Build (F9)" : "Assemble (F9)")) assemble(false);
@@ -1267,6 +1400,11 @@ void AssemblerWindow::draw(bool* open) {
                               "RELOCATE_START...) work in every mode.");
         after().checkbox("BRK labels", &brkLabels);
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("Labels named BRK..., @BRK... or ....BRK become breakpoints (rasm -eb)");
+        after().checkbox("NOPs", &showNops);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Each line's cost in NOPs (microseconds), beside its number: every instruction on it added up\n"
+                              "(several on a line: separated by ':'). min/max: a condition or a repeat decides.\n"
+                              "Each cost was measured on the emulated CPC. Hold the mouse over a cost for each instruction's.");
     }
     if (after().button("Colours...")) ImGui::OpenPopup("Code colours");
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("Syntax colouring: on or off, and a colour for each kind of word");
@@ -1310,6 +1448,7 @@ void AssemblerWindow::draw(bool* open) {
         ImGui::EndTabBar();
     }
     selectTab = -1;
+    if (findOpen) findBar();
     if (closeAt >= 0) {
         // an edited tab (or, for a main file, any of its program's) asks first
         const Tab& t = tabs[(size_t)closeAt];
@@ -1342,7 +1481,11 @@ void AssemblerWindow::draw(bool* open) {
     bottomH = std::clamp(bottomH, minResult, std::max(minResult, availY - 80.0f - splitH - spaceY));
     const float editorH = std::max(80.0f, availY - bottomH - splitH - spaceY);
     char digits[16]; std::snprintf(digits, sizeof(digits), "%d", std::max(lineCount, 999));
-    const float gutterW = ImGui::CalcTextSize(digits).x + 12.0f;
+    // the gutter: the line numbers, then (assembler) each line's cost in NOPs (asm_nops.h)
+    const bool nopsOn = showNops && !cSyntax();
+    const float numbersW = ImGui::CalcTextSize(digits).x + 12.0f;
+    const float nopsW = nopsOn ? ImGui::CalcTextSize("00/00").x + 10.0f : 0.0f;
+    const float gutterW = numbersW + nopsW;
 
     ImVec2 gutterPos = ImGui::GetCursorScreenPos();
     ImGui::Dummy(ImVec2(gutterW, editorH));
@@ -1350,9 +1493,19 @@ void AssemblerWindow::draw(bool* open) {
     const ImGuiID editorId = ImGui::GetID("##asmsrc");
     char childName[512];
     std::snprintf(childName, sizeof(childName), "%s/%s_%08X", ImGui::GetCurrentWindow()->Name, "##asmsrc", editorId);
-    if (gotoLine > 0) ImGui::SetKeyboardFocusHere();
+    if (gotoLine > 0 || focusEditor) ImGui::SetKeyboardFocusHere();
+    focusEditor = false;
+    // undo and redo: this window's own history (Dear ImGui's is off: NoUndoRedo)
+    if (!undoReady) { undoText = source; undoReady = true; }
+    editorActiveNow = ImGui::GetActiveID() == editorId;
+    if (editorActiveNow) {
+        if (ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_Z)) undoEdit();
+        else if (ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_Y) || ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_Z)) redoEdit();
+        else editorKeys();                        // Ctrl+/, Tab, Shift+Tab, F12
+    }
+    const int cursorBefore = cursorPos;
     ImGuiInputTextFlags flags = ImGuiInputTextFlags_AllowTabInput | ImGuiInputTextFlags_CallbackResize |
-                                ImGuiInputTextFlags_CallbackAlways;
+                                ImGuiInputTextFlags_CallbackAlways | ImGuiInputTextFlags_CallbackCharFilter | ImGuiInputTextFlags_NoUndoRedo;
     // Coloured: the box's own text invisible (its cursor and selection are not), the
     // spans drawn over it.
     if (highlight) ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0, 0, 0, 0));
@@ -1361,18 +1514,33 @@ void AssemblerWindow::draw(bool* open) {
         modified = true;
         sourceRevision++;
         lineCount = countLines(source);
-    }
+        recordEdit(cursorBefore);
+    } else if (historyApplied) historyDone(cursorPos);   // (an undo the box took without a change)
+    editApplied = false;
     if (highlight) ImGui::PopStyleColor();
     if (highlight) drawHighlighted(childName, lineH, editorH);
+    drawFindMatches(childName, lineH, editorH);
     // the mouse over a name: its address and value; the right-click menu for the line under it
     if (ImGui::IsItemHovered()) {
         std::string word;
         int line = -1;
         wordUnderMouse(childName, lineH, word, line);
         if (!word.empty() && !ImGui::IsMouseDown(ImGuiMouseButton_Left)) symbolTooltip(word);
-        if (ImGui::IsMouseClicked(ImGuiMouseButton_Right) && line > 0) { menuLine = line; ImGui::OpenPopup("##editormenu"); }
+        if (ImGui::IsMouseClicked(ImGuiMouseButton_Left) && io.KeyCtrl && !word.empty()) goToDefinition(word);   // Ctrl+click
+        if (ImGui::IsMouseClicked(ImGuiMouseButton_Right) && line > 0) { menuLine = line; menuWord = word; ImGui::OpenPopup("##editormenu"); }
     }
     if (ImGui::BeginPopup("##editormenu")) {
+        if (ImGui::MenuItem("Undo", "Ctrl+Z", false, !undoSteps.empty())) undoEdit();
+        if (ImGui::MenuItem("Redo", "Ctrl+Y", false, !redoSteps.empty())) redoEdit();
+        ImGui::Separator();
+        const std::string defItem = menuWord.empty() ? std::string("Go to definition") : "Go to the definition of " + menuWord;
+        if (ImGui::MenuItem(defItem.c_str(), "F12", false, !menuWord.empty())) goToDefinition(menuWord);
+        if (ImGui::MenuItem("Find...", "Ctrl+F")) { findOpen = true; findFocus = true; replaceOpen = false; }
+        if (ImGui::MenuItem("Replace...", "Ctrl+H")) { findOpen = true; findFocus = true; replaceOpen = true; }
+        if (ImGui::MenuItem(cSyntax() ? "Comment on / off (//)" : "Comment on / off (;)", "Ctrl+/")) { focusEditor = true; toggleComment(); }
+        if (ImGui::MenuItem("Move the lines in", "Tab")) { focusEditor = true; indentLines(false); }
+        if (ImGui::MenuItem("Move the lines out", "Shift+Tab")) { focusEditor = true; indentLines(true); }
+        ImGui::Separator();
         char item[64];
         std::snprintf(item, sizeof item, "Run to line %d", menuLine);
         if (ImGui::MenuItem(item, nullptr, false, host.booted())) runToLine(menuLine);
@@ -1427,7 +1595,17 @@ void AssemblerWindow::draw(bool* open) {
         const float top = gutterPos.y + style.FramePadding.y - scrollY;
         int first = std::max(0, (int)((scrollY - style.FramePadding.y) / lineH) - 1);
         int last = std::min(lineCount, first + (int)(editorH / lineH) + 3);
+        const float numbersRight = g0.x + numbersW - 4;      // the numbers end here; the NOPs after
+        if (nopsOn) indexLines();
         for (int i = first; i < last; i++) {
+            if (nopsOn && i < (int)lineStarts.size()) {
+                const LineNops& costs = nopsOfLine(i);
+                const std::string t = nopText(costs);
+                if (!t.empty()) {
+                    const float tw = ImGui::CalcTextSize(t.c_str()).x;
+                    dl->AddText(ImVec2(g1.x - tw - 4, top + i * lineH), ImGui::GetColorU32(costs.unknown ? kWarn : kInfo), t.c_str());
+                }
+            }
             char n[16]; std::snprintf(n, sizeof(n), "%d", i + 1);
             float w = ImGui::CalcTextSize(n).x;
             bool err = errorLines.count(i + 1) != 0;
@@ -1441,9 +1619,23 @@ void AssemblerWindow::draw(bool* open) {
             }
             if (i + 1 == stoppedLine)
                 dl->AddTriangleFilled(ImVec2(g0.x + 2, y + 2), ImVec2(g0.x + 2, y + lineH - 2), ImVec2(g0.x + lineH * 0.6f, y + lineH * 0.5f), IM_COL32(255, 199, 64, 255));
-            dl->AddText(ImVec2(g1.x - w - 4, y), col, n);
+            dl->AddText(ImVec2(numbersRight - w - 4, y), col, n);
         }
         dl->PopClipRect();
+        // the NOP column under the mouse: each instruction of the line and its cost
+        if (nopsOn && ImGui::IsWindowHovered(ImGuiHoveredFlags_ChildWindows) && ImGui::IsMouseHoveringRect(ImVec2(numbersRight, g0.y), g1)) {
+            const int line = (int)((ImGui::GetIO().MousePos.y - top) / lineH);
+            if (line >= 0 && line < (int)lineStarts.size()) {
+                const LineNops& costs = nopsOfLine(line);
+                if (costs.instructions > 0) {
+                    std::string tip = "Line " + std::to_string(line + 1) + " in NOPs (1 NOP = 1 usec):";
+                    for (const std::string& p : costs.parts) tip += "\n  " + p;
+                    if (costs.min != costs.max) tip += "\nmin/max: as the conditions and repeats go";
+                    ImGui::SetTooltip("%s", tip.c_str());
+                }
+            }
+        }
+        g1.x = numbersRight;                                   // a click on a number: a breakpoint (below)
         // a click on a line number: a breakpoint on the first address of that C line
         if (!tabKey.empty() && ImGui::IsWindowHovered(ImGuiHoveredFlags_ChildWindows) && ImGui::IsMouseHoveringRect(g0, g1)) {
             const int line = (int)((ImGui::GetIO().MousePos.y - top) / lineH) + 1;
@@ -1475,7 +1667,7 @@ void AssemblerWindow::draw(bool* open) {
         FlowRow result;
         std::string shown = summary;
         if (building) { std::lock_guard<std::mutex> g(cRun->lock); if (!cRun->progress.empty()) shown = "Building: " + cRun->progress; }
-        result.textColored(lastOk ? ImVec4(0.5f, 0.9f, 0.5f, 1) : (messages.empty() ? ImVec4(0.7f, 0.7f, 0.7f, 1) : ImVec4(1.0f, 0.45f, 0.4f, 1)),
+        result.textColored(lastOk ? kGood : (messages.empty() ? ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled) : kBad),
                            shown.c_str());
         if (lastOk && lastRun >= 0) { char r[16]; std::snprintf(r, sizeof r, "RUN &%04X", lastRun & 0xffff); result.textDisabled(r); }
     }
@@ -1540,6 +1732,7 @@ void AssemblerWindow::draw(bool* open) {
             }
             ImGui::EndTabItem();
         }
+        labelsTab();
         if (c && ImGui::BeginTabItem("Build log###clog")) {
             ImGui::BeginChild("##clog", ImVec2(0, 0), ImGuiChildFlags_Borders, ImGuiWindowFlags_HorizontalScrollbar);
             ImGui::PushTextWrapPos(0.0f);

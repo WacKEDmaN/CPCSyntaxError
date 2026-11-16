@@ -14,9 +14,15 @@
 
 namespace cpcse {
 
-// The front end's one accent colour (titles, the PC, section names).
-inline const ImVec4 kAccent(1.0f, 0.78f, 0.25f, 1.0f);
-inline const ImVec4 kPcColour(1.0f, 0.85f, 0.2f, 1.0f);
+// The program's own named colours. The theme sets them (gui_theme.h: applyTheme); these are
+// the default theme's. The accent: titles, section names; the PC: the debugger's current
+// line; good, bad, warn, info: the green, red, amber and blue of status texts.
+inline ImVec4 kAccent(1.0f, 0.78f, 0.25f, 1.0f);
+inline ImVec4 kPcColour(1.0f, 0.85f, 0.2f, 1.0f);
+inline ImVec4 kGood(0.45f, 0.9f, 0.45f, 1.0f);
+inline ImVec4 kBad(1.0f, 0.45f, 0.4f, 1.0f);
+inline ImVec4 kWarn(0.95f, 0.8f, 0.35f, 1.0f);
+inline ImVec4 kInfo(0.55f, 0.8f, 1.0f, 1.0f);
 
 // A muted, spaced section label.
 void sectionHeading(const char* text);
